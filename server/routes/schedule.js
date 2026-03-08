@@ -12,7 +12,10 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5';
+// Use Haiku in dev (cheap, fast for testing), Sonnet in production (quality suggestions)
+const IS_PROD = process.env.NODE_ENV === 'production';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL
+  || (IS_PROD ? 'claude-sonnet-4-5' : 'claude-haiku-4-5-20251001');
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
