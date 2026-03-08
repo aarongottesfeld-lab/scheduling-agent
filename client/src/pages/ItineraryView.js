@@ -8,7 +8,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { confirmSuggestion } from '../utils/api';
 import { getUserId } from '../utils/auth';
 import client from '../utils/client';
 
@@ -123,13 +122,13 @@ function SuggestionCard({ suggestion, isConfirmed, role, status, onConfirm, onSe
         )}
 
         {/* Travel times */}
-        {(suggestion.travelTime?.organizer || suggestion.travelTime?.attendee) && (
+        {(suggestion.estimatedTravelA || suggestion.estimatedTravelB || suggestion.travelTime?.organizer || suggestion.travelTime?.attendee) && (
           <div className="travel-row">
-            {suggestion.travelTime?.organizer && (
-              <span className="travel-chip">🚗 You: {suggestion.travelTime.organizer}</span>
+            {(suggestion.estimatedTravelA || suggestion.travelTime?.organizer) && (
+              <span className="travel-chip">🚗 You: {suggestion.estimatedTravelA || suggestion.travelTime.organizer}</span>
             )}
-            {suggestion.travelTime?.attendee && (
-              <span className="travel-chip">🚗 Them: {suggestion.travelTime.attendee}</span>
+            {(suggestion.estimatedTravelB || suggestion.travelTime?.attendee) && (
+              <span className="travel-chip">🚗 Them: {suggestion.estimatedTravelB || suggestion.travelTime.attendee}</span>
             )}
           </div>
         )}
@@ -161,7 +160,7 @@ function SuggestionCard({ suggestion, isConfirmed, role, status, onConfirm, onSe
             <>
               <button
                 className="btn btn--primary"
-                onClick={() => onSend(suggestion.id)}
+                onClick={() => onSend()}
                 disabled={submitting}
               >
                 Send to friend
@@ -252,28 +251,35 @@ export default function ItineraryView() {
   useEffect(() => { load(); }, [load]);
 
   /* Derived state */
-  const role   = itinerary?.organizer?.userId === myUserId ? 'organizer' : 'attendee';
-  const status = itinerary?.status ?? 'pending';
-  const locked = status === 'confirmed';
-  const confirmedId = itinerary?.confirmedSuggestionId;
-  const context = itinerary?.contextPrompt || '';
+  const role = itinerary?.organizer_id === myUserId || itinerary?.organizer?.id === myUserId
+    ? 'organizer' : 'attendee';
+  const myStatus    = role === 'organizer' ? itinerary?.organizer_status : itinerary?.attendee_status;
+  const otherStatus = role === 'organizer' ? itinerary?.attendee_status  : itinerary?.organizer_status;
+  // Derive overall status
+  const locked      = !!itinerary?.locked_at;
+  const status      = locked ? 'confirmed'
+    : (myStatus === 'declined' || otherStatus === 'declined') ? 'declined'
+    : itinerary?.organizer_status === 'sent' ? 'sent'
+    : 'pending';
+  const confirmedId = itinerary?.selected_suggestion_id;
+  const context     = itinerary?.context_prompt || '';
 
   /* Actions */
-  async function handleSend(suggestionId) {
+  async function handleSend() {
     setSubmitting(true); setActionErr('');
     try {
-      await client.post(`/schedule/itinerary/${itineraryId}/send`, { suggestionId });
+      await client.post(`/schedule/itinerary/${itineraryId}/send`);
       await load();
-    } catch (err) { setActionErr(err.message); }
+    } catch (err) { setActionErr(err.message || 'Could not send.'); }
     finally { setSubmitting(false); }
   }
 
   async function handleAccept(suggestionId) {
     setSubmitting(true); setActionErr('');
     try {
-      await confirmSuggestion(suggestionId);
+      await client.post('/schedule/confirm', { itineraryId, suggestionId });
       await load();
-    } catch (err) { setActionErr(err.message); }
+    } catch (err) { setActionErr(err.message || 'Could not confirm.'); }
     finally { setSubmitting(false); }
   }
 
@@ -345,6 +351,7 @@ export default function ItineraryView() {
   }
 
   const otherPerson = role === 'organizer' ? itinerary.attendee : itinerary.organizer;
+  const otherName = otherPerson?.full_name || otherPerson?.name || 'friend';
   const suggestions = itinerary.suggestions || [];
 
   return (
@@ -364,14 +371,14 @@ export default function ItineraryView() {
                 ← Home
               </button>
               <h1 className="page-title" style={{ marginBottom: 4 }}>
-                Plans with {otherPerson?.name?.split(' ')[0] || 'friend'}
+                Plans with {otherName.split(' ')[0]}
               </h1>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className={`badge${status === 'confirmed' ? ' badge--green' : status === 'declined' ? ' badge--red' : ' badge--amber'}`}>
                   {status}
                 </span>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>
-                  {role === 'organizer' ? 'You created this' : 'From ' + (itinerary.organizer?.name || 'organizer')}
+                  {role === 'organizer' ? 'You created this' : 'From ' + (itinerary.organizer?.full_name || itinerary.organizer?.name || 'organizer')}
                 </span>
               </div>
             </div>
@@ -442,11 +449,8 @@ export default function ItineraryView() {
                   <ul className="changelog">
                     {itinerary.changelog.map((entry, i) => (
                       <li key={i} className="changelog-item">
-                        <span className="changelog-item__time">{formatTimestamp(entry.timestamp)}</span>
-                        <span>
-                          <span className="changelog-item__author">{entry.author}</span>
-                          {entry.message}
-                        </span>
+                        <span className="changelog-item__time">{formatTimestamp(entry.ts || entry.timestamp)}</span>
+                        <span>{entry.message}</span>
                       </li>
                     ))}
                   </ul>

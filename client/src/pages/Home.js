@@ -55,23 +55,28 @@ function NudgeCard({ nudge, onDismiss }) {
 
 /* ── Itinerary list item ─────────────────────────────────────── */
 function ItineraryCard({ item }) {
+  const friendName = item.isOrganizer ? item.attendeeName : item.organizerName;
+  const firstSuggestion = item.suggestions?.[0];
+  const displayDate = firstSuggestion?.date;
+  const overallStatus = item.locked_at ? 'confirmed'
+    : (item.organizer_status === 'declined' || item.attendee_status === 'declined') ? 'declined'
+    : item.organizer_status === 'sent' ? 'awaiting response'
+    : 'draft';
   return (
     <Link to={`/schedule/${item.id}`} className="itinerary-card">
-      <div className="avatar avatar--sm">{getInitials(item.friendName)}</div>
+      <div className="avatar avatar--sm">{getInitials(friendName)}</div>
       <div className="itinerary-card__body">
-        <div className="itinerary-card__title">{item.friendName}</div>
+        <div className="itinerary-card__title">{friendName}</div>
         <div className="itinerary-card__meta">
-          {item.date && <span>{formatDate(item.date)}</span>}
-          {item.activityType && (
+          {displayDate && <span>{formatDate(displayDate)}</span>}
+          {firstSuggestion?.neighborhood && (
             <>
               <span className="itinerary-card__dot" />
-              <span className="badge badge--gray" style={{ textTransform: 'none', fontWeight: 500, letterSpacing: 0 }}>
-                {item.activityType}
-              </span>
+              <span>{firstSuggestion.neighborhood}</span>
             </>
           )}
           <span className="itinerary-card__dot" />
-          <span className={statusBadge(item.status)}>{item.status}</span>
+          <span className={statusBadge(overallStatus)}>{overallStatus}</span>
         </div>
       </div>
     </Link>
