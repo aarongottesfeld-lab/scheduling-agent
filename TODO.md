@@ -4,7 +4,7 @@
 
 ## 🔴 In Progress / Next Up
 
-- [ ] Test full scheduling flow end-to-end (generate → send → switch user → accept → lock)
+- [ ] Test full scheduling flow end-to-end (getSuggestions payload bug now fixed — retry) (generate → send → switch user → accept → lock)
 - [ ] Wire `ItineraryView.js` to consume `GET /schedule/itinerary/:id` and `POST /schedule/confirm`
 - [ ] Google Calendar event creation when itinerary locks (both users get invite)
 
@@ -15,7 +15,8 @@
 ### Scheduling UI
 - [ ] ItineraryView: show 3 suggestion cards, accept/decline/reroll actions
 - [ ] Home.js: list active itineraries from `GET /schedule/itineraries?filter=waiting`
-- [ ] Inline error states (replace all `alert()` calls in Friends.js)
+- [x] Inline error states — search results clickable
+- [ ] Replace remaining `alert()` calls in Friends.js with inline errors
 - [ ] Validate `itineraryId` URL param before API calls in ItineraryView.js
 
 ### AI / Intelligence

@@ -10,6 +10,16 @@ End-to-end test of the full scheduling flow, then Vercel deploy.
 ---
 
 ## Last Completed
+- Avatar upload on MyProfile (click avatar → file picker → uploads to Supabase storage → saves avatar_url)
+- Notification bell in NavBar: polls every 30s, dropdown panel, mark read, mark all read
+- Search results in Friends always clickable → /friends/:id
+- NewEvent friend selector: dropdown of all friends on focus + filter by typing, no need to know usernames
+- Custom time picker reverted to standard dropdown
+- Fixed getSuggestions in api.js — was dropping all params (root cause of 'Could not generate' error)
+- Added notifications table + storage bucket (avatars) to Supabase
+- Better error messages from schedule/suggest endpoint
+
+## Last Completed (prev)
 - Scheduling engine fully built and wired (server/routes/schedule.js, all 8 endpoints)
 - ItineraryView.js wired to real API — field mappings fixed (organizer_id, selected_suggestion_id, locked_at, estimatedTravelA/B, changelog ts field)
 - Home.js ItineraryCard fixed — resolves friend name from isOrganizer flag, derives status from locked_at + organizer/attendee_status
