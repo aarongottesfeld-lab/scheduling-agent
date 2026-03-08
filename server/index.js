@@ -348,6 +348,13 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Feature routes
+// ---------------------------------------------------------------------------
+require('./routes/users')(app, supabase, requireAuth);
+require('./routes/friends')(app, supabase, requireAuth);
+require('./routes/nudges')(app, supabase, requireAuth);
+
+// ---------------------------------------------------------------------------
 // Dev-only: user switcher — impersonate any test user without OAuth
 // ONLY available when NODE_ENV !== production
 // ---------------------------------------------------------------------------
