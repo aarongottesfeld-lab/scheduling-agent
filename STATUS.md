@@ -1,115 +1,122 @@
 # Rendezvous — Project Status
 
-_Update this file after every major change. Reference alongside compacted transcript at `/mnt/transcripts/` on session start._
+_Updated after every major change. On session start, read this file + TODO.md + /mnt/transcripts/ compacted history._
 
 ---
 
 ## Current Goal
-Run the frontend for the first time (`npm start`) and confirm the app loads, OAuth flow works, and basic routing is functional.
+Build the scheduling engine — the core AI feature that reads both users' calendars, generates 3 itinerary suggestions, and persists them so both sides can view and respond.
 
 ---
 
-## Last Completed
-- Full frontend build: 10 files written by Claude Code (~2,750 lines total)
-- Security review of all frontend files
-- Fixed: `/profile/setup` now wrapped in `ProtectedRoute` (was publicly accessible)
-- Fixed: `api.js` now imports shared `client` from `client.js` instead of maintaining a duplicate axios instance with no error normalization
+## Last Completed (this session)
+- Full frontend build: 11 pages, 3 components, ~2,800 lines
+- Security review + 2 fixes (ProtectedRoute on /profile/setup, unified axios client)
+- Server routes modularized into server/routes/
+- Users endpoints: /users/me, POST /users/profile, GET /users/search, /geocode
+- Friends endpoints: full lifecycle (list, search, request, accept, decline, profile, annotations, shared-interests w/ AI)
+- Nudges endpoints: /nudges/pending, /nudges/:id/dismiss
+- 4 test users seeded in Supabase (jamiec, mrivera, tkim, alexp)
+- Dev user switcher: http://localhost:3001/dev/switch-user/:username
+- NewEvent: renamed date labels to scheduling window, added Custom Time picker (full 24h)
+- MyProfile page: read-only view + edit form, wired to /profile
+- Avatar in NavBar now links to /profile
+- Friend profile links wired from Friends list → /friends/:id
+- Activity suggestions updated with NYC sports, shows, concerts, outdoor activities
+- STATUS.md and TODO.md added for persistent tracking
 
 ---
 
-## Stack & Infrastructure
+## Stack
 
 | Layer | Tech | Notes |
 |---|---|---|
-| Frontend | React (CRA), React Router v7, axios | `client/` |
-| Backend | Node.js, Express 5 | `server/index.js` (371 lines) |
-| Database | Supabase (Postgres), RLS on all tables | Project ID: `bgeqxnrwrphbzenfrbdb` |
-| Auth | Google OAuth 2.0 | Tokens stored in `google_tokens` table |
-| Maps | Google Maps API (server-side only) | Key restricted to 4 APIs |
-| AI | Anthropic Claude API | Used server-side for suggestions + shared interests |
+| Frontend | React (CRA), React Router v7, axios | client/ |
+| Backend | Node.js, Express 5 | server/index.js + server/routes/ |
+| Database | Supabase (Postgres), RLS on all tables | Project: bgeqxnrwrphbzenfrbdb |
+| Auth | Google OAuth 2.0 | Tokens in google_tokens table, sessions in-memory |
+| Maps | Google Maps API (server-side only) | Restricted to 4 APIs |
+| AI | Anthropic Claude API (claude-sonnet-4-20250514) | Used server-side |
+| Tickets | SeatGeek API (planned) | For live events in suggestion engine |
 
 ---
 
 ## Environment
 
-- Project root: `~/Documents/scheduling-agent`
-- Server runs on: `http://localhost:3001`
-- Frontend runs on: `http://localhost:3000`
-- Node: v24.14.0, npm: 11.9.0
-- Git remote: `aarongottesfeld-lab/scheduling-agent` (private)
-- Caffeinate: active during builds (run manually before long sessions)
-
----
-
-## What's Running Right Now
-
-- `server/index.js` — running via `npm run dev` (node --watch), port 3001
-- Frontend — not yet started
+- Project root: ~/Documents/scheduling-agent
+- Server: http://localhost:3001 (npm run dev, node --watch)
+- Frontend: http://localhost:3000 (npm start)
+- Node v24.14.0, npm 11.9.0
+- Git: aarongottesfeld-lab/scheduling-agent (private)
+- Session storage: in-memory Map (lost on server restart → re-auth required)
 
 ---
 
 ## Server Endpoints — Implemented
 
-| Method | Route | Status |
+| Method | Route | File |
 |---|---|---|
-| GET | `/health` | ✅ |
-| GET | `/auth/google` | ✅ |
-| GET | `/auth/google/callback` | ✅ |
-| GET | `/auth/me` | ✅ |
-| POST | `/auth/logout` | ✅ |
-| GET | `/calendar/availability` | ✅ |
+| GET | /health | index.js |
+| GET | /auth/google | index.js |
+| GET | /auth/google/callback | index.js |
+| GET | /auth/me | index.js |
+| POST | /auth/logout | index.js |
+| GET | /calendar/availability | index.js |
+| GET | /users/me | routes/users.js |
+| POST | /users/profile | routes/users.js |
+| GET | /users/search | routes/users.js |
+| GET | /geocode | routes/users.js |
+| GET | /friends | routes/friends.js |
+| GET | /friends/requests/incoming | routes/friends.js |
+| POST | /friends/request | routes/friends.js |
+| POST | /friends/requests/:id/accept | routes/friends.js |
+| POST | /friends/requests/:id/decline | routes/friends.js |
+| GET | /friends/:id/profile | routes/friends.js |
+| GET | /friends/:id/annotations | routes/friends.js |
+| PUT | /friends/:id/annotations | routes/friends.js |
+| GET | /friends/:id/shared-interests | routes/friends.js |
+| GET | /nudges/pending | routes/nudges.js |
+| POST | /nudges/:id/dismiss | routes/nudges.js |
+| GET | /dev/switch-user/:username | index.js (dev only) |
+| GET | /dev/users | index.js (dev only) |
 
 ---
 
-## Server Endpoints — Stubbed / Needed by Frontend
+## Server Endpoints — Still Needed
 
-These are called by the frontend but not yet implemented in `server/index.js`:
-
-| Method | Route | Called From |
+| Method | Route | Notes |
 |---|---|---|
-| GET | `/geocode` | ProfileSetup.js |
-| GET | `/nudges/pending` | Home.js |
-| POST | `/nudges/:id/dismiss` | Home.js |
-| GET | `/friends` | Home.js, Friends.js, NewEvent.js |
-| GET | `/friends/requests/incoming` | Friends.js |
-| POST | `/friends/request` | Friends.js |
-| POST | `/friends/requests/:id/accept` | Friends.js |
-| POST | `/friends/requests/:id/decline` | Friends.js |
-| GET | `/friends/:id/profile` | FriendProfile.js, NewEvent.js |
-| GET | `/friends/:id/annotations` | FriendProfile.js |
-| PUT | `/friends/:id/annotations` | FriendProfile.js |
-| GET | `/friends/:id/shared-interests` | FriendProfile.js |
-| GET | `/users/me` | Friends.js |
-| GET | `/users/search` | Friends.js (via api.js) |
-| POST | `/users/profile` | ProfileSetup.js (via api.js) |
-| GET | `/schedule/itineraries` | Home.js |
-| GET | `/schedule/itinerary/:id` | ItineraryView.js |
-| POST | `/schedule/suggest` | NewEvent.js (via api.js) |
-| POST | `/schedule/confirm` | ItineraryView.js (via api.js) |
-| POST | `/schedule/itinerary/:id/send` | ItineraryView.js |
-| POST | `/schedule/itinerary/:id/decline` | ItineraryView.js |
-| POST | `/schedule/itinerary/:id/reroll` | ItineraryView.js |
-| POST | `/schedule/itinerary/:id/changelog` | ItineraryView.js |
+| GET | /schedule/itineraries | list with ?filter=waiting|upcoming |
+| GET | /schedule/itinerary/:id | single itinerary + suggestions |
+| POST | /schedule/suggest | AI engine — main feature |
+| POST | /schedule/confirm | accept a suggestion |
+| POST | /schedule/itinerary/:id/send | organizer sends to attendee |
+| POST | /schedule/itinerary/:id/decline | attendee declines |
+| POST | /schedule/itinerary/:id/reroll | regenerate with new context |
+| POST | /schedule/itinerary/:id/changelog | add change message |
 
 ---
 
-## Outstanding Security Notes (for production hardening)
+## Production Hardening (deferred)
 
-- `userId` briefly appears in URL after OAuth redirect before being cleared — switch to HTTP-only cookies before production
-- `alert()` used in `Friends.js` for error display — replace with inline error UI
-- `itineraryId` from URL params should be validated against a safe pattern before use in API calls
+- Switch session storage from in-memory Map to Supabase (survives restarts)
+- Switch OAuth handoff from URL params to HTTP-only cookies
+- Add HTTP referrer restriction to Google Maps API key (needs Vercel URL)
+- Replace alert() in Friends.js with inline error UI
+- Validate itineraryId URL param before API calls in ItineraryView.js
 
 ---
 
 ## Up Next (in order)
 
-1. Run frontend: `cd client && npm start`
-2. Confirm OAuth flow works end-to-end
-3. Commit current frontend + fixes to git
-4. Build remaining server endpoints (see stubbed list above)
-5. Implement AI suggestion engine (`POST /schedule/suggest`)
-6. Implement nudge generation logic
-7. Google Calendar event creation on itinerary lock
-8. Vercel deployment
-9. Add HTTP referrer restriction to Maps API key (needs Vercel URL first)
-10. PWA configuration
+### My next actions (no user needed)
+1. Build server/routes/schedule.js with all 8 scheduling endpoints
+2. Implement the AI suggestion engine in POST /schedule/suggest
+3. Integrate SeatGeek API for live event data in suggestions
+4. Build nudge generation logic (scan calendars for mutual free windows)
+
+### Needs user action
+1. Sign up for SeatGeek API key at https://platform.seatgeek.com → add SEATGEEK_CLIENT_ID + SEATGEEK_CLIENT_SECRET to server/.env
+2. Test friend request flow end-to-end (search → add → accept)
+3. Test MyProfile view and edit
+4. Vercel deployment (after scheduling engine works)
