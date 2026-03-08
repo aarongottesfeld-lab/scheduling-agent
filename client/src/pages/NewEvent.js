@@ -286,11 +286,11 @@ export default function NewEvent() {
             {/* ── Context prompt ────────────────────────── */}
             <div className="form-group">
               <label className="form-label" htmlFor="context">
-                Any preferences? <span className="optional">optional</span>
+                What do you want to do? <span className="optional">optional</span>
               </label>
               <textarea id="context" className="form-control" value={context}
                 onChange={(e) => setContext(e.target.value)}
-                placeholder="e.g. 'something low-key', 'good for catching up', 'near Midtown', 'want to see a show'"
+                placeholder="e.g. 'quick dinner', 'something active', 'near Midtown', 'golf and drinks after'"
                 rows={3} />
               <p className="form-hint">Free text — our AI reads between the lines.</p>
             </div>
