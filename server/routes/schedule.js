@@ -12,6 +12,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5';
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
@@ -210,7 +211,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: CLAUDE_MODEL,
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
@@ -381,7 +382,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: CLAUDE_MODEL,
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
