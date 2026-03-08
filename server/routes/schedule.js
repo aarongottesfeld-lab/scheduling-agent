@@ -25,24 +25,45 @@ function createOAuth2Client(tokens) {
   return c;
 }
 
-/** Fetch busy slots for a user given their session tokens. Returns [] if no tokens. */
-async function fetchBusy(session, startISO, endISO) {
-  if (!session?.tokens?.access_token) return [];
-  try {
-    const auth = createOAuth2Client(session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const res = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: startISO,
-        timeMax: endISO,
-        items: [{ id: 'primary' }],
-      },
-    });
-    return res.data.calendars?.primary?.busy || [];
-  } catch (e) {
-    console.warn('fetchBusy failed:', e.message);
-    return [];
+/** Fetch busy slots for a user. Uses real Google Calendar if tokens exist,
+ *  otherwise falls back to mock_busy_slots from the profile row (test users). */
+async function fetchBusy(session, startISO, endISO, supabase, userId) {
+  // Real calendar path
+  if (session?.tokens?.access_token) {
+    try {
+      const auth = createOAuth2Client(session.tokens);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const res = await calendar.freebusy.query({
+        requestBody: {
+          timeMin: startISO,
+          timeMax: endISO,
+          items: [{ id: 'primary' }],
+        },
+      });
+      return res.data.calendars?.primary?.busy || [];
+    } catch (e) {
+      console.warn('fetchBusy (Google) failed:', e.message);
+    }
   }
+  // Mock fallback for test users (no OAuth tokens)
+  if (userId && supabase) {
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('mock_busy_slots')
+        .eq('id', userId)
+        .single();
+      const slots = data?.mock_busy_slots || [];
+      const start = new Date(startISO);
+      const end   = new Date(endISO);
+      return slots
+        .filter(s => new Date(s.end) > start && new Date(s.start) < end)
+        .map(s => ({ start: s.start, end: s.end }));
+    } catch (e) {
+      console.warn('fetchBusy (mock) failed:', e.message);
+    }
+  }
+  return [];
 }
 
 /** Parse a time-of-day filter into [startHour, endHour] (24h). */
@@ -178,8 +199,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const friendSession = [...(userSessions?.entries() || [])].find(([, s]) => s.supabaseId === targetUserId)?.[1];
 
     const [busyA, busyB] = await Promise.all([
-      fetchBusy(req.userSession, startISO, endISO),
-      fetchBusy(friendSession, startISO, endISO),
+      fetchBusy(req.userSession,  startISO, endISO, supabase, req.userId),
+      fetchBusy(friendSession,    startISO, endISO, supabase, targetUserId),
     ]);
 
     const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay);
