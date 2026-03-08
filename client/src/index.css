@@ -805,3 +805,13 @@ textarea.form-control { resize: vertical; min-height: 88px; }
   .page-title { font-size: 1.4rem; }
   .radio-group { flex-direction: column; }
 }
+
+/* ── Custom time panel (NewEvent) ─────────────────────────── */
+.custom-time-panel {
+  margin-top: 14px;
+  padding: 16px;
+  background: var(--brand-xlight);
+  border: 1.5px solid #c7d2fe;
+  border-radius: var(--r);
+  animation: fadeIn .15s ease;
+}

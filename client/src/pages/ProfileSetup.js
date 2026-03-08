@@ -13,11 +13,22 @@ import client from '../utils/client';
 /* ── Constants ──────────────────────────────────────────────── */
 
 const ACTIVITY_SUGGESTIONS = [
-  'coffee', 'lunch spots', 'craft beer', 'wine', 'cocktail bars',
-  'live music', 'concerts', 'hiking', 'outdoors', 'cycling', 'running',
-  'art museums', 'galleries', 'theater', 'comedy', 'sports', 'nightlife',
-  'brunch', 'fine dining', 'street food', 'bookstores', 'parks',
-  'yoga', 'cooking classes',
+  // Food & Drink
+  'coffee', 'brunch', 'lunch spots', 'fine dining', 'street food',
+  'craft beer', 'wine bars', 'cocktail bars', 'rooftop bars', 'speakeasies',
+  // Arts & Culture
+  'Broadway shows', 'off-Broadway', 'comedy clubs', 'live music', 'concerts',
+  'jazz clubs', 'art museums', 'galleries', 'film screenings',
+  // Sports & Fitness
+  'golf', 'tennis', 'basketball', 'pickleball', 'cycling', 'running',
+  'yoga', 'rock climbing', 'boxing',
+  // Pro Sports
+  'Knicks games', 'Yankees games', 'Mets games', 'Rangers games', 'Brooklyn Nets', 'NYCFC',
+  // NYC Outdoors
+  'Central Park', 'hiking', 'kayaking', 'beach days', 'High Line', 'Governors Island',
+  // Other
+  'escape rooms', 'bowling', 'arcade bars', 'board game cafes',
+  'cooking classes', 'bookstores', 'flea markets', 'nightlife',
 ];
 
 const DIETARY_OPTIONS = [

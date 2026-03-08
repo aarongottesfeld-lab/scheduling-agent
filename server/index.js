@@ -348,6 +348,37 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Dev-only: user switcher — impersonate any test user without OAuth
+// ONLY available when NODE_ENV !== production
+// ---------------------------------------------------------------------------
+if (!IS_PROD) {
+  const DEV_USERS = {
+    'jamiec':  '11111111-1111-1111-1111-111111111111',
+    'mrivera': '22222222-2222-2222-2222-222222222222',
+    'tkim':    '33333333-3333-3333-3333-333333333333',
+    'alexp':   '44444444-4444-4444-4444-444444444444',
+  };
+
+  app.get('/dev/switch-user/:username', async (req, res) => {
+    const userId = DEV_USERS[req.params.username];
+    if (!userId) {
+      return res.status(404).json({ error: 'Unknown dev user. Options: ' + Object.keys(DEV_USERS).join(', ') });
+    }
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', userId)
+      .single();
+    const name = profile?.full_name || req.params.username;
+    res.redirect(`${CLIENT_URL}?userId=${userId}&name=${encodeURIComponent(name)}`);
+  });
+
+  app.get('/dev/users', (req, res) => {
+    res.json({ users: Object.keys(DEV_USERS).map(u => ({ username: u, id: DEV_USERS[u], url: `/dev/switch-user/${u}` })) });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 404 + global error handlers
 // ---------------------------------------------------------------------------
 app.use((req, res) => {
