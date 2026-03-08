@@ -1,20 +1,11 @@
 // api.js — all server calls in one place
 // Every function that talks to the Express server lives here.
-// This makes it easy to find, update, and mock for testing later.
+// Uses the shared authenticated client from client.js so that auth behavior,
+// error normalization, and interceptors stay in one place.
 
-import axios from 'axios';
-import { getUserId } from './auth';
+import client from './client';
 
 const BASE_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:3001';
-
-// Attach userId header to every request automatically
-const client = axios.create({ baseURL: BASE_URL });
-
-client.interceptors.request.use((config) => {
-  const userId = getUserId();
-  if (userId) config.headers['x-user-id'] = userId;
-  return config;
-});
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
