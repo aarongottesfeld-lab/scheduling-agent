@@ -170,9 +170,15 @@ export default function Friends() {
               <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {results.map((user) => (
                   <div key={user.id} className="friend-card">
-                    <div className="avatar">{getInitials(user.name)}</div>
+                    {user.isFriend
+                      ? <Link to={`/friends/${user.id}`} className="avatar" style={{ textDecoration:'none' }}>{getInitials(user.name)}</Link>
+                      : <div className="avatar">{getInitials(user.name)}</div>
+                    }
                     <div className="friend-card__info">
-                      <div className="friend-card__name">{user.name}</div>
+                      {user.isFriend
+                        ? <Link to={`/friends/${user.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>{user.name}</Link>
+                        : <div className="friend-card__name">{user.name}</div>
+                      }
                       <div className="friend-card__sub">@{user.username}</div>
                     </div>
                     <div className="friend-card__actions">
@@ -248,16 +254,17 @@ export default function Friends() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {friends.map((f) => (
                       <div key={f.id} className="friend-card">
-                        <div className="avatar">{getInitials(f.name)}</div>
+                        <Link to={`/friends/${f.id}`} className="avatar" style={{ textDecoration:'none' }}>
+                          {getInitials(f.name)}
+                        </Link>
                         <div className="friend-card__info">
-                          <div className="friend-card__name">{f.name}</div>
+                          <Link to={`/friends/${f.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>
+                            {f.name}
+                          </Link>
                           <div className="friend-card__sub">@{f.username}</div>
                         </div>
                         <div className="friend-card__actions">
-                          <Link
-                            to={`/friends/${f.id}`}
-                            className="btn btn--ghost btn--sm"
-                          >
+                          <Link to={`/friends/${f.id}`} className="btn btn--ghost btn--sm">
                             View profile
                           </Link>
                         </div>

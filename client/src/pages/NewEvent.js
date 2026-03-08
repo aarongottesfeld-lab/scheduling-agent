@@ -239,7 +239,9 @@ export default function NewEvent() {
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label" htmlFor="custom-time">Approximate time</label>
                       <select id="custom-time" className="form-control" value={customTime}
-                        onChange={(e) => setCustomTime(e.target.value)}>
+                        onChange={(e) => setCustomTime(e.target.value)}
+                        size={8}
+                        style={{ height:'auto', overflowY:'auto' }}>
                         {APPROX_TIMES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>

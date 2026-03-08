@@ -63,7 +63,7 @@ export default function NavBar() {
         >
           {getInitials(name)}
         </Link>
-        {name && <span className="navbar__name">{name.split(' ')[0]}</span>}
+        {name && <Link to="/profile" className="navbar__name" style={{ textDecoration:'none', color:'inherit' }}>{name.split(' ')[0]}</Link>}
         <button
           className="navbar__logout-btn"
           onClick={handleLogout}

@@ -1,64 +1,54 @@
 # Rendezvous — Project Status
 
-_Updated after every major change. On session start, read this file + TODO.md + /mnt/transcripts/ compacted history._
+_Updated after every major change._
 
 ---
 
 ## Current Goal
-Build the scheduling engine — the core AI feature that reads both users' calendars, generates 3 itinerary suggestions, and persists them so both sides can view and respond.
+Wire `ItineraryView.js` to the scheduling engine, then test the full event flow end to end.
 
 ---
 
 ## Last Completed (this session)
-- Full frontend build: 11 pages, 3 components, ~2,800 lines
-- Security review + 2 fixes (ProtectedRoute on /profile/setup, unified axios client)
-- Server routes modularized into server/routes/
-- Users endpoints: /users/me, POST /users/profile, GET /users/search, /geocode
-- Friends endpoints: full lifecycle (list, search, request, accept, decline, profile, annotations, shared-interests w/ AI)
-- Nudges endpoints: /nudges/pending, /nudges/:id/dismiss
-- 4 test users seeded in Supabase (jamiec, mrivera, tkim, alexp)
-- Dev user switcher: http://localhost:3001/dev/switch-user/:username
-- NewEvent: renamed date labels to scheduling window, added Custom Time picker (full 24h)
-- MyProfile page: read-only view + edit form, wired to /profile
-- Avatar in NavBar now links to /profile
-- Friend profile links wired from Friends list → /friends/:id
-- Activity suggestions updated with NYC sports, shows, concerts, outdoor activities
-- STATUS.md and TODO.md added for persistent tracking
+- Fixed `/profile` "cannot load" bug — OAuth callback now creates a Supabase profile row and stores the real UUID in the session (previously the session key was a random hex with no Supabase mapping)
+- DB migration: dropped `auth.users` FK on profiles, added `UNIQUE` on email, made `full_name` nullable for new signups
+- Built `server/routes/schedule.js` — all 8 endpoints: `/schedule/suggest`, `/schedule/itineraries`, `/schedule/itinerary/:id`, `/schedule/confirm`, `/send`, `/decline`, `/reroll`, `/changelog`
+- AI suggestion engine: reads both users' calendars, computes free windows, calls Claude with full profile context, returns 3 structured suggestions
+- Clickable profile nav: avatar + name in NavBar → `/profile`; avatar + name in Friends list → `/friends/:id`
+- Custom time picker: now shows 8-row scrollable list instead of full-screen dropdown
+- Added SeatGeek + MCP server as roadmap items in TODO.md
 
 ---
 
-## Stack
+## Architecture
 
 | Layer | Tech | Notes |
 |---|---|---|
 | Frontend | React (CRA), React Router v7, axios | client/ |
 | Backend | Node.js, Express 5 | server/index.js + server/routes/ |
-| Database | Supabase (Postgres), RLS on all tables | Project: bgeqxnrwrphbzenfrbdb |
-| Auth | Google OAuth 2.0 | Tokens in google_tokens table, sessions in-memory |
-| Maps | Google Maps API (server-side only) | Restricted to 4 APIs |
-| AI | Anthropic Claude API (claude-sonnet-4-20250514) | Used server-side |
-| Tickets | SeatGeek API (planned) | For live events in suggestion engine |
+| Database | Supabase (Postgres), RLS | Project: bgeqxnrwrphbzenfrbdb, us-east-1 |
+| Auth | Google OAuth 2.0 | Sessions in-memory Map, supabaseId stored per session |
+| Maps | Google Maps API (server-side) | Restricted to 4 APIs |
+| AI | Anthropic claude-sonnet-4-20250514 | Server-side only |
 
 ---
 
-## Environment
-
-- Project root: ~/Documents/scheduling-agent
-- Server: http://localhost:3001 (npm run dev, node --watch)
-- Frontend: http://localhost:3000 (npm start)
-- Node v24.14.0, npm 11.9.0
-- Git: aarongottesfeld-lab/scheduling-agent (private)
-- Session storage: in-memory Map (lost on server restart → re-auth required)
+## Session Architecture (important)
+- `userSessions` Map key = random hex session token (sent to client as `userId`)
+- `session.supabaseId` = the real Supabase UUID used for all DB queries
+- `req.userId` in routes = `session.supabaseId` (resolved by `requireAuth`)
+- Dev switcher: session key IS the Supabase UUID (stored as `supabaseId` too)
+- Known limitation: sessions lost on server restart → re-auth required
 
 ---
 
-## Server Endpoints — Implemented
+## All Implemented Endpoints
 
 | Method | Route | File |
 |---|---|---|
 | GET | /health | index.js |
 | GET | /auth/google | index.js |
-| GET | /auth/google/callback | index.js |
+| GET | /auth/google/callback | index.js — now creates Supabase profile |
 | GET | /auth/me | index.js |
 | POST | /auth/logout | index.js |
 | GET | /calendar/availability | index.js |
@@ -77,46 +67,22 @@ Build the scheduling engine — the core AI feature that reads both users' calen
 | GET | /friends/:id/shared-interests | routes/friends.js |
 | GET | /nudges/pending | routes/nudges.js |
 | POST | /nudges/:id/dismiss | routes/nudges.js |
+| POST | /schedule/suggest | routes/schedule.js ✅ NEW |
+| GET | /schedule/itineraries | routes/schedule.js ✅ NEW |
+| GET | /schedule/itinerary/:id | routes/schedule.js ✅ NEW |
+| POST | /schedule/confirm | routes/schedule.js ✅ NEW |
+| POST | /schedule/itinerary/:id/send | routes/schedule.js ✅ NEW |
+| POST | /schedule/itinerary/:id/decline | routes/schedule.js ✅ NEW |
+| POST | /schedule/itinerary/:id/reroll | routes/schedule.js ✅ NEW |
+| POST | /schedule/itinerary/:id/changelog | routes/schedule.js ✅ NEW |
 | GET | /dev/switch-user/:username | index.js (dev only) |
 | GET | /dev/users | index.js (dev only) |
 
 ---
 
-## Server Endpoints — Still Needed
+## Up Next
 
-| Method | Route | Notes |
-|---|---|---|
-| GET | /schedule/itineraries | list with ?filter=waiting|upcoming |
-| GET | /schedule/itinerary/:id | single itinerary + suggestions |
-| POST | /schedule/suggest | AI engine — main feature |
-| POST | /schedule/confirm | accept a suggestion |
-| POST | /schedule/itinerary/:id/send | organizer sends to attendee |
-| POST | /schedule/itinerary/:id/decline | attendee declines |
-| POST | /schedule/itinerary/:id/reroll | regenerate with new context |
-| POST | /schedule/itinerary/:id/changelog | add change message |
-
----
-
-## Production Hardening (deferred)
-
-- Switch session storage from in-memory Map to Supabase (survives restarts)
-- Switch OAuth handoff from URL params to HTTP-only cookies
-- Add HTTP referrer restriction to Google Maps API key (needs Vercel URL)
-- Replace alert() in Friends.js with inline error UI
-- Validate itineraryId URL param before API calls in ItineraryView.js
-
----
-
-## Up Next (in order)
-
-### My next actions (no user needed)
-1. Build server/routes/schedule.js with all 8 scheduling endpoints
-2. Implement the AI suggestion engine in POST /schedule/suggest
-3. Integrate SeatGeek API for live event data in suggestions
-4. Build nudge generation logic (scan calendars for mutual free windows)
-
-### Needs user action
-1. Sign up for SeatGeek API key at https://platform.seatgeek.com → add SEATGEEK_CLIENT_ID + SEATGEEK_CLIENT_SECRET to server/.env
-2. Test friend request flow end-to-end (search → add → accept)
-3. Test MyProfile view and edit
-4. Vercel deployment (after scheduling engine works)
+1. Wire `ItineraryView.js` to `GET /schedule/itinerary/:id` + `POST /schedule/confirm`
+2. Test: OAuth login → /profile loads → add friend → new event → itinerary view
+3. Google Calendar write on lock
+4. Vercel deploy

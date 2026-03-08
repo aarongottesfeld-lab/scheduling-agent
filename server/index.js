@@ -106,8 +106,11 @@ function requireAuth(req, res, next) {
   if (!userId || !userSessions.has(userId)) {
     return res.status(401).json({ error: 'Unauthorized. Authenticate via /auth/google first.' });
   }
-  req.userId = userId;
+  req.sessionKey = userId;
   req.userSession = userSessions.get(userId);
+  // supabaseId: real UUID used for all Supabase queries.
+  // For OAuth users it's stored in the session; for dev-switcher users the key itself is the UUID.
+  req.userId = req.userSession.supabaseId || userId;
   next();
 }
 
@@ -193,26 +196,46 @@ app.get('/auth/google/callback', async (req, res) => {
     const oauth2 = google.oauth2({ version: 'v2', auth: client });
     const { data: profile } = await oauth2.userinfo.get();
 
-    const userId = crypto.randomBytes(16).toString('hex');
-    userSessions.set(userId, {
+    // Look up existing profile by email, or create one with a new UUID.
+    // We manage auth ourselves (not Supabase Auth), so we generate the UUID here.
+    let supabaseId;
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', profile.email)
+      .maybeSingle();
+
+    if (existing?.id) {
+      supabaseId = existing.id;
+    } else {
+      const newId = crypto.randomUUID();
+      const { data: created, error: createErr } = await supabase
+        .from('profiles')
+        .insert({ id: newId, email: profile.email, full_name: profile.name })
+        .select('id')
+        .single();
+      if (createErr || !created?.id) {
+        console.error('Supabase profile create failed:', createErr?.message);
+        return res.redirect(
+          `${CLIENT_URL}?error=${encodeURIComponent('Account setup failed. Please try again.')}`
+        );
+      }
+      supabaseId = created.id;
+    }
+
+    const sessionKey = crypto.randomBytes(16).toString('hex');
+    userSessions.set(sessionKey, {
       tokens,
-      email: profile.email,
-      name: profile.name,
-      picture: profile.picture,
+      email:      profile.email,
+      name:       profile.name,
+      picture:    profile.picture,
+      supabaseId, // stable Supabase UUID — used for all DB queries
     });
 
-    // TODO (production): upsert user + encrypted tokens into Supabase
-    // await supabase.from('users').upsert({
-    //   google_id: profile.id,
-    //   email: profile.email,
-    //   name: profile.name,
-    //   tokens: encryptTokens(tokens),
-    // });
-
-    // NOTE: passing userId in URL is acceptable for an SPA dev flow.
+    // NOTE: passing sessionKey in URL is acceptable for an SPA dev flow.
     // In production prefer an HTTP-only cookie (requires cookie-parser + sameSite config).
     res.redirect(
-      `${CLIENT_URL}?userId=${userId}&name=${encodeURIComponent(profile.name || '')}`
+      `${CLIENT_URL}?userId=${sessionKey}&name=${encodeURIComponent(profile.name || '')}`
     );
   } catch (err) {
     console.error('OAuth callback error:', err.message);
@@ -228,7 +251,7 @@ app.get('/auth/google/callback', async (req, res) => {
  */
 app.get('/auth/me', requireAuth, (req, res) => {
   const { email, name, picture } = req.userSession;
-  res.json({ userId: req.userId, email, name, picture });
+  res.json({ userId: req.userId, sessionKey: req.sessionKey, email, name, picture });
 });
 
 /**
@@ -236,7 +259,7 @@ app.get('/auth/me', requireAuth, (req, res) => {
  * Clears the server-side session.
  */
 app.post('/auth/logout', requireAuth, (req, res) => {
-  userSessions.delete(req.userId);
+  userSessions.delete(req.sessionKey);
   res.json({ message: 'Logged out successfully' });
 });
 
@@ -288,7 +311,7 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
       const { credentials } = await client.refreshAccessToken();
       client.setCredentials(credentials);
       req.userSession.tokens = credentials;
-      userSessions.set(req.userId, req.userSession);
+      userSessions.set(req.sessionKey, req.userSession);
     }
 
     const calendar = google.calendar({ version: 'v3', auth: client });
@@ -353,6 +376,7 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
 require('./routes/users')(app, supabase, requireAuth);
 require('./routes/friends')(app, supabase, requireAuth);
 require('./routes/nudges')(app, supabase, requireAuth);
+require('./routes/schedule')(app, supabase, requireAuth, userSessions);
 
 // ---------------------------------------------------------------------------
 // Dev-only: user switcher — impersonate any test user without OAuth
@@ -377,6 +401,8 @@ if (!IS_PROD) {
       .eq('id', userId)
       .single();
     const name = profile?.full_name || req.params.username;
+    // For dev users: session key = supabase UUID (same value, no indirection needed)
+    userSessions.set(userId, { supabaseId: userId, name, email: null, tokens: null, picture: null });
     res.redirect(`${CLIENT_URL}?userId=${userId}&name=${encodeURIComponent(name)}`);
   });
 
