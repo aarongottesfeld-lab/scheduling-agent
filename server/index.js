@@ -377,6 +377,7 @@ require('./routes/users')(app, supabase, requireAuth);
 require('./routes/friends')(app, supabase, requireAuth);
 require('./routes/nudges')(app, supabase, requireAuth);
 require('./routes/schedule')(app, supabase, requireAuth, userSessions);
+require('./routes/notifications')(app, supabase, requireAuth);
 
 // ---------------------------------------------------------------------------
 // Dev-only: user switcher — impersonate any test user without OAuth

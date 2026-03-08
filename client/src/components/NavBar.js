@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { logout } from '../utils/api';
+import NotificationBell from './NotificationBell';
 import { clearSession, getUserName } from '../utils/auth';
 
 function getInitials(name = '') {
@@ -54,6 +55,7 @@ export default function NavBar() {
 
       {/* User area */}
       <div className="navbar__user">
+        <NotificationBell />
         <Link
           to="/profile"
           className="avatar avatar--sm"

@@ -170,15 +170,13 @@ export default function Friends() {
               <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {results.map((user) => (
                   <div key={user.id} className="friend-card">
-                    {user.isFriend
-                      ? <Link to={`/friends/${user.id}`} className="avatar" style={{ textDecoration:'none' }}>{getInitials(user.name)}</Link>
-                      : <div className="avatar">{getInitials(user.name)}</div>
-                    }
+                    <Link to={`/friends/${user.id}`} className="avatar" style={{ textDecoration:'none' }}>
+                      {getInitials(user.name)}
+                    </Link>
                     <div className="friend-card__info">
-                      {user.isFriend
-                        ? <Link to={`/friends/${user.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>{user.name}</Link>
-                        : <div className="friend-card__name">{user.name}</div>
-                      }
+                      <Link to={`/friends/${user.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>
+                        {user.name}
+                      </Link>
                       <div className="friend-card__sub">@{user.username}</div>
                     </div>
                     <div className="friend-card__actions">
@@ -191,7 +189,7 @@ export default function Friends() {
                           className="btn btn--secondary btn--sm"
                           onClick={() => sendRequest(user.id)}
                         >
-                          Add Friend
+                          Add
                         </button>
                       )}
                     </div>

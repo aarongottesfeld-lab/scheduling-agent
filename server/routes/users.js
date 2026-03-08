@@ -85,4 +85,46 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       res.status(500).json({ error: 'Geocode failed.' });
     }
   });
+
+  // POST /users/avatar — upload profile picture
+  // Accepts multipart/form-data with field "avatar" (image file, max 5MB)
+  app.post('/users/avatar', requireAuth, async (req, res) => {
+    const busboy = require('busboy');
+    const bb = busboy({ headers: req.headers, limits: { fileSize: 5 * 1024 * 1024 } });
+    let fileBuffer = null;
+    let mimeType   = null;
+    let fileSizeOk = true;
+
+    bb.on('file', (fieldname, file, info) => {
+      mimeType = info.mimeType;
+      const allowed = ['image/jpeg','image/png','image/webp','image/gif'];
+      if (!allowed.includes(mimeType)) { file.resume(); fileSizeOk = false; return; }
+      const chunks = [];
+      file.on('data', d => chunks.push(d));
+      file.on('limit', () => { fileSizeOk = false; });
+      file.on('close', () => { if (fileSizeOk) fileBuffer = Buffer.concat(chunks); });
+    });
+
+    bb.on('close', async () => {
+      if (!fileSizeOk)  return res.status(400).json({ error: 'File too large or invalid type (JPEG, PNG, WebP, GIF only, max 5MB).' });
+      if (!fileBuffer)  return res.status(400).json({ error: 'No image received.' });
+
+      const ext    = mimeType.split('/')[1].replace('jpeg','jpg');
+      const path   = `${req.userId}/avatar.${ext}`;
+
+      const { error: uploadErr } = await supabase.storage
+        .from('avatars')
+        .upload(path, fileBuffer, { contentType: mimeType, upsert: true });
+
+      if (uploadErr) return res.status(500).json({ error: 'Upload failed.' });
+
+      const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(path);
+
+      await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', req.userId);
+      res.json({ avatar_url: publicUrl });
+    });
+
+    req.pipe(bb);
+  });
+
 };

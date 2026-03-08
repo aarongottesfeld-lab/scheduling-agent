@@ -197,8 +197,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
       suggestions = parsed.suggestions || [];
     } catch (e) {
-      console.error('Claude suggestion error:', e.message);
-      return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
+      console.error('Claude suggestion error:', e.message, e.stack?.split('\n')[1]);
+      return res.status(500).json({ error: `Suggestion failed: ${e.message}` });
     }
 
     // Persist itinerary

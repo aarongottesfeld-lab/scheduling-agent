@@ -72,6 +72,8 @@ export default function MyProfile() {
   const [saveErr,  setSaveErr]  = useState('');
   const [editing,  setEditing]  = useState(false);
   const [usernameError, setUsernameError] = useState('');
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState('');
 
   const [form, setForm] = useState({
     full_name: '', username: '', location: '', timezone: '', bio: '',
@@ -82,6 +84,7 @@ export default function MyProfile() {
     client.get('/users/me')
       .then(res => {
         const d = res.data;
+        setAvatarUrl(d.avatar_url || '');
         setForm({
           full_name:  d.full_name  || '',
           username:   d.username   || '',
@@ -105,6 +108,24 @@ export default function MyProfile() {
       return { ...prev, [field]: arr.includes(value) ? arr.filter(v => v !== value) : [...arr, value] };
     });
   }, []);
+
+  async function handleAvatarChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('avatar', file);
+      const res = await client.post('/users/avatar', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setAvatarUrl(res.data.avatar_url);
+    } catch (err) {
+      setSaveErr(err.message || 'Could not upload photo.');
+    } finally {
+      setAvatarUploading(false);
+    }
+  }
 
   async function handleSave(e) {
     e.preventDefault();
@@ -146,7 +167,14 @@ export default function MyProfile() {
       {saved && <div className="alert alert--success">Profile saved.</div>}
       <div className="card card-pad" style={{ marginBottom:16 }}>
         <div className="profile-hero">
-          <div className="avatar avatar--xl">{getInitials(form.full_name)}</div>
+          <label className="avatar-upload-wrap" title="Change photo">
+            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={handleAvatarChange} disabled={avatarUploading} />
+            {avatarUrl
+              ? <img src={avatarUrl} alt={form.full_name} className="avatar avatar--xl avatar-img" style={{ width:64, height:64 }} />
+              : <div className="avatar avatar--xl">{avatarUploading ? '…' : getInitials(form.full_name)}</div>
+            }
+            <span className="avatar-upload-overlay">{avatarUploading ? '…' : 'Edit'}</span>
+          </label>
           <div className="profile-hero__info">
             <div className="profile-hero__name">{form.full_name}</div>
             {form.username && <div className="profile-hero__username">@{form.username}</div>}

@@ -46,8 +46,8 @@ export async function saveProfile(profile) {
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
 
-export async function getSuggestions({ targetUserId, daysAhead = 7 }) {
-  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead });
+export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt }) {
+  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt });
   return res.data;
 }
 

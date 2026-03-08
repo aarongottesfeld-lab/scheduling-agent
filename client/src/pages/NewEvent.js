@@ -59,9 +59,9 @@ export default function NewEvent() {
   const [searchParams]  = useSearchParams();
   const prefillFriendId = searchParams.get('friendId');
 
+  const [allFriends,      setAllFriends]      = useState([]);
   const [friendQuery,     setFriendQuery]     = useState('');
   const [friendResults,   setFriendResults]   = useState([]);
-  const [friendSearching, setFriendSearching] = useState(false);
   const [selectedFriend,  setSelectedFriend]  = useState(null);
 
   const [startDate,    setStartDate]    = useState(today());
@@ -74,6 +74,11 @@ export default function NewEvent() {
   const [generating,   setGenerating]   = useState(false);
   const [error,        setError]        = useState('');
 
+  // Load friends list for dropdown on mount
+  useEffect(() => {
+    client.get('/friends').then(res => setAllFriends(res.data?.friends ?? [])).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!prefillFriendId) return;
     client.get(`/friends/${prefillFriendId}/profile`)
@@ -81,18 +86,20 @@ export default function NewEvent() {
       .catch(() => {});
   }, [prefillFriendId]);
 
+  // Filter loaded friends by query
   useEffect(() => {
-    if (!friendQuery.trim()) { setFriendResults([]); return; }
-    const timer = setTimeout(async () => {
-      setFriendSearching(true);
-      try {
-        const res = await client.get('/friends', { params: { search: friendQuery } });
-        setFriendResults(res.data?.friends ?? []);
-      } catch { setFriendResults([]); }
-      finally  { setFriendSearching(false); }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [friendQuery]);
+    const q = friendQuery.trim().toLowerCase();
+    if (!q) {
+      setFriendResults(allFriends);
+      return;
+    }
+    setFriendResults(
+      allFriends.filter(f =>
+        f.name?.toLowerCase().includes(q) ||
+        f.username?.toLowerCase().includes(q)
+      )
+    );
+  }, [friendQuery, allFriends]);
 
   function selectFriend(f) {
     setSelectedFriend(f);
@@ -180,14 +187,11 @@ export default function NewEvent() {
                 <div style={{ position: 'relative' }}>
                   <input type="text" className="form-control" value={friendQuery}
                     onChange={(e) => setFriendQuery(e.target.value)}
-                    placeholder="Search your friends…" autoComplete="off" />
-                  {friendSearching && (
-                    <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)' }}>
-                      <div className="spinner" style={{ width: 16, height: 16 }} />
-                    </div>
-                  )}
+                    onFocus={() => { if (!friendQuery) setFriendResults(allFriends); }}
+                    placeholder={allFriends.length > 0 ? `Choose from ${allFriends.length} friend${allFriends.length !== 1 ? 's' : ''}…` : 'Search your friends…'}
+                    autoComplete="off" />
                   {friendResults.length > 0 && (
-                    <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, marginTop: 4 }}>
+                    <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, marginTop: 4, maxHeight: 240, overflowY: 'auto' }}>
                       {friendResults.map((f) => (
                         <button key={f.id} type="button" onMouseDown={() => selectFriend(f)}
                           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
@@ -239,9 +243,7 @@ export default function NewEvent() {
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label" htmlFor="custom-time">Approximate time</label>
                       <select id="custom-time" className="form-control" value={customTime}
-                        onChange={(e) => setCustomTime(e.target.value)}
-                        size={8}
-                        style={{ height:'auto', overflowY:'auto' }}>
+                        onChange={(e) => setCustomTime(e.target.value)}>
                         {APPROX_TIMES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
