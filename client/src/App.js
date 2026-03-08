@@ -15,6 +15,7 @@ import Friends from './pages/Friends';
 import FriendProfile from './pages/FriendProfile';
 import NewEvent from './pages/NewEvent';
 import ItineraryView from './pages/ItineraryView';
+import MyProfile from './pages/MyProfile';
 
 // Call synchronously before the first render so that isAuthenticated() is
 // correct on the very first route evaluation — no flash to the login page
@@ -44,6 +45,9 @@ export default function App() {
         } />
         <Route path="/schedule/new" element={
           <ProtectedRoute><NewEvent /></ProtectedRoute>
+        } />
+        <Route path="/profile" element={
+          <ProtectedRoute><MyProfile /></ProtectedRoute>
         } />
         <Route path="/schedule/:itineraryId" element={
           <ProtectedRoute><ItineraryView /></ProtectedRoute>

@@ -14,19 +14,19 @@ _Completed items stay here for reference. Add new items as they surface in code 
 ## 🟡 Feature Development
 
 ### Server — Core Endpoints
-- [ ] `GET /geocode` — reverse geocode lat/lng to city name (keep Maps key server-side)
-- [ ] `GET /users/me` — return current user's profile
-- [ ] `POST /users/profile` — save/update profile
-- [ ] `GET /users/search` — search by email or username
-- [ ] `GET /friends` — list accepted friends (support ?search= filter)
-- [ ] `GET /friends/requests/incoming` — pending friend requests
-- [ ] `POST /friends/request` — send a friend request
-- [ ] `POST /friends/requests/:id/accept` — accept a request
-- [ ] `POST /friends/requests/:id/decline` — decline a request
-- [ ] `GET /friends/:id/profile` — public profile of a friend
-- [ ] `GET /friends/:id/annotations` — current user's private notes on a friend
-- [ ] `PUT /friends/:id/annotations` — save private notes
-- [ ] `GET /friends/:id/shared-interests` — AI semantic comparison of both users' activity preferences
+- [x] `GET /geocode` — reverse geocode lat/lng to city name (keep Maps key server-side)
+- [x] `GET /users/me` — return current user's profile
+- [x] `POST /users/profile` — save/update profile
+- [x] `GET /users/search` — search by email or username
+- [x] `GET /friends` — list accepted friends (support ?search= filter)
+- [x] `GET /friends/requests/incoming` — pending friend requests
+- [x] `POST /friends/request` — send a friend request
+- [x] `POST /friends/requests/:id/accept` — accept a request
+- [x] `POST /friends/requests/:id/decline` — decline a request
+- [x] `GET /friends/:id/profile` — public profile of a friend
+- [x] `GET /friends/:id/annotations` — current user's private notes on a friend
+- [x] `PUT /friends/:id/annotations` — save private notes
+- [x] `GET /friends/:id/shared-interests` — AI semantic comparison of both users' activity preferences
 
 ### Server — Scheduling
 - [ ] `GET /schedule/itineraries` — list itineraries with ?filter=waiting|upcoming
@@ -39,8 +39,8 @@ _Completed items stay here for reference. Add new items as they surface in code 
 - [ ] `POST /schedule/itinerary/:id/changelog` — add a change message to locked itinerary
 
 ### Server — Nudges
-- [ ] `GET /nudges/pending` — return active nudges for current user
-- [ ] `POST /nudges/:id/dismiss` — mark nudge as dismissed
+- [x] `GET /nudges/pending` — return active nudges for current user
+- [x] `POST /nudges/:id/dismiss` — mark nudge as dismissed
 - [ ] Nudge generation logic — scan both users' calendars for mutual free windows, trigger Claude
 
 ### AI / Intelligence

@@ -54,13 +54,15 @@ export default function NavBar() {
 
       {/* User area */}
       <div className="navbar__user">
-        <div
+        <Link
+          to="/profile"
           className="avatar avatar--sm"
-          aria-hidden="true"
-          title={name || ''}
+          title={name ? `View your profile (${name})` : 'My profile'}
+          aria-label="My profile"
+          style={{ textDecoration:'none' }}
         >
           {getInitials(name)}
-        </div>
+        </Link>
         {name && <span className="navbar__name">{name.split(' ')[0]}</span>}
         <button
           className="navbar__logout-btn"
