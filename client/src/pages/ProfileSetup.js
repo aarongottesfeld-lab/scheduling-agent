@@ -5,6 +5,7 @@
 // to avoid exposing the Google Maps key in client code.
 
 import React, { useState, useCallback } from 'react';
+import { getUserName } from '../utils/auth';
 import { useNavigate } from 'react-router-dom';
 import { saveProfile } from '../utils/api';
 import PillInput from '../components/PillInput';
@@ -95,7 +96,7 @@ export default function ProfileSetup() {
   const navigate = useNavigate();
 
   const [form, setForm] = useState({
-    full_name:   '',
+    full_name:   getUserName() || '',
     username:    '',
     location:    '',
     timezone:    Intl.DateTimeFormat().resolvedOptions().timeZone || '',

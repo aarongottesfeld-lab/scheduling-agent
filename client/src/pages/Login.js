@@ -6,12 +6,16 @@
 
 import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { isAuthenticated } from '../utils/auth';
+import { isAuthenticated, isNewUser, clearNewUser } from '../utils/auth';
 import { getGoogleAuthUrl } from '../utils/api';
 
 export default function Login() {
   // Fast-path: user already has a session (e.g. came back from OAuth)
   if (isAuthenticated()) {
+    if (isNewUser()) {
+      clearNewUser();
+      return <Navigate to="/profile/setup" replace />;
+    }
     return <Navigate to="/home" replace />;
   }
 

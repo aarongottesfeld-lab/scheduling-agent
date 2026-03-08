@@ -234,8 +234,19 @@ app.get('/auth/google/callback', async (req, res) => {
 
     // NOTE: passing sessionKey in URL is acceptable for an SPA dev flow.
     // In production prefer an HTTP-only cookie (requires cookie-parser + sameSite config).
+    // Check if this is a brand-new user (no username set yet) → trigger onboarding
+    const { data: freshProfile } = await supabase
+      .from('profiles')
+      .select('username')
+      .eq('id', supabaseId)
+      .single();
+    const isNew = !freshProfile?.username;
+
+    // Also pass picture so NavBar can show avatar immediately without extra fetch
+    const pictureParam = profile.picture ? `&picture=${encodeURIComponent(profile.picture)}` : '';
+    const newParam     = isNew ? '&new=1' : '';
     res.redirect(
-      `${CLIENT_URL}?userId=${sessionKey}&name=${encodeURIComponent(profile.name || '')}`
+      `${CLIENT_URL}?userId=${sessionKey}&name=${encodeURIComponent(profile.name || '')}${pictureParam}${newParam}`
     );
   } catch (err) {
     console.error('OAuth callback error:', err.message);
@@ -398,13 +409,15 @@ if (!IS_PROD) {
     }
     const { data: profile } = await supabase
       .from('profiles')
-      .select('full_name')
+      .select('full_name, avatar_url')
       .eq('id', userId)
       .single();
     const name = profile?.full_name || req.params.username;
     // For dev users: session key = supabase UUID (same value, no indirection needed)
-    userSessions.set(userId, { supabaseId: userId, name, email: null, tokens: null, picture: null });
-    res.redirect(`${CLIENT_URL}?userId=${userId}&name=${encodeURIComponent(name)}`);
+    const avatarUrl = profile?.avatar_url || null;
+    userSessions.set(userId, { supabaseId: userId, name, email: null, tokens: null, picture: avatarUrl });
+    const picParam = avatarUrl ? `&picture=${encodeURIComponent(avatarUrl)}` : '';
+    res.redirect(`${CLIENT_URL}?userId=${userId}&name=${encodeURIComponent(name)}${picParam}`);
   });
 
   app.get('/dev/users', (req, res) => {

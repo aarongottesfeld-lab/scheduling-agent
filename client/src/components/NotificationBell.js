@@ -126,6 +126,11 @@ export default function NotificationBell() {
               ))}
             </ul>
           )}
+          <div className="notif-panel__footer">
+            <button className="notif-panel__see-all" onClick={() => { setOpen(false); navigate('/notifications'); }}>
+              See all notifications
+            </button>
+          </div>
         </div>
       )}
     </div>

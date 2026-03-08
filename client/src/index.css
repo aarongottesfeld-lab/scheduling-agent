@@ -855,10 +855,10 @@ textarea.form-control { resize: vertical; min-height: 88px; }
   top: calc(100% + 10px);
   right: 0;
   width: 340px;
-  background: var(--surface-1);
+  background: #ffffff;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 8px 32px rgba(0,0,0,.14), 0 2px 8px rgba(0,0,0,.08);
   z-index: 200;
   overflow: hidden;
   animation: fadeIn .12s ease;
@@ -931,6 +931,25 @@ textarea.form-control { resize: vertical; min-height: 88px; }
   flex-shrink: 0;
   margin-top: 5px;
 }
+
+.notif-panel__footer {
+  border-top: 1px solid var(--border);
+  background: #ffffff;
+}
+.notif-panel__see-all {
+  display: block;
+  width: 100%;
+  padding: 11px 16px;
+  background: none;
+  border: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--brand);
+  cursor: pointer;
+  text-align: center;
+  transition: background .1s;
+}
+.notif-panel__see-all:hover { background: var(--surface-2); }
 
 /* ── Avatar upload ───────────────────────────────────────────── */
 .avatar-upload-wrap {

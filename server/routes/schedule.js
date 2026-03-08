@@ -219,7 +219,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       suggestions = parsed.suggestions || [];
     } catch (e) {
       console.error('Claude suggestion error:', e.message, e.stack?.split('\n')[1]);
-      return res.status(500).json({ error: `Suggestion failed: ${e.message}` });
+      // Never expose internal API errors (billing, keys, etc.) to the client
+      return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
     }
 
     // Persist itinerary
@@ -387,7 +388,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       const raw = msg.content[0]?.text || '{}';
       suggestions = JSON.parse(raw.replace(/```json|```/g, '').trim()).suggestions || [];
     } catch (e) {
-      return res.status(500).json({ error: 'Could not generate new suggestions.' });
+      console.error('Claude reroll error:', e.message);
+      return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
 
     const { data: updated } = await supabase.from('itineraries')

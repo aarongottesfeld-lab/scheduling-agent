@@ -1,5 +1,5 @@
 // NewEvent.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { getSuggestions } from '../utils/api';
@@ -63,6 +63,19 @@ export default function NewEvent() {
   const [friendQuery,     setFriendQuery]     = useState('');
   const [friendResults,   setFriendResults]   = useState([]);
   const [selectedFriend,  setSelectedFriend]  = useState(null);
+  const friendDropRef = useRef(null);
+
+  // Close friend dropdown on outside click
+  useEffect(() => {
+    if (!friendResults.length) return;
+    function handleClickOutside(e) {
+      if (friendDropRef.current && !friendDropRef.current.contains(e.target)) {
+        setFriendResults([]);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [friendResults.length]);
 
   const [startDate,    setStartDate]    = useState(today());
   const [endDate,      setEndDate]      = useState('');
@@ -184,7 +197,7 @@ export default function NewEvent() {
                   <button type="button" className="btn btn--ghost btn--sm" onClick={() => setSelectedFriend(null)}>Change</button>
                 </div>
               ) : (
-                <div style={{ position: 'relative' }}>
+                <div style={{ position: 'relative' }} ref={friendDropRef}>
                   <input type="text" className="form-control" value={friendQuery}
                     onChange={(e) => setFriendQuery(e.target.value)}
                     onFocus={() => { if (!friendQuery) setFriendResults(allFriends); }}
