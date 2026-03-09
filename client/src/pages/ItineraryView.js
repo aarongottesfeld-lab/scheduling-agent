@@ -14,13 +14,11 @@ import client from '../utils/client';
 /* ── Helpers ────────────────────────────────────────────────── */
 function formatDateTime(dateStr, timeStr) {
   if (!dateStr) return '';
-  const parts = [dateStr, timeStr].filter(Boolean).join('T');
-  const d = new Date(parts);
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
   if (isNaN(d)) return dateStr;
-  return d.toLocaleString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric',
-    hour: 'numeric', minute: '2-digit',
-  });
+  const datePart = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  return timeStr ? `${datePart} at ${timeStr}` : datePart;
 }
 
 function formatTimestamp(ts) {
@@ -33,13 +31,46 @@ function formatTimestamp(ts) {
 }
 
 function buildGCalUrl(suggestion, itinerary) {
-  const start = [suggestion.date, suggestion.time].filter(Boolean).join('T').replace(/[-:]/g, '');
+  // Title: e.g. "Bowling with Jamie" using first venue or activity type
+  const venueName = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
+  const otherFirst = (itinerary?.attendee?.full_name || itinerary?.organizer?.full_name || '').split(' ')[0] || 'Friend';
+  const title = `${venueName} with ${otherFirst}`;
+
+  // Location: first venue address, fall back to neighborhood
+  const location = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
+
+  // Description: narrative + venue list
+  const venueLines = (suggestion.venues || []).map(v => `${v.name}${v.address ? ' — ' + v.address : ''}`).join('\n');
+  const details = [suggestion.narrative, venueLines ? '\nStops:\n' + venueLines : ''].filter(Boolean).join('\n\n');
+
+  // Dates: GCal needs YYYYMMDDTHHmmss format
+  function toGCalDate(dateStr, timeStr) {
+    if (!dateStr) return '';
+    const [y, m, d] = dateStr.split('-');
+    if (!timeStr) return `${y}${m}${d}`;
+    // parse "7:00 PM" style
+    const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!match) return `${y}${m}${d}`;
+    let h = parseInt(match[1]);
+    const min = match[2];
+    const ampm = match[3].toUpperCase();
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    const hh = String(h).padStart(2, '0');
+    const durMins = suggestion.durationMinutes || 120;
+    const endMs = new Date(`${dateStr}T${hh}:${min}:00`).getTime() + durMins * 60000;
+    const end = new Date(endMs);
+    const endStr = `${end.getFullYear()}${String(end.getMonth()+1).padStart(2,'0')}${String(end.getDate()).padStart(2,'0')}T${String(end.getHours()).padStart(2,'0')}${String(end.getMinutes()).padStart(2,'0')}00`;
+    return `${y}${m}${d}T${hh}${min}00/${endStr}`;
+  }
+
+  const dates = toGCalDate(suggestion.date, suggestion.time);
   const params = new URLSearchParams({
     action: 'TEMPLATE',
-    text:   `${suggestion.activityType || 'Event'} with ${itinerary?.attendee?.name || ''}`,
-    details: suggestion.narrative || '',
-    location: suggestion.neighborhood || '',
-    ...(start ? { dates: `${start}/${start}` } : {}),
+    text: title,
+    details,
+    location,
+    ...(dates ? { dates } : {}),
   });
   return `https://calendar.google.com/calendar/render?${params}`;
 }
@@ -85,15 +116,27 @@ function RerollModal({ initialContext, onClose, onSubmit, loading }) {
 }
 
 /* ── Suggestion Card ────────────────────────────────────────── */
-function SuggestionCard({ suggestion, isConfirmed, role, status, onConfirm, onSend, onAccept, onDecline, onReroll, submitting }) {
-  const isOrganizer   = role === 'organizer';
-  const isAttendee    = role === 'attendee';
-  const notSentYet    = status === 'pending';
-  const awaitingMe    = status === 'sent' && isAttendee;
-  const locked        = status === 'confirmed';
+function SuggestionCard({
+  suggestion, isConfirmed, isPicked, role, status,
+  onConfirm, onAccept, onDecline, onReroll, onPick, onRerollWithFeedback,
+  organizerName, attendeeName, organizerLocation,
+  submitting,
+}) {
+  const [expanded,     setExpanded]     = useState(isConfirmed);
+  const [feedbackText, setFeedbackText] = useState('');
+
+  const isOrganizer = role === 'organizer';
+  const isAttendee  = role === 'attendee';
+  const notSentYet  = status === 'pending';
+  const awaitingMe  = status === 'sent' && isAttendee;
+  const locked      = status === 'confirmed';
+
+  const narrative = suggestion.narrative || '';
+  const truncated = narrative.length > 100 ? narrative.slice(0, 100) + '…' : narrative;
 
   return (
     <div className={`suggestion-card${isConfirmed ? ' suggestion-card--confirmed' : ''}`}>
+      {/* Card header */}
       <div className={`suggestion-card__header${isConfirmed ? ' suggestion-card__header--confirmed' : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
@@ -113,92 +156,240 @@ function SuggestionCard({ suggestion, isConfirmed, role, status, onConfirm, onSe
             ✓ Confirmed plan
           </div>
         )}
+        {isPicked && !isConfirmed && (
+          <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.18)', borderRadius: 6, display: 'inline-block', padding: '2px 10px' }}>
+            ✓ Your pick — waiting on them
+          </div>
+        )}
       </div>
 
       <div className="suggestion-card__body">
-        {/* Rationale */}
-        {suggestion.rationale && (
-          <p className="suggestion-card__rationale">{suggestion.rationale}</p>
+        {/* Always-visible collapsed preview */}
+        {!expanded && narrative && (
+          <p className="suggestion-card__narrative">{truncated}</p>
         )}
-
-        {/* Travel times */}
-        {(suggestion.estimatedTravelA || suggestion.estimatedTravelB || suggestion.travelTime?.organizer || suggestion.travelTime?.attendee) && (
-          <div className="travel-row">
-            {(suggestion.estimatedTravelA || suggestion.travelTime?.organizer) && (
-              <span className="travel-chip">🚗 You: {suggestion.estimatedTravelA || suggestion.travelTime.organizer}</span>
-            )}
-            {(suggestion.estimatedTravelB || suggestion.travelTime?.attendee) && (
-              <span className="travel-chip">🚗 Them: {suggestion.estimatedTravelB || suggestion.travelTime.attendee}</span>
-            )}
-          </div>
-        )}
-
-        {/* Venue suggestions */}
-        {suggestion.venues?.length > 0 && (
-          <div className="venue-chips">
-            {suggestion.venues.map((v, i) => (
-              <span key={i} className="venue-chip">
-                {v.name}
-                {v.rating != null && (
-                  <span className="venue-chip__rating">★ {v.rating}</span>
-                )}
+        {!expanded && suggestion.tags?.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+            {suggestion.tags.map((tag, i) => (
+              <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>
+                {tag}
               </span>
             ))}
           </div>
         )}
 
-        {/* Narrative */}
-        {suggestion.narrative && (
-          <p className="suggestion-card__narrative">{suggestion.narrative}</p>
-        )}
+        {/* Toggle button — always visible */}
+        <button
+          className="btn btn--ghost btn--sm"
+          style={{ marginTop: 10, padding: '4px 0', fontSize: '0.82rem' }}
+          onClick={() => setExpanded(e => !e)}
+        >
+          {expanded ? 'Collapse ↑' : 'See details & route ↓'}
+        </button>
+
+        {/* Animated expandable section */}
+        <div style={{
+          overflow: 'hidden',
+          maxHeight: expanded ? '2000px' : '0',
+          opacity: expanded ? 1 : 0,
+          transition: 'max-height 0.3s ease, opacity 0.3s ease',
+        }}>
+          {/* Full narrative */}
+          {narrative && (
+            <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>
+          )}
+
+          {/* Venues */}
+          {suggestion.venues?.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+              {suggestion.venues.map((v, i) => (
+                <div key={i}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <a
+                      href={`https://maps.google.com/?q=${encodeURIComponent(v.address || v.name)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}
+                    >
+                      {v.name}
+                    </a>
+                    {v.type && (
+                      <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>
+                        {v.type}
+                      </span>
+                    )}
+                  </div>
+                  {v.address && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>
+                      {v.address}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Duration */}
+          {suggestion.durationMinutes > 0 && (
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>
+              ~{Math.round(suggestion.durationMinutes / 60)} hrs
+            </div>
+          )}
+
+          {/* Tags */}
+          {suggestion.tags?.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 10 }}>
+              {suggestion.tags.map((tag, i) => (
+                <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Getting there */}
+          {(() => {
+            const dest   = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
+            const origin = organizerLocation || '';
+            if (!dest) return null;
+            const href = `https://maps.google.com/?saddr=${encodeURIComponent(origin)}&daddr=${encodeURIComponent(dest)}`;
+            return (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                  Getting there
+                </div>
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '8px 0', borderBottom: '1px solid var(--border)',
+                    textDecoration: 'none', color: 'var(--text-1)',
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>🗺️</span>
+                    <span style={{ fontSize: '0.88rem' }}>Open in Google Maps</span>
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--brand)' }}>Open →</span>
+                </a>
+              </div>
+            );
+          })()}
+        </div>
       </div>
 
-      {/* Action buttons */}
-      {!locked && (
-        <div className="suggestion-card__footer">
-          {isOrganizer && notSentYet && (
-            <>
-              <button
-                className="btn btn--primary"
-                onClick={() => onSend()}
-                disabled={submitting}
-              >
-                Send to friend
-              </button>
-              <button
-                className="btn btn--ghost"
-                onClick={onReroll}
-                disabled={submitting}
-              >
-                Re-roll
-              </button>
-            </>
-          )}
-          {isAttendee && awaitingMe && (
-            <>
-              <button
-                className="btn btn--primary"
-                onClick={() => onAccept(suggestion.id)}
-                disabled={submitting}
-              >
-                Accept
-              </button>
-              <button
-                className="btn btn--danger"
-                onClick={() => onDecline(suggestion.id)}
-                disabled={submitting}
-              >
-                Decline
-              </button>
-              <button
-                className="btn btn--ghost"
-                onClick={onReroll}
-                disabled={submitting}
-              >
-                Re-roll with edits
-              </button>
-            </>
-          )}
+      {/* Footer — organizer: pending (not yet sent) */}
+      {isOrganizer && notSentYet && (
+        <div className="suggestion-card__footer" style={{ flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn--primary"
+              onClick={() => onPick(suggestion.id)}
+              disabled={submitting}
+            >
+              Pick this one
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
+              disabled={submitting}
+              title="Keep this activity, find a different time"
+            >
+              🕐 New time
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
+              disabled={submitting}
+              title="Keep this time slot, suggest a different activity"
+            >
+              🎲 New vibe
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+            <input
+              type="text"
+              className="form-control"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              placeholder="e.g. more casual, closer to Brooklyn"
+              style={{ flex: 1 }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && feedbackText.trim()) {
+                  onRerollWithFeedback(suggestion.id, feedbackText);
+                }
+              }}
+            />
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
+              disabled={submitting || !feedbackText.trim()}
+            >
+              Regenerate
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Footer — attendee: awaiting response */}
+      {isAttendee && awaitingMe && (
+        <div className="suggestion-card__footer" style={{ flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn--primary"
+              onClick={() => onAccept(suggestion.id)}
+              disabled={submitting}
+            >
+              Accept
+            </button>
+            <button
+              className="btn btn--danger"
+              onClick={() => onDecline(suggestion.id)}
+              disabled={submitting}
+            >
+              Decline
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
+              disabled={submitting}
+              title="Keep this activity, find a different time"
+            >
+              🕐 New time
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
+              disabled={submitting}
+              title="Keep this time slot, suggest a different activity"
+            >
+              🎲 New vibe
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+            <input
+              type="text"
+              className="form-control"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              placeholder="e.g. more casual, closer to Brooklyn"
+              style={{ flex: 1 }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && feedbackText.trim()) {
+                  onRerollWithFeedback(suggestion.id, feedbackText);
+                }
+              }}
+            />
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
+              disabled={submitting || !feedbackText.trim()}
+            >
+              Regenerate
+            </button>
+          </div>
         </div>
       )}
 
@@ -231,8 +422,9 @@ export default function ItineraryView() {
   const [submitting,  setSubmitting]  = useState(false);
   const [actionErr,   setActionErr]   = useState('');
 
-  const [rerollOpen,  setRerollOpen]  = useState(false);
-  const [rerolling,   setRerolling]   = useState(false);
+  const [rerollOpen,   setRerollOpen]   = useState(false);
+  const [rerolling,    setRerolling]    = useState(false);
+  const [loadingMore,  setLoadingMore]  = useState(false);
 
   const [changeText,  setChangeText]  = useState('');
   const [addingChange,setAddingChange]= useState(false);
@@ -251,18 +443,26 @@ export default function ItineraryView() {
   useEffect(() => { load(); }, [load]);
 
   /* Derived state */
-  const role = itinerary?.organizer_id === myUserId || itinerary?.organizer?.id === myUserId
-    ? 'organizer' : 'attendee';
+  // Use the server-computed isOrganizer flag — the server compares against the
+  // real Supabase UUID, whereas getUserId() returns the session key which is a
+  // different string and would always fail the organizer_id comparison.
+  const role = itinerary?.isOrganizer ? 'organizer' : 'attendee';
   const myStatus    = role === 'organizer' ? itinerary?.organizer_status : itinerary?.attendee_status;
   const otherStatus = role === 'organizer' ? itinerary?.attendee_status  : itinerary?.organizer_status;
-  // Derive overall status
   const locked      = !!itinerary?.locked_at;
+  // 'sent' covers both 'sent' (organizer chose nothing yet) and 'accepted'
+  // (organizer used "Pick this one" which sends+confirms in one step) — in both
+  // cases the ball is in the attendee's court.
   const status      = locked ? 'confirmed'
     : (myStatus === 'declined' || otherStatus === 'declined') ? 'declined'
-    : itinerary?.organizer_status === 'sent' ? 'sent'
+    : (itinerary?.organizer_status === 'sent' || itinerary?.organizer_status === 'accepted') ? 'sent'
     : 'pending';
   const confirmedId = itinerary?.selected_suggestion_id;
   const context     = itinerary?.context_prompt || '';
+
+  const organizerFirst    = (itinerary?.organizer?.full_name || '').split(' ')[0] || 'Organizer';
+  const attendeeFirst     = (itinerary?.attendee?.full_name  || '').split(' ')[0] || 'Friend';
+  const organizerLocation = itinerary?.organizer?.location || '';
 
   /* Actions */
   async function handleSend() {
@@ -271,6 +471,16 @@ export default function ItineraryView() {
       await client.post(`/schedule/itinerary/${itineraryId}/send`);
       await load();
     } catch (err) { setActionErr(err.message || 'Could not send.'); }
+    finally { setSubmitting(false); }
+  }
+
+  async function handlePick(suggestionId) {
+    setSubmitting(true); setActionErr('');
+    try {
+      await client.post(`/schedule/itinerary/${itineraryId}/send`);
+      await client.post('/schedule/confirm', { itineraryId, suggestionId });
+      await load();
+    } catch (err) { setActionErr(err.message || 'Could not pick suggestion.'); }
     finally { setSubmitting(false); }
   }
 
@@ -307,6 +517,33 @@ export default function ItineraryView() {
       }
     } catch (err) { setActionErr(err.message); }
     finally { setRerolling(false); }
+  }
+
+  async function handleRerollWithFeedback(suggestionId, feedback, rerollType = 'both') {
+    setRerolling(true); setActionErr('');
+    try {
+      await client.post(`/schedule/itinerary/${itineraryId}/reroll`, {
+        contextPrompt: context,
+        feedback: feedback || '',
+        replaceSuggestionId: suggestionId,
+        rerollType,
+      });
+      setRerollOpen(false);
+      await load();
+    } catch (err) { setActionErr(err.message); }
+    finally { setRerolling(false); }
+  }
+
+  async function handleShowMore() {
+    setLoadingMore(true); setActionErr('');
+    try {
+      await client.post(`/schedule/itinerary/${itineraryId}/reroll`, {
+        contextPrompt: context,
+        feedback: 'Generate 3 additional different suggestions, different vibes from the existing ones',
+      });
+      await load();
+    } catch (err) { setActionErr(err.message || 'Could not load more options.'); }
+    finally { setLoadingMore(false); }
   }
 
   async function handleSuggestChange() {
@@ -387,6 +624,17 @@ export default function ItineraryView() {
           {actionErr && <div className="alert alert--error">{actionErr}</div>}
 
           {/* Confirmed banner */}
+          {/* Attendee sees this when organizer hasn't sent yet */}
+          {!locked && role === 'attendee' && status === 'pending' && (
+            <div style={{
+              background: 'var(--surface-2)', border: '1px solid var(--border)',
+              borderRadius: 10, padding: '16px 20px', textAlign: 'center',
+              color: 'var(--text-2)', fontSize: '0.92rem', marginBottom: 16,
+            }}>
+              ⏳ Waiting for {organizerFirst} to pick a plan to send you.
+            </div>
+          )}
+
           {locked && (
             <div className="confirmed-banner">
               <span style={{ fontSize: '1.4rem' }}>🎉</span>
@@ -409,15 +657,41 @@ export default function ItineraryView() {
                 key={s.id}
                 suggestion={s}
                 isConfirmed={locked && s.id === confirmedId}
+                isPicked={!locked && role === 'organizer' && s.id === confirmedId}
+                confirmedId={confirmedId}
                 role={role}
                 status={status}
-                onSend={handleSend}
                 onAccept={handleAccept}
                 onDecline={handleDecline}
                 onReroll={() => setRerollOpen(true)}
-                submitting={submitting}
+                onPick={handlePick}
+                onRerollWithFeedback={handleRerollWithFeedback}
+                organizerName={organizerFirst}
+                attendeeName={attendeeFirst}
+                organizerLocation={organizerLocation}
+                submitting={submitting || rerolling}
               />
             ))
+          )}
+
+          {/* Show More options */}
+          {!locked && (itinerary?.reroll_count ?? 0) < 10 && suggestions.length > 0 && (
+            <div style={{ marginTop: 8, textAlign: 'center' }}>
+              {loadingMore ? (
+                <div className="loading" style={{ padding: '12px 0' }}>
+                  <div className="spinner" />
+                  <span style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>Finding more options…</span>
+                </div>
+              ) : (
+                <button
+                  className="btn btn--ghost"
+                  onClick={handleShowMore}
+                  disabled={submitting || rerolling}
+                >
+                  Show more options
+                </button>
+              )}
+            </div>
           )}
 
           {/* Suggest a change (confirmed itineraries) */}

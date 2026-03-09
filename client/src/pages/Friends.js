@@ -1,21 +1,16 @@
 // 6/10 — Friends
-// Search for users, manage incoming friend requests, view accepted friends,
-// and share your profile link.
-
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { searchUserByEmail } from '../utils/api';
 import client from '../utils/client';
 
-/* ── Helpers ────────────────────────────────────────────────── */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
 const APP_URL = process.env.REACT_APP_URL || window.location.origin;
 
-/* ── Component ──────────────────────────────────────────────── */
 export default function Friends() {
   const [query,     setQuery]     = useState('');
   const [results,   setResults]   = useState([]);
@@ -27,10 +22,12 @@ export default function Friends() {
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
 
+  // Inline action errors instead of alert()
+  const [actionErr, setActionErr] = useState('');
+
   const [copied,    setCopied]    = useState(false);
   const [myProfile, setMyProfile] = useState(null);
 
-  /* Load friends + requests + own username */
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -54,7 +51,6 @@ export default function Friends() {
     return () => { mounted = false; };
   }, []);
 
-  /* Search */
   const handleSearch = useCallback(async (e) => {
     e.preventDefault();
     const q = query.trim();
@@ -73,34 +69,32 @@ export default function Friends() {
     }
   }, [query]);
 
-  /* Add friend */
   async function sendRequest(userId) {
+    setActionErr('');
     try {
       await client.post('/friends/request', { targetUserId: userId });
       setResults((prev) => prev.map((u) =>
         u.id === userId ? { ...u, requestSent: true } : u
       ));
     } catch (err) {
-      alert(err.message || 'Could not send friend request.');
+      setActionErr(err.response?.data?.error || err.message || 'Could not send friend request.');
     }
   }
 
-  /* Accept / decline incoming request */
   async function respondToRequest(requestId, accept) {
+    setActionErr('');
     try {
       await client.post(`/friends/requests/${requestId}/${accept ? 'accept' : 'decline'}`);
       setRequests((prev) => prev.filter((r) => r.id !== requestId));
       if (accept) {
-        // Re-fetch friends list after accepting
         const res = await client.get('/friends');
         setFriends(res.data?.friends ?? []);
       }
     } catch (err) {
-      alert(err.message || 'Could not respond to request.');
+      setActionErr(err.response?.data?.error || err.message || 'Could not respond to request.');
     }
   }
 
-  /* Copy profile link */
   async function handleShareProfile() {
     const username = myProfile?.username;
     if (!username) return;
@@ -110,7 +104,6 @@ export default function Friends() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      // Fallback for browsers that block clipboard without interaction
       prompt('Copy your profile link:', url);
     }
   }
@@ -121,7 +114,6 @@ export default function Friends() {
       <main className="page">
         <div className="container">
 
-          {/* Header */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
             <div>
               <h1 className="page-title">Friends</h1>
@@ -139,6 +131,17 @@ export default function Friends() {
           </div>
 
           {error && <div className="alert alert--error">{error}</div>}
+          {actionErr && (
+            <div className="alert alert--error" style={{ marginBottom: 16 }}>
+              {actionErr}
+              <button
+                onClick={() => setActionErr('')}
+                style={{ marginLeft: 12, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* ── Search ──────────────────────────────────── */}
           <section className="section">
@@ -185,10 +188,7 @@ export default function Friends() {
                       ) : user.requestSent ? (
                         <span className="badge badge--gray">Request sent</span>
                       ) : (
-                        <button
-                          className="btn btn--secondary btn--sm"
-                          onClick={() => sendRequest(user.id)}
-                        >
+                        <button className="btn btn--secondary btn--sm" onClick={() => sendRequest(user.id)}>
                           Add
                         </button>
                       )}
@@ -218,18 +218,8 @@ export default function Friends() {
                           <div className="friend-card__sub">@{req.fromUsername}</div>
                         </div>
                         <div className="friend-card__actions">
-                          <button
-                            className="btn btn--success btn--sm"
-                            onClick={() => respondToRequest(req.id, true)}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => respondToRequest(req.id, false)}
-                          >
-                            Decline
-                          </button>
+                          <button className="btn btn--success btn--sm" onClick={() => respondToRequest(req.id, true)}>Accept</button>
+                          <button className="btn btn--ghost btn--sm" onClick={() => respondToRequest(req.id, false)}>Decline</button>
                         </div>
                       </div>
                     ))}
@@ -262,9 +252,7 @@ export default function Friends() {
                           <div className="friend-card__sub">@{f.username}</div>
                         </div>
                         <div className="friend-card__actions">
-                          <Link to={`/friends/${f.id}`} className="btn btn--ghost btn--sm">
-                            View profile
-                          </Link>
+                          <Link to={`/friends/${f.id}`} className="btn btn--ghost btn--sm">View profile</Link>
                         </div>
                       </div>
                     ))}

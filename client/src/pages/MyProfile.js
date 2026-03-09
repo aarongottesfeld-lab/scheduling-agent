@@ -73,6 +73,8 @@ export default function MyProfile() {
   const [editing,  setEditing]  = useState(false);
   const [usernameError, setUsernameError] = useState('');
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [locating,   setLocating]   = useState(false);
+  const [locError,   setLocError]   = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
 
   const [form, setForm] = useState({
@@ -127,7 +129,34 @@ export default function MyProfile() {
     }
   }
 
-  async function handleSave(e) {
+  async function handleUseLocation() {
+    if (!navigator.geolocation) {
+      setLocError('Geolocation is not supported by your browser.');
+      return;
+    }
+    setLocating(true);
+    setLocError('');
+    navigator.geolocation.getCurrentPosition(
+      async ({ coords }) => {
+        try {
+          const res = await client.get('/geocode', {
+            params: { lat: coords.latitude, lng: coords.longitude },
+          });
+          setForm((prev) => ({ ...prev, location: res.data.location || '' }));
+        } catch {
+          setLocError('Could not determine your location. Enter it manually.');
+        } finally {
+          setLocating(false);
+        }
+      },
+      () => {
+        setLocError('Location access denied. Enter your location manually.');
+        setLocating(false);
+      }
+    );
+  }
+
+    async function handleSave(e) {
     e.preventDefault();
     const err = validateUsername(form.username);
     if (err) { setUsernameError(err); return; }
@@ -248,7 +277,27 @@ export default function MyProfile() {
           <div className="form-section-title">Location &amp; timezone</div>
           <div className="form-group">
             <label className="form-label" htmlFor="location">Location</label>
-            <input id="location" type="text" className="form-control" value={form.location} onChange={set('location')} placeholder="City or neighborhood" />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                id="location"
+                type="text"
+                className="form-control"
+                value={form.location}
+                onChange={set('location')}
+                placeholder="City or neighborhood"
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={handleUseLocation}
+                disabled={locating}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {locating ? '…' : '📍 Use my location'}
+              </button>
+            </div>
+            {locError && <div className="form-error" style={{ marginTop: 4 }}>{locError}</div>}
           </div>
           <div className="form-group">
             <label className="form-label" htmlFor="timezone">Timezone</label>

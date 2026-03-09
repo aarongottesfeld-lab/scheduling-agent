@@ -12,6 +12,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
 // Use Haiku in dev (cheap, fast for testing), Sonnet in production (quality suggestions)
 const IS_PROD = process.env.NODE_ENV === 'production';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL
@@ -158,7 +159,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "venues": [
         { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, New York, NY" }
       ],
-      "narrative": "2-3 sentence description of why this works for both people",
+      "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
       "estimatedTravelA": "15 min",
       "estimatedTravelB": "20 min",
       "tags": ["cocktails", "rooftop"]
@@ -172,7 +173,13 @@ Rules:
 - Respect mobility restrictions
 - Spread suggestions across different vibes (e.g. chill, active, social)
 - Use different time windows for each suggestion when possible
-- Keep narrative warm and personal, referencing their shared interests`;
+- Narrative tone: direct and practical, like a friend who knows the city recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.`;
+}
+
+
+async function getProfileName(userId, supabase) {
+  const { data } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
+  return data?.full_name?.split(' ')[0] || 'Someone';
 }
 
 module.exports = function scheduleRouter(app, supabase, requireAuth, userSessions) {
@@ -231,12 +238,17 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const { data: itinerary, error: insertErr } = await supabase
       .from('itineraries')
       .insert({
-        organizer_id:   req.userId,
-        attendee_id:    targetUserId,
+        organizer_id:     req.userId,
+        attendee_id:      targetUserId,
         organizer_status: 'pending',
         attendee_status:  'pending',
-        suggestions:    suggestions,
-        reroll_count:   0,
+        suggestions:      suggestions,
+        reroll_count:     0,
+        date_range_start: start,
+        date_range_end:   end,
+        time_of_day:      timeOfDay?.type || 'any',
+        max_travel_minutes: maxTravelMinutes || null,
+        context_prompt:   contextPrompt || null,
       })
       .select('id')
       .single();
@@ -332,16 +344,40 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     }
 
     const { data: updated } = await supabase.from('itineraries').update(updates).eq('id', itineraryId).select().single();
+
+    // Notify the other person
+    const confirmerName = await getProfileName(req.userId, supabase);
+    const otherForConfirm = isOrganizer ? itin.attendee_id : itin.organizer_id;
+    const confirmMsg = updated?.locked_at
+      ? confirmerName + ' accepted — your plan is locked in! 🎉'
+      : confirmerName + ' accepted a plan. Waiting for the other person to confirm.';
+    await supabase.from('notifications').insert({
+      user_id: otherForConfirm, type: 'itinerary_accepted',
+      title: updated?.locked_at ? 'Plan locked in! 🎉' : confirmerName + ' accepted a plan',
+      body: confirmMsg,
+      action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+    });
+
     res.json({ itinerary: updated, locked: !!updated?.locked_at });
   });
 
   /* ── POST /schedule/itinerary/:id/send ───────────────────── */
   app.post('/schedule/itinerary/:id/send', requireAuth, async (req, res) => {
-    const { data: itin } = await supabase.from('itineraries').select('organizer_id,organizer_status').eq('id', req.params.id).single();
+    const { data: itin } = await supabase.from('itineraries').select('organizer_id,attendee_id,organizer_status').eq('id', req.params.id).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can send.' });
 
     await supabase.from('itineraries').update({ organizer_status: 'sent' }).eq('id', req.params.id);
+
+    // Notify attendee
+    const senderName = await getProfileName(req.userId, supabase);
+    await supabase.from('notifications').insert({
+      user_id: itin.attendee_id, type: 'itinerary_invite',
+      title: 'New plan from ' + senderName,
+      body: senderName + ' sent you some plans to review.',
+      action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
+    });
+
     res.json({ ok: true });
   });
 
@@ -353,18 +389,36 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
     const field = itin.organizer_id === req.userId ? 'organizer_status' : 'attendee_status';
     await supabase.from('itineraries').update({ [field]: 'declined' }).eq('id', req.params.id);
+
+    // Notify the other person
+    const otherUserId = itin.organizer_id === req.userId ? itin.attendee_id : itin.organizer_id;
+    const declinerName = await getProfileName(req.userId, supabase);
+    await supabase.from('notifications').insert({
+      user_id: otherUserId, type: 'itinerary_declined',
+      title: declinerName + ' declined the plan',
+      body: declinerName + ' passed on the plans. You can re-roll for new ideas.',
+      action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
+    });
+
     res.json({ ok: true });
   });
 
   /* ── POST /schedule/itinerary/:id/reroll ─────────────────── */
   app.post('/schedule/itinerary/:id/reroll', requireAuth, async (req, res) => {
-    const { data: itin } = await supabase.from('itineraries').select('*').eq('id', req.params.id).single();
+    const itineraryId = req.params.id;
+    const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
     if (itin.locked_at) return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
-    if ((itin.reroll_count || 0) >= 3) return res.status(400).json({ error: 'Max 3 rerolls reached.' });
+    if ((itin.reroll_count || 0) >= 10) return res.status(400).json({ error: 'Max rerolls reached.' });
 
-    const { contextPrompt, feedback } = req.body;
+    const { contextPrompt, feedback, replaceSuggestionId, rerollType = 'both' } = req.body;
+    if (contextPrompt && typeof contextPrompt === 'string' && contextPrompt.length > MAX_CONTEXT) {
+      return res.status(400).json({ error: `contextPrompt must be ${MAX_CONTEXT} characters or fewer.` });
+    }
+    if (feedback && typeof feedback === 'string' && feedback.length > MAX_CONTEXT) {
+      return res.status(400).json({ error: `feedback must be ${MAX_CONTEXT} characters or fewer.` });
+    }
 
     const [profileARes, profileBRes] = await Promise.all([
       supabase.from('profiles').select('id,full_name,location,activity_preferences,dietary_restrictions,mobility_restrictions').eq('id', itin.organizer_id).single(),
@@ -374,32 +428,81 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const userA = profileARes.data || {};
     const userB = profileBRes.data || {};
 
+    // Single-card reroll: ask Claude for 1 replacement; full reroll: ask for 3
+    const isSingleCard = !!replaceSuggestionId;
+    const targetSuggestion = isSingleCard
+      ? (itin.suggestions || []).find(s => s.id === replaceSuggestionId)
+      : null;
+    const existingTitles = (itin.suggestions || [])
+      .filter(s => s.id !== replaceSuggestionId)
+      .map(s => s.title).filter(Boolean);
+    const rerollInstructions = {
+      timing: `Keep the same activity concept and venues as "${targetSuggestion?.title || 'this option'}". Only change the date and time — find a different time slot. Do not change the venues, activity type, or narrative theme.`,
+      activity: `Keep the same date and time as "${targetSuggestion?.title || 'this option'}" (${targetSuggestion?.date || ''} at ${targetSuggestion?.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.`,
+      both: `Replace the option titled "${targetSuggestion?.title || 'unknown'}" with a fresh alternative — different activity and different time.`,
+    };
+    const singleCardNote = isSingleCard
+      ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item.`
+      : '';
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: [],
-      contextPrompt: [contextPrompt, feedback ? `Previous suggestions feedback: ${feedback}` : ''].filter(Boolean).join('. '),
+      contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote].filter(Boolean).join('. '),
       maxTravelMinutes: null,
     });
 
-    let suggestions;
+    let newSuggestions;
     try {
       const msg = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 2000,
+        model: CLAUDE_MODEL, max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
       const raw = msg.content[0]?.text || '{}';
-      suggestions = JSON.parse(raw.replace(/```json|```/g, '').trim()).suggestions || [];
+      newSuggestions = JSON.parse(raw.replace(/```json|```/g, '').trim()).suggestions || [];
     } catch (e) {
       console.error('Claude reroll error:', e.message);
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
 
-    const { data: updated } = await supabase.from('itineraries')
-      .update({ suggestions, reroll_count: (itin.reroll_count || 0) + 1, organizer_status: 'pending', attendee_status: 'pending', selected_suggestion_id: null })
-      .eq('id', req.params.id)
-      .select().single();
+    // Single-card: swap only the targeted card, preserve the rest
+    let suggestions;
+    if (isSingleCard && newSuggestions.length > 0) {
+      const replacement = { ...newSuggestions[0], id: replaceSuggestionId };
+      suggestions = (itin.suggestions || []).map(s =>
+        s.id === replaceSuggestionId ? replacement : s
+      );
+    } else {
+      suggestions = newSuggestions;
+    }
+
+    const isOrganizer = itin.organizer_id === req.userId;
+    const otherUserId = isOrganizer ? itin.attendee_id : itin.organizer_id;
+
+    const [{ data: updated }, rollerName] = await Promise.all([
+      supabase.from('itineraries')
+        .update({
+          suggestions,
+          reroll_count: (itin.reroll_count || 0) + 1,
+          // Preserve organizer_status so attendee keeps Accept/Decline buttons after reroll.
+          // Only reset to 'pending' if the organizer themselves rerolled (they need to re-pick).
+          organizer_status: isOrganizer ? 'pending' : itin.organizer_status,
+          attendee_status: 'pending',
+          selected_suggestion_id: null,
+        })
+        .eq('id', itineraryId)
+        .select().single(),
+      getProfileName(req.userId, supabase),
+    ]);
+
+    // Notify the other person
+    await supabase.from('notifications').insert({
+      user_id: otherUserId, type: 'itinerary_reroll',
+      title: rollerName + ' rolled new suggestions',
+      body: rollerName + (isSingleCard ? ' swapped one plan option.' : ' rolled new suggestions for your plan.'),
+      action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+    });
 
     res.json({ itinerary: updated });
   });

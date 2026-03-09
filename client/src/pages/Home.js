@@ -19,13 +19,36 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+/**
+ * Derive a human-readable status from an itinerary row.
+ * isOrganizer = whether the current user is the organizer.
+ */
+function deriveStatus(item) {
+  if (item.locked_at) return 'confirmed';
+  if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return 'declined';
+
+  if (item.isOrganizer) {
+    // Organizer perspective
+    if (item.organizer_status === 'pending') return 'draft';           // not sent yet
+    if (item.attendee_status  === 'pending') return 'awaiting them';   // sent, friend hasn't responded
+    if (item.attendee_status  === 'accepted') return 'they accepted';  // friend accepted, you need to confirm
+  } else {
+    // Attendee perspective
+    if (item.organizer_status === 'sent' && item.attendee_status === 'pending') return 'respond';
+    if (item.attendee_status  === 'accepted') return 'awaiting them';
+  }
+  return 'pending';
+}
+
 function statusBadge(status) {
   const map = {
-    pending:   'badge--amber',
-    sent:      'badge',
-    accepted:  'badge--green',
-    declined:  'badge--red',
-    confirmed: 'badge--green',
+    confirmed:      'badge--green',
+    declined:       'badge--red',
+    'respond':      'badge--amber',
+    draft:          'badge--gray',
+    'awaiting them':'badge--gray',
+    'they accepted':'badge--amber',
+    pending:        'badge--gray',
   };
   return `badge ${map[status] || 'badge--gray'}`;
 }
@@ -36,16 +59,10 @@ function NudgeCard({ nudge, onDismiss }) {
     <div className="nudge-card">
       <p className="nudge-card__reason">{nudge.reason}</p>
       <div className="nudge-card__actions">
-        <Link
-          to={`/schedule/new?friendId=${nudge.friendId}`}
-          className="btn btn--primary btn--sm"
-        >
+        <Link to={`/schedule/new?friendId=${nudge.friendId}`} className="btn btn--primary btn--sm">
           Let's do it
         </Link>
-        <button
-          className="btn btn--ghost btn--sm"
-          onClick={() => onDismiss(nudge.id)}
-        >
+        <button className="btn btn--ghost btn--sm" onClick={() => onDismiss(nudge.id)}>
           Maybe later
         </button>
       </div>
@@ -58,10 +75,8 @@ function ItineraryCard({ item }) {
   const friendName = item.isOrganizer ? item.attendeeName : item.organizerName;
   const firstSuggestion = item.suggestions?.[0];
   const displayDate = firstSuggestion?.date;
-  const overallStatus = item.locked_at ? 'confirmed'
-    : (item.organizer_status === 'declined' || item.attendee_status === 'declined') ? 'declined'
-    : item.organizer_status === 'sent' ? 'awaiting response'
-    : 'draft';
+  const status = deriveStatus(item);
+
   return (
     <Link to={`/schedule/${item.id}`} className="itinerary-card">
       <div className="avatar avatar--sm">{getInitials(friendName)}</div>
@@ -76,7 +91,7 @@ function ItineraryCard({ item }) {
             </>
           )}
           <span className="itinerary-card__dot" />
-          <span className={statusBadge(overallStatus)}>{overallStatus}</span>
+          <span className={statusBadge(status)}>{status}</span>
         </div>
       </div>
     </Link>
@@ -90,8 +105,7 @@ export default function Home() {
 
   const [nudges,    setNudges]    = useState([]);
   const [friends,   setFriends]   = useState([]);
-  const [waiting,   setWaiting]   = useState([]);
-  const [upcoming,  setUpcoming]  = useState([]);
+  const [allItins,  setAllItins]  = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
 
@@ -100,19 +114,16 @@ export default function Home() {
 
     async function load() {
       try {
-        const [nudgesRes, friendsRes, waitingRes, upcomingRes] = await Promise.allSettled([
+        const [nudgesRes, friendsRes, itinsRes] = await Promise.allSettled([
           client.get('/nudges/pending'),
           client.get('/friends'),
-          client.get('/schedule/itineraries?filter=waiting'),
-          client.get('/schedule/itineraries?filter=upcoming'),
+          client.get('/schedule/itineraries'),
         ]);
 
         if (!mounted) return;
-
-        if (nudgesRes.status === 'fulfilled')   setNudges(nudgesRes.value.data?.nudges   ?? []);
-        if (friendsRes.status === 'fulfilled')  setFriends(friendsRes.value.data?.friends ?? []);
-        if (waitingRes.status === 'fulfilled')  setWaiting(waitingRes.value.data?.itineraries ?? []);
-        if (upcomingRes.status === 'fulfilled') setUpcoming(upcomingRes.value.data?.itineraries ?? []);
+        if (nudgesRes.status === 'fulfilled')  setNudges(nudgesRes.value.data?.nudges   ?? []);
+        if (friendsRes.status === 'fulfilled') setFriends(friendsRes.value.data?.friends ?? []);
+        if (itinsRes.status === 'fulfilled')   setAllItins(itinsRes.value.data?.itineraries ?? []);
       } catch {
         if (mounted) setError('Could not load your dashboard. Please refresh.');
       } finally {
@@ -126,12 +137,27 @@ export default function Home() {
 
   async function dismissNudge(id) {
     setNudges((prev) => prev.filter((n) => n.id !== id));
-    try {
-      await client.post(`/nudges/${id}/dismiss`);
-    } catch {
-      // Best-effort dismiss; silently ignore
-    }
+    try { await client.post(`/nudges/${id}/dismiss`); } catch { /* best-effort */ }
   }
+
+  // Split itineraries into sections client-side so we use one API call
+  const waiting = allItins.filter(i => {
+    if (i.locked_at) return false;
+    if (i.organizer_status === 'declined' || i.attendee_status === 'declined') return false;
+    // "Waiting on you" = you need to take action
+    if (!i.isOrganizer && i.organizer_status === 'sent' && i.attendee_status === 'pending') return true;
+    if (i.isOrganizer && i.attendee_status === 'accepted' && i.organizer_status !== 'accepted') return true;
+    return false;
+  });
+
+  const inProgress = allItins.filter(i => {
+    if (i.locked_at) return false;
+    if (i.organizer_status === 'declined' || i.attendee_status === 'declined') return false;
+    // Active but not waiting on current user
+    return !waiting.includes(i);
+  });
+
+  const upcoming = allItins.filter(i => !!i.locked_at);
 
   const visibleFriends = friends.slice(0, 4);
   const firstName      = (name || '').split(' ')[0] || 'there';
@@ -159,9 +185,7 @@ export default function Home() {
               {/* ── AI Nudges ─────────────────────────────── */}
               {nudges.length > 0 && (
                 <section className="section">
-                  <div className="section-title">
-                    ✨ Suggested plans
-                  </div>
+                  <div className="section-title">✨ Suggested plans</div>
                   <div className="scroll-row" role="list">
                     {nudges.map((n) => (
                       <NudgeCard key={n.id} nudge={n} onDismiss={dismissNudge} />
@@ -172,10 +196,7 @@ export default function Home() {
 
               {/* ── New event CTA ─────────────────────────── */}
               <div style={{ marginBottom: 28 }}>
-                <button
-                  className="btn btn--primary"
-                  onClick={() => navigate('/schedule/new')}
-                >
+                <button className="btn btn--primary" onClick={() => navigate('/schedule/new')}>
                   + New Event
                 </button>
               </div>
@@ -189,11 +210,7 @@ export default function Home() {
                   </div>
                   <div className="friends-preview">
                     {visibleFriends.map((f) => (
-                      <Link
-                        key={f.id}
-                        to={`/friends/${f.id}`}
-                        className="friend-mini"
-                      >
+                      <Link key={f.id} to={`/friends/${f.id}`} className="friend-mini">
                         <div className="avatar">{getInitials(f.name)}</div>
                         <span className="friend-mini__name">{f.name.split(' ')[0]}</span>
                       </Link>
@@ -206,9 +223,15 @@ export default function Home() {
               {waiting.length > 0 && (
                 <section className="section">
                   <div className="section-title">Waiting on you</div>
-                  {waiting.map((item) => (
-                    <ItineraryCard key={item.id} item={item} />
-                  ))}
+                  {waiting.map((item) => <ItineraryCard key={item.id} item={item} />)}
+                </section>
+              )}
+
+              {/* ── In progress ───────────────────────────── */}
+              {inProgress.length > 0 && (
+                <section className="section">
+                  <div className="section-title">In progress</div>
+                  {inProgress.map((item) => <ItineraryCard key={item.id} item={item} />)}
                 </section>
               )}
 
@@ -216,21 +239,17 @@ export default function Home() {
               {upcoming.length > 0 && (
                 <section className="section">
                   <div className="section-title">Upcoming</div>
-                  {upcoming.map((item) => (
-                    <ItineraryCard key={item.id} item={item} />
-                  ))}
+                  {upcoming.map((item) => <ItineraryCard key={item.id} item={item} />)}
                 </section>
               )}
 
               {/* Empty state */}
-              {!nudges.length && !waiting.length && !upcoming.length && friends.length === 0 && (
+              {!nudges.length && !waiting.length && !inProgress.length && !upcoming.length && friends.length === 0 && (
                 <div className="card card-pad">
                   <div className="empty-state">
                     <div className="empty-state__icon">📅</div>
                     <div className="empty-state__title">Your schedule is wide open</div>
-                    <p className="empty-state__text">
-                      Add friends and create your first event to get started.
-                    </p>
+                    <p className="empty-state__text">Add friends and create your first event to get started.</p>
                     <div style={{ marginTop: 20, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
                       <Link to="/friends" className="btn btn--secondary">Add Friends</Link>
                       <button className="btn btn--primary" onClick={() => navigate('/schedule/new')}>New Event</button>
