@@ -280,7 +280,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt } = req.body;
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle } = req.body;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     const today = new Date().toISOString().split('T')[0];
@@ -343,6 +343,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
         time_of_day:      timeOfDay?.type || 'any',
         max_travel_minutes: maxTravelMinutes || null,
         context_prompt:   contextPrompt || null,
+        event_title:      eventTitle?.trim() || null,
       })
       .select('id')
       .single();
@@ -574,8 +575,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item.`
       : '';
 
-    // Rebuild free windows from the original date range so reroll respects bounds
-    const rerollStart = itin.date_range_start || new Date().toISOString().split('T')[0];
+    // Rebuild free windows from the original date range so reroll respects bounds.
+    // Also clamp start to today — no point generating windows in the past.
+    const todayStr   = new Date().toISOString().split('T')[0];
+    const rawStart   = itin.date_range_start || todayStr;
+    const rerollStart = rawStart < todayStr ? todayStr : rawStart;
     const rerollEnd   = itin.date_range_end   || (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().split('T')[0]; })();
     const rerollStartISO = new Date(rerollStart + 'T00:00:00').toISOString();
     const rerollEndISO   = new Date(rerollEnd   + 'T23:59:59').toISOString();
@@ -648,6 +652,25 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     });
 
     res.json({ itinerary: updated });
+  });
+
+  /* ── PATCH /schedule/itinerary/:id/title ─────────────────── */
+  app.patch('/schedule/itinerary/:id/title', requireAuth, async (req, res) => {
+    const { eventTitle } = req.body;
+    if (eventTitle !== null && eventTitle !== undefined && typeof eventTitle !== 'string') {
+      return res.status(400).json({ error: 'eventTitle must be a string or null.' });
+    }
+    const trimmed = typeof eventTitle === 'string' ? eventTitle.trim().slice(0, 80) : null;
+
+    const { data: itin } = await supabase.from('itineraries').select('organizer_id,attendee_id').eq('id', req.params.id).single();
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    const { error } = await supabase.from('itineraries').update({ event_title: trimmed || null }).eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: 'Could not update title.' });
+    res.json({ ok: true });
   });
 
   /* ── POST /schedule/itinerary/:id/changelog ──────────────── */

@@ -84,6 +84,7 @@ export default function NewEvent() {
   const [customWindow, setCustomWindow] = useState('30');
   const [maxTravel,    setMaxTravel]    = useState('30');
   const [context,      setContext]      = useState('');
+  const [eventTitle,   setEventTitle]   = useState('');
   const [generating,   setGenerating]   = useState(false);
   const [error,        setError]        = useState('');
 
@@ -147,6 +148,7 @@ export default function NewEvent() {
         timeOfDay: timePayload,
         maxTravelMinutes: maxTravel || null,
         contextPrompt: context,
+        eventTitle: eventTitle.trim() || null,
       });
       const itineraryId = data?.itineraryId || data?.id;
       if (!itineraryId) throw new Error('No itinerary ID returned from server.');
@@ -281,6 +283,23 @@ export default function NewEvent() {
               <select id="max-travel" className="form-control" value={maxTravel} onChange={(e) => setMaxTravel(e.target.value)}>
                 {TRAVEL_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
               </select>
+            </div>
+
+            {/* ── Event title ──────────────────────────── */}
+            <div className="form-group">
+              <label className="form-label" htmlFor="event-title">
+                Event title <span className="optional">optional</span>
+              </label>
+              <input
+                id="event-title"
+                type="text"
+                className="form-control"
+                value={eventTitle}
+                onChange={(e) => setEventTitle(e.target.value)}
+                placeholder={selectedFriend ? `e.g. "Golf with ${selectedFriend.name.split(' ')[0]}", "Morgan's birthday dinner"` : 'Give this event a name…'}
+                maxLength={80}
+              />
+              <p className="form-hint">Shows up in your plans list so you can tell them apart at a glance.</p>
             </div>
 
             {/* ── Context prompt ────────────────────────── */}

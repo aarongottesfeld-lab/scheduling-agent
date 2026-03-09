@@ -396,25 +396,18 @@ function SuggestionCard({
       {/* Confirmed actions */}
       {locked && isConfirmed && (
         <div className="suggestion-card__footer">
-          {calendarEventId ? (
-            <a
-              href={`https://calendar.google.com/calendar/r/eventedit/${calendarEventId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn--secondary"
-            >
-              📅 View in Google Calendar
-            </a>
-          ) : (
-            <a
-              href={buildGCalUrl(suggestion, itinerary)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn--secondary"
-            >
-              📅 Add to Calendar
-            </a>
-          )}
+          {/* Always use the template URL — the eventedit/{id} pattern triggers a
+               500 because Google requires full event context, not a bare event ID.
+               buildGCalUrl opens GCal pre-filled with all details which works
+               reliably regardless of whether a calendar event was auto-created. */}
+          <a
+            href={buildGCalUrl(suggestion, itinerary)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn--secondary"
+          >
+            📅 {calendarEventId ? 'View in Google Calendar' : 'Add to Calendar'}
+          </a>
         </div>
       )}
     </div>
@@ -439,6 +432,8 @@ export default function ItineraryView() {
 
   const [changeText,  setChangeText]  = useState('');
   const [addingChange,setAddingChange]= useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft,   setTitleDraft]   = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -569,6 +564,17 @@ export default function ItineraryView() {
     finally { setAddingChange(false); }
   }
 
+  async function handleSaveTitle() {
+    const title = titleDraft.trim();
+    setSubmitting(true); setActionErr('');
+    try {
+      await client.patch(`/schedule/itinerary/${itineraryId}/title`, { eventTitle: title || null });
+      setEditingTitle(false);
+      await load();
+    } catch (err) { setActionErr(err.message || 'Could not save title.'); }
+    finally { setSubmitting(false); }
+  }
+
   /* ── Render ──────────────────────────────────────────────── */
 
   if (loading) {
@@ -618,9 +624,31 @@ export default function ItineraryView() {
               >
                 ← Home
               </button>
-              <h1 className="page-title" style={{ marginBottom: 4 }}>
-                Plans with {otherName.split(' ')[0]}
-              </h1>
+              {editingTitle ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                  <input
+                    className="form-control"
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') setEditingTitle(false); }}
+                    maxLength={80}
+                    autoFocus
+                    style={{ fontSize: '1.25rem', fontWeight: 700, padding: '4px 10px' }}
+                  />
+                  <button className="btn btn--primary btn--sm" onClick={handleSaveTitle} disabled={submitting}>Save</button>
+                  <button className="btn btn--ghost btn--sm" onClick={() => setEditingTitle(false)}>Cancel</button>
+                </div>
+              ) : (
+                <h1
+                  className="page-title"
+                  style={{ marginBottom: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
+                  title="Click to rename"
+                  onClick={() => { setTitleDraft(itinerary.event_title || ('Plans with ' + otherName.split(' ')[0])); setEditingTitle(true); }}
+                >
+                  {itinerary.event_title || ('Plans with ' + otherName.split(' ')[0])}
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-3)', fontWeight: 400 }}>✏️</span>
+                </h1>
+              )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className={`badge${status === 'confirmed' ? ' badge--green' : status === 'declined' ? ' badge--red' : ' badge--amber'}`}>
                   {status}
