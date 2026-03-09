@@ -173,6 +173,9 @@ Rules:
 - Respect mobility restrictions
 - Spread suggestions across different vibes (e.g. chill, active, social)
 - Use different time windows for each suggestion when possible
+- Venue variety: do not default to the most popular or highest-rated spots. NYC has thousands of good options. Mix well-known places with neighborhood spots and less obvious choices. Avoid recommending the same venues repeatedly across sessions.
+- Free and public options are valid and often preferred: parks, public courts, piers, plazas, beaches, trails, free museum nights, open-air markets. If the activity is naturally free (spikeball, frisbee, picnic, running), suggest a specific named park or public space — not a paid venue. Do not bias toward paid experiences.
+- Cost range across suggestions: aim for a mix — at least one low-cost or free option per set of suggestions when the context allows it. Users should not feel like every plan requires spending money.
 - Narrative tone: direct and practical, like a friend who knows the city recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.`;
 }
 
