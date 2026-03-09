@@ -120,7 +120,7 @@ function SuggestionCard({
   suggestion, isConfirmed, isPicked, role, status,
   onConfirm, onAccept, onDecline, onReroll, onPick, onRerollWithFeedback,
   organizerName, attendeeName, organizerLocation,
-  submitting,
+  submitting, itinerary, calendarEventId,
 }) {
   const [expanded,     setExpanded]     = useState(isConfirmed);
   const [feedbackText, setFeedbackText] = useState('');
@@ -396,14 +396,25 @@ function SuggestionCard({
       {/* Confirmed actions */}
       {locked && isConfirmed && (
         <div className="suggestion-card__footer">
-          <a
-            href={buildGCalUrl(suggestion, null)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn--secondary"
-          >
-            📅 Add to Calendar
-          </a>
+          {calendarEventId ? (
+            <a
+              href={`https://calendar.google.com/calendar/r/eventedit/${calendarEventId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn--secondary"
+            >
+              📅 View in Google Calendar
+            </a>
+          ) : (
+            <a
+              href={buildGCalUrl(suggestion, itinerary)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn--secondary"
+            >
+              📅 Add to Calendar
+            </a>
+          )}
         </div>
       )}
     </div>
@@ -658,6 +669,8 @@ export default function ItineraryView() {
                 suggestion={s}
                 isConfirmed={locked && s.id === confirmedId}
                 isPicked={!locked && role === 'organizer' && s.id === confirmedId}
+                calendarEventId={locked && s.id === confirmedId ? (itinerary.calendar_event_id || null) : null}
+                itinerary={itinerary}
                 confirmedId={confirmedId}
                 role={role}
                 status={status}
