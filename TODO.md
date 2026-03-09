@@ -2,106 +2,118 @@
 
 ---
 
-## 🔴 In Progress / Next Up
+## 🔴 Next Up (after current testing pass)
 
-- [ ] **Separate timing vs. activity reroll** — add two buttons per card: "Different time" and "Different vibe". Pass `rerollType: 'timing' | 'activity' | 'both'` to server. Server adjusts Claude prompt accordingly. (DECIDED: build now)
-- [ ] **Iteration loop / turn-based flow** — add `current_turn` field (organizer | attendee) to itineraries. Attendee reroll flips turn back to organizer. Display logic ("waiting on you" vs "waiting on them") driven by current_turn, not just organizer_status.
-- [ ] **Mutual planning mode** — `planning_mode: 'standard' | 'mutual'` checkbox in NewEvent labeled "Open to counterproposals?". In mutual mode: both see all suggestions, both can reroll non-selected cards, both must accept same card to lock.
-- [ ] Google Calendar event creation when itinerary locks (both users get invite)
+- [ ] **Session persistence** — swap in-memory `userSessions` Map for Supabase `sessions` table. Store session token in HTTP-only cookie. `requireAuth` middleware does DB lookup. Unblocks Vercel deploy.
+- [ ] **Vercel deployment** — connect GitHub repo, set env vars, verify all routes
+- [ ] **HTTP referrer restriction** on Google Maps API key (needs live Vercel URL)
+- [ ] **Tighten RLS** — `notifications_service_role_all` currently `USING(true)`, fix before deploy
+- [ ] **Switch OAuth handoff** from URL params to HTTP-only cookies
 
 ---
 
-## 🟡 Feature Development
+## 🟡 Feature Backlog (prioritized)
+
+### Group Planning
+> One organizer, N participants. Everyone sees the same suggestion set. Decision mode set at creation.
+- [ ] DB: add `itinerary_participants` table (id, itinerary_id, user_id, role, status, voted_for, joined_at, responded_at)
+- [ ] DB: add to `itineraries`: group_size, decision_mode (organizer_picks | majority_vote | unanimous), vote_deadline, voting_closed_at
+- [ ] NewEvent: multi-friend selector (up to 6)
+- [ ] NewEvent: decision mode radio cards — "Organizer picks" / "Majority vote" / "Everyone must agree"
+- [ ] NewEvent: vote-by deadline picker (shown for vote/unanimous modes)
+- [ ] Suggestion engine: support N user profiles in prompt
+- [ ] ItineraryView — organizer_picks mode: identical to 1:1, only organizer's pick triggers lock
+- [ ] ItineraryView — majority_vote mode: live vote tally per card, "Vote for this" button, organizer can close early, deadline countdown badge
+- [ ] ItineraryView — unanimous mode: per-person accept/decline chips per card, locks when all green, any decline reopens for reroll
+- [ ] Reroll in group context: any participant can propose reroll on non-winning card; vote mode resets votes; unanimous mode resets all statuses on that card
+- [ ] Notifications: batched responses (don't ping organizer once per person), deadline reminders to non-responders only, unresolved flag on deadline pass
+
+### Turn-based Iteration + Mutual Planning
+- [ ] Add `current_turn` field (organizer | attendee) to itineraries
+- [ ] Attendee reroll flips turn back to organizer
+- [ ] `planning_mode: 'standard' | 'mutual'` checkbox in NewEvent ("Open to counterproposals?")
+- [ ] Mutual mode: both see all suggestions, both can reroll non-selected cards, both must accept same card to lock
 
 ### Cost Estimates
-- [ ] Add `cost` object to suggestion JSON schema: `{ min, max, per_person, currency, notes, breakdown: [] }`
-- [ ] Each venue gets a per-person estimate (sourced from Claude knowledge of venue type/tier, Maps data, ticket APIs)
-- [ ] Display cost range per card: "~$40–65/person" with expandable breakdown
+- [ ] Add `cost` object to suggestion schema: `{ min, max, per_person, currency, notes, breakdown: [] }`
+- [ ] Per-venue cost estimate (Claude knowledge of venue tier + Maps data)
+- [ ] Display "~$40–65/person" range on cards with expandable breakdown
 - [ ] Mark all costs as estimated — no false precision
-- [ ] **Trip mode costs**: when destination is outside user's city, add flight/train estimates (use Google Flights deep link + rough range), lodging estimates (Google Hotels / Booking.com API)
-- [ ] Trip mode trigger: detect when itinerary neighborhood/destination is not in user's metro area
-
-### Recommendation Quality
-- [ ] **Variety injection in prompt** — current prompt pulls whatever Claude knows about popular spots. Add explicit instruction: "Include a mix of well-known venues, neighborhood gems, and unexpected options. Avoid defaulting to the most-reviewed spots on Google Maps. NYC has thousands of good options — don't weight toward highest-rated."
-- [ ] **Session-level feedback loop** — pass declined suggestion titles and reroll feedback into subsequent Claude calls as context. Already partially wired via edit_history — make it explicit.
-- [ ] **Cross-session learning** — on itinerary lock, background job updates both users' activity_clusters with accepted activity types/venues. Pull clusters at suggestion time and weight Claude prompt. (activity_clusters table already exists)
-- [ ] Activity cluster caching — avoid re-clustering on every request
-
-### Scheduling UI
-- [ ] Validate `itineraryId` URL param before API calls in ItineraryView.js
-
-### AI / Intelligence
-- [ ] **Instruction override logic** — explicit activity in user prompt anchors the suggestion (overrides profile interests). Profile interests used only for adjacent planning.
-- [ ] **Prompt intent classification** — distinguish: local hangout / day trip / overnight trip. Drives venue lookup vs. destination + lodging format.
-- [ ] **Trip mode suggestions** — when prompt implies multi-day or travel, switch to destination + course/lodging/itinerary format
-- [ ] Nudge generation logic — scan both users' calendars, call Claude, insert into nudges table
-
-### Google Calendar
-- [ ] Calendar write on itinerary lock — create event for both users
-- [ ] Calendar privacy: already correct — fetchBusy uses freebusy.query (free/busy only, no event details). Document this.
-
----
-
-## 🗺️ Roadmap
+- [ ] Trip mode: detect when destination is outside user's metro, add flight/train/lodging estimates
 
 ### MCP Server
-> Build after core app is fully tested. End state: user says "Bobby and I want to go on a golf trip" → Claude responds with destination recommendations, how to get there, cost breakdown, surrounding activities, and option to create calendar invite with all details.
-
+> End state: "Bobby and I want to go on a golf trip" → destinations, logistics, cost breakdown, calendar invite.
 - [ ] MCP server — thin auth wrapper around existing API endpoints
-- [ ] Tool: `resolve_friend(name)` — fuzzy first-name match → UUID. "Bobby" → Robert Chen
-- [ ] Tool: `create_itinerary_proposal(friend, activity, date_range, context)`
-- [ ] Tool: `list_pending_itineraries()` — "what plans do I have pending?"
-- [ ] Tool: `get_itinerary(id)` — fetch status + suggestions
+- [ ] Tool: `resolve_friend(name)` — fuzzy first-name match → UUID
+- [ ] Tool: `create_itinerary_proposal(friend_ids, activity, date_range, context)`
+- [ ] Tool: `list_pending_itineraries()`
+- [ ] Tool: `get_itinerary(id)`
 - [ ] Tool: `accept_itinerary(id)` / `decline_itinerary(id)`
-- [ ] Tool: `get_cost_estimate(destination, activity, party_size, dates)` — surfaces before committing
-- [ ] Tool: `book_or_deeplink(venue, party_size, datetime)` — Resy/GolfNow native or deep link fallback
-- [ ] `conversation_context` parameter — Claude populates with relevant session context before calling tools. Injected into suggestion engine alongside structured profile data.
-- [ ] **Context priority ordering**: explicit instruction > conversation context > shared profile interests > individual profile interests
-- [ ] Profile update prompting — when Claude infers something meaningful from conversation, surface "want to save this to your Rendezvous profile?"
+- [ ] Tool: `get_cost_estimate(destination, activity, party_size, dates)`
+- [ ] Tool: `book_or_deeplink(venue, party_size, datetime)`
+- [ ] `conversation_context` param — injected alongside structured profile data
+- [ ] Context priority: explicit instruction > conversation context > shared interests > individual interests
+- [ ] Profile update prompting — surface "save this to your profile?" when Claude infers preferences
 - [ ] MCP auth — token-based, scoped per user, revocable
 - [ ] Register with Claude.ai as available MCP connector
+- [ ] Prompt-triggered agent — "set up plans with Jamie" → tools called in sequence → itinerary proposed
 
-- [ ] **Always-on agent** — background process (Supabase Edge Functions or cron) that: monitors nudge expiry, detects when friends haven't made plans, watches for calendar gaps, proactively surfaces suggestions. Writes to notifications table silently or interrupts user depending on threshold. nudges table already designed for this.
-- [ ] **Prompt-triggered agent** — single conversation turn: user says "set up plans with Jamie for next weekend" → MCP tools called in sequence → itinerary proposed without opening the app
-- [ ] Both agent modes share same MCP server/tools — different consumers, same interface
+### Calendar Attendee Sync
+> Build after group planning — requires itinerary_participants table.
+- [ ] Manual "Sync attendees from calendar" button on locked itinerary
+- [ ] Fetch current attendee list via `events.get` using organizer's stored OAuth token
+- [ ] Diff against itinerary_participants, surface Rendezvous profile matches
+- [ ] Organizer one-click "Add to itinerary" — sends normal participant invite flow
+- [ ] Non-Rendezvous attendees: show "Invite to Rendezvous" prompt (acquisition moment)
+- [ ] Privacy: never silently add anyone — always organizer-initiated
+- [ ] v2: `calendar.events.watch` webhook (requires Vercel URL + renewal logic, max 7-day channels)
+
+### Apple Calendar + Other Providers (paired with React Native migration)
+- [ ] PWA → React Native migration (unlocks EventKit on iOS)
+- [ ] Apple Calendar via EventKit (iOS native only — not available in PWA/web)
+- [ ] iCloud CalDAV fallback for web (app-specific passwords — evaluate UX tradeoff)
+- [ ] Outlook / Microsoft 365 Calendar (Graph API — similar OAuth flow to Google)
+- [ ] Onboarding copy: "Google Calendar supported, Apple Calendar coming soon" in the interim
 
 ### Booking Integrations
-- [ ] **Resy / OpenTable** — check availability, book or deep link
-- [ ] **GolfNow** — tee time booking. "Bethpage Black has a 9am Saturday, want me to book for 2?"
-- [ ] **Deep link fallback** — Fever, Eventbrite, Tock, ClassPass
-- [ ] **Booking confirmation back-sync** — user confirms booking → triggers calendar write
-- [ ] **Trip mode: lodging** — Google Hotels or Booking.com API
+- [ ] Resy / OpenTable — check availability, book or deep link
+- [ ] GolfNow — tee time booking
+- [ ] Deep link fallback — Fever, Eventbrite, Tock, ClassPass
+- [ ] Booking confirmation back-sync → triggers calendar write
+- [ ] Trip mode: lodging — Google Hotels or Booking.com API
 
-### Notifications
-- [ ] Push notifications (PWA web push) — needed to close MCP loop. Bobby gets notified, responds, itinerary locks without opening app.
-- [ ] Email fallback for notifications
-
-### Other
-- [ ] **SeatGeek** — live events (Knicks, Yankees, Broadway, concerts)
-- [ ] **Group scheduling** — 3–5 people
-- [ ] **Recurring events** — "monthly dinner club"
-- [ ] Apple Calendar support
+### Always-On Agent
+> Build last — most powerful when calendar integrations + group planning + booking are all in place.
+- [ ] Background process (Supabase Edge Functions or cron): monitors nudge expiry, detects calendar gaps, proactively surfaces suggestions
+- [ ] Writes to notifications table silently or interrupts depending on threshold
+- [ ] Shares same MCP tool layer as prompt-triggered agent — different consumer, same interface
+- [ ] nudges table already designed for this
 
 ---
 
 ## 🟢 Deployment & Infrastructure
 
-- [ ] Vercel deployment — connect GitHub repo, set env vars
-- [ ] HTTP referrer restriction on Google Maps API key (needs Vercel URL)
-- [ ] Tighten `notifications_service_role_all` RLS policy before Vercel deploy
-- [ ] Switch in-memory session Map to Supabase persistence (survives server restarts)
-- [ ] Switch OAuth handoff from URL params to HTTP-only cookies
-- [ ] PWA configuration — manifest.json + service worker
+- [ ] Vercel deployment
+- [ ] HTTP referrer restriction on Maps API key
+- [ ] Tighten notifications RLS
+- [ ] Session persistence (Supabase sessions table)
+- [ ] OAuth handoff → HTTP-only cookies
+- [ ] PWA config — manifest.json + service worker
+- [ ] Push notifications (PWA web push) — needed to close MCP loop
 
 ---
 
-## 🧪 Testing Needed
+## 🧪 Testing Needed (current pass)
 
-- [ ] Two separate invitations to same user (was failing with "Could not save itinerary" — fixed in this session, needs retest)
-- [ ] Jamie reroll → buttons persist after reroll (fixed this session — verify)
-- [ ] Aaron picks one → "Your pick — waiting on them" badge shows on selected card
-- [ ] Calendar event details: title "Brooklyn Bowl with Jamie", address as location, proper end time
-- [ ] Full lock → 🎉 banner → "Add to Calendar" with correct event details
+- [ ] Event title set at creation → shows in itinerary header (not "Plans with [Name]")
+- [ ] Home screen pills show `Morgan · Golf weekend` format
+- [ ] Inline title edit: click pencil → edit → save → persists on refresh
+- [ ] Attendee suggest-alternative: only organizer's pick shows Accept/Decline; other cards show "↩ Suggest this instead"
+- [ ] Suggest-alternative does NOT auto-lock; organizer must re-pick
+- [ ] friendshipStatus fix: Schedule button shows on confirmed friends' profiles
+- [ ] Add friend button appears on profiles with no relationship
+- [ ] NewEvent back button: "← Edit details" returns to form with state preserved
+- [ ] Reroll date bounds regression: new time stays within original window
 
 ---
 
@@ -110,23 +122,29 @@
 - [x] Project scaffolded: CRA frontend + Express backend
 - [x] Git repo, .gitignore, all env vars configured
 - [x] Supabase: all tables + RLS + triggers + migrations
-- [x] Google OAuth credentials + calendar scopes
-- [x] Google Maps API key, restricted to 4 APIs
-- [x] All server routes wired and working
-- [x] schedule.js — all 8 scheduling endpoints + AI suggestion engine
-- [x] Notification inserts: friend request, itinerary invite, confirm, decline, reroll
-- [x] Per-card reroll (replaceSuggestionId) — swaps only targeted card
-- [x] Reroll limit raised to 10
-- [x] Jamie's buttons: attendee sees Accept/Decline/Reroll after organizer sends
-- [x] Attendee reroll preserves organizer_status (buttons no longer disappear)
-- [x] Insert bug fix: date_range_start/end/time_of_day/context_prompt now included
-- [x] "Your pick — waiting on them" badge for organizer pre-lock
-- [x] buildGCalUrl: proper title, address, end time
+- [x] Google OAuth + calendar scopes (including calendar.events write)
+- [x] Google Maps API key restricted to 4 APIs
+- [x] All server routes wired
+- [x] schedule.js — 9 endpoints + AI suggestion engine
+- [x] Notification inserts: friend request, invite, confirm, decline, reroll, suggest-alternative
+- [x] Per-card reroll with timing/vibe split (rerollType: timing | activity | both)
+- [x] Reroll limit: 10
+- [x] Reroll respects original date bounds + floors to today
+- [x] Attendee reroll no longer auto-locks (organizer_status downgraded from accepted → sent)
+- [x] Google Calendar write on lock (best-effort, graceful no-op if no tokens)
+- [x] GCal link: template URL (eventedit/{id} was 500ing)
+- [x] event_title: set at creation, inline edit in header, persists across sessions
+- [x] Home screen: Friend · Title pill labels
+- [x] friendshipStatus: schedule button gated on accepted friendship
+- [x] Add friend button on FriendProfile when no relationship exists
+- [x] NewEvent back button from generating spinner
+- [x] Attendee suggest-alternative flow + server isSuggestAlternative logic
+- [x] Free/public venue prompt + variety + cost range mix
 - [x] Narrative tone: direct, no marketing language
 - [x] Home.js: single API call, client-side split into waiting/in-progress/upcoming
 - [x] Friends.js: inline errors, no alert()
-- [x] ItineraryView: smooth expand/collapse, Getting There Google Maps link
-- [x] Dev user switcher: /dev/switch-user/:username
+- [x] ItineraryView: expand/collapse, Getting There link, isPicked badge
+- [x] Dev user switcher
 - [x] Mock busy slots for all 4 test users
 - [x] 4 test users seeded (jamiec, mrivera, tkim, alexp)
-- [x] STATUS.md and TODO.md tracking docs
+- [x] STATUS.md + TODO.md tracking
