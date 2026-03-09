@@ -187,18 +187,26 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     const { id } = req.params;
     if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid user ID.' });
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, full_name, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url')
-      .eq('id', id).single();
+    const [profileRes, friendshipRes] = await Promise.all([
+      supabase.from('profiles')
+        .select('id, full_name, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url')
+        .eq('id', id).single(),
+      supabase.from('friendships')
+        .select('status')
+        .or(`and(user_id.eq.${req.userId},friend_id.eq.${id}),and(user_id.eq.${id},friend_id.eq.${req.userId})`)
+        .maybeSingle(),
+    ]);
+
+    const { data, error } = profileRes;
     if (error || !data) return res.status(404).json({ error: 'Profile not found.' });
 
     res.json({
       ...data,
-      name:     data.full_name,
-      activities: data.activity_preferences,
-      dietary:    data.dietary_restrictions,
-      mobility:   data.mobility_restrictions,
+      name:             data.full_name,
+      activities:       data.activity_preferences,
+      dietary:          data.dietary_restrictions,
+      mobility:         data.mobility_restrictions,
+      friendshipStatus: friendshipRes.data?.status || null,
     });
   });
 

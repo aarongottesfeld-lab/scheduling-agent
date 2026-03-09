@@ -574,12 +574,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item.`
       : '';
 
+    // Rebuild free windows from the original date range so reroll respects bounds
+    const rerollStart = itin.date_range_start || new Date().toISOString().split('T')[0];
+    const rerollEnd   = itin.date_range_end   || (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().split('T')[0]; })();
+    const rerollStartISO = new Date(rerollStart + 'T00:00:00').toISOString();
+    const rerollEndISO   = new Date(rerollEnd   + 'T23:59:59').toISOString();
+    const [rerollBusyA, rerollBusyB] = await Promise.all([
+      fetchBusy(null, rerollStartISO, rerollEndISO, supabase, itin.organizer_id),
+      fetchBusy(null, rerollStartISO, rerollEndISO, supabase, itin.attendee_id),
+    ]);
+    const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' });
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
-      freeWindows: [],
+      freeWindows: rerollWindows,
       contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote].filter(Boolean).join('. '),
-      maxTravelMinutes: null,
+      maxTravelMinutes: itin.max_travel_minutes || null,
     });
 
     let newSuggestions;
@@ -616,7 +627,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
           reroll_count: (itin.reroll_count || 0) + 1,
           // Preserve organizer_status so attendee keeps Accept/Decline buttons after reroll.
           // Only reset to 'pending' if the organizer themselves rerolled (they need to re-pick).
-          organizer_status: isOrganizer ? 'pending' : itin.organizer_status,
+          // If organizer rerolled: reset to 'pending' (needs to re-pick)
+          // If attendee rerolled: set to 'sent' (organizer already chose, ball back in their court)
+          // 'accepted' must NOT be preserved — it would cause auto-lock on attendee's next confirm
+          organizer_status: isOrganizer ? 'pending' : (itin.organizer_status === 'accepted' ? 'sent' : itin.organizer_status),
           attendee_status: 'pending',
           selected_suggestion_id: null,
         })

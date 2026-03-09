@@ -187,14 +187,24 @@ export default function FriendProfile() {
               </div>
             )}
 
-            {/* Schedule CTA */}
+            {/* Schedule CTA — only available once friendship is accepted */}
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-              <Link
-                to={`/schedule/new?friendId=${friendId}`}
-                className="btn btn--primary"
-              >
-                Schedule with {profile.name.split(' ')[0]}
-              </Link>
+              {profile.friendshipStatus === 'accepted' ? (
+                <Link
+                  to={`/schedule/new?friendId=${friendId}`}
+                  className="btn btn--primary"
+                >
+                  Schedule with {profile.name.split(' ')[0]}
+                </Link>
+              ) : profile.friendshipStatus === 'pending' ? (
+                <div style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>
+                  ⏳ Friend request pending — you can schedule once they accept.
+                </div>
+              ) : (
+                <div style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>
+                  Add {profile.name.split(' ')[0]} as a friend to schedule plans.
+                </div>
+              )}
             </div>
           </div>
 
