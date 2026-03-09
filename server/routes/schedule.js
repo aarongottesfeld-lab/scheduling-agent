@@ -362,7 +362,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
     let query = supabase
       .from('itineraries')
-      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count')
+      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count, event_title')
       .or(`organizer_id.eq.${req.userId},attendee_id.eq.${req.userId}`)
       .order('created_at', { ascending: false })
       .limit(50);
@@ -415,7 +415,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── POST /schedule/confirm ──────────────────────────────── */
   app.post('/schedule/confirm', requireAuth, async (req, res) => {
-    const { itineraryId, suggestionId } = req.body;
+    const { itineraryId, suggestionId, isSuggestAlternative } = req.body;
     if (!itineraryId || !suggestionId) return res.status(400).json({ error: 'itineraryId and suggestionId required.' });
 
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
@@ -433,8 +433,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       selected_suggestion_id: suggestionId,
     };
 
-    // If both sides have now accepted the same suggestion — lock it
-    if (otherStatus === 'accepted' && itin.selected_suggestion_id === suggestionId) {
+    // Attendee counter-proposing a different card: reset organizer to 'sent' so
+    // they know to re-evaluate, and prevent auto-lock on a card they didn't pick.
+    if (isSuggestAlternative && isAttendee) {
+      updates.organizer_status = 'sent';
+    } else if (otherStatus === 'accepted' && itin.selected_suggestion_id === suggestionId) {
+      // Both sides accepted the same suggestion — lock it
       updates.locked_at = new Date().toISOString();
     }
 
@@ -445,10 +449,17 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const otherForConfirm = isOrganizer ? itin.attendee_id : itin.organizer_id;
     const confirmMsg = updated?.locked_at
       ? confirmerName + ' accepted — your plan is locked in! 🎉'
-      : confirmerName + ' accepted a plan. Waiting for the other person to confirm.';
+      : isSuggestAlternative
+        ? confirmerName + ' is suggesting a different option. Take a look.'
+        : confirmerName + ' accepted a plan. Waiting for the other person to confirm.';
+    const confirmTitle = updated?.locked_at
+      ? 'Plan locked in! 🎉'
+      : isSuggestAlternative
+        ? confirmerName + ' suggested an alternative'
+        : confirmerName + ' accepted a plan';
     await supabase.from('notifications').insert({
       user_id: otherForConfirm, type: 'itinerary_accepted',
-      title: updated?.locked_at ? 'Plan locked in! 🎉' : confirmerName + ' accepted a plan',
+      title: confirmTitle,
       body: confirmMsg,
       action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
     });

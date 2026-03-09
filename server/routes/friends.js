@@ -191,10 +191,14 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
       supabase.from('profiles')
         .select('id, full_name, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url')
         .eq('id', id).single(),
-      supabase.from('friendships')
-        .select('status')
-        .or(`and(user_id.eq.${req.userId},friend_id.eq.${id}),and(user_id.eq.${id},friend_id.eq.${req.userId})`)
-        .maybeSingle(),
+      // Two separate queries then pick whichever row exists — avoids nested and() in .or()
+      (async () => {
+        const a = await supabase.from('friendships').select('status')
+          .eq('user_id', req.userId).eq('friend_id', id).maybeSingle();
+        if (a.data) return a;
+        return supabase.from('friendships').select('status')
+          .eq('user_id', id).eq('friend_id', req.userId).maybeSingle();
+      })(),
     ]);
 
     const { data, error } = profileRes;

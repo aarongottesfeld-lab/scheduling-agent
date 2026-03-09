@@ -169,6 +169,13 @@ export default function NewEvent() {
               <div className="spinner spinner--lg" />
               <div className="generating-overlay__text">Finding the best options for you both…</div>
               <div className="generating-overlay__sub">Checking calendars, travel times, and preferences.</div>
+              <button
+                className="btn btn--ghost btn--sm"
+                style={{ marginTop: 24 }}
+                onClick={() => setGenerating(false)}
+              >
+                ← Edit details
+              </button>
             </div>
           </div>
         </main>

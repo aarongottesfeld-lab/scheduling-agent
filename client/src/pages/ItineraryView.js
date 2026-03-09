@@ -117,8 +117,8 @@ function RerollModal({ initialContext, onClose, onSubmit, loading }) {
 
 /* ── Suggestion Card ────────────────────────────────────────── */
 function SuggestionCard({
-  suggestion, isConfirmed, isPicked, role, status,
-  onConfirm, onAccept, onDecline, onReroll, onPick, onRerollWithFeedback,
+  suggestion, isConfirmed, isPicked, isOrganizerPick, role, status,
+  onConfirm, onAccept, onDecline, onReroll, onPick, onRerollWithFeedback, onSuggestAlternative,
   organizerName, attendeeName, organizerLocation,
   submitting, itinerary, calendarEventId,
 }) {
@@ -336,60 +336,75 @@ function SuggestionCard({
       {/* Footer — attendee: awaiting response */}
       {isAttendee && awaitingMe && (
         <div className="suggestion-card__footer" style={{ flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              className="btn btn--primary"
-              onClick={() => onAccept(suggestion.id)}
-              disabled={submitting}
-            >
-              Accept
-            </button>
-            <button
-              className="btn btn--danger"
-              onClick={() => onDecline(suggestion.id)}
-              disabled={submitting}
-            >
-              Decline
-            </button>
+          {isOrganizerPick ? (
+            /* Organizer's chosen card — full Accept/Decline + reroll controls */
+            <>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn--primary"
+                  onClick={() => onAccept(suggestion.id)}
+                  disabled={submitting}
+                >
+                  Accept
+                </button>
+                <button
+                  className="btn btn--danger"
+                  onClick={() => onDecline(suggestion.id)}
+                  disabled={submitting}
+                >
+                  Decline
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
+                  disabled={submitting}
+                  title="Keep this activity, find a different time"
+                >
+                  🕐 New time
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
+                  disabled={submitting}
+                  title="Keep this time slot, suggest a different activity"
+                >
+                  🎲 New vibe
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={feedbackText}
+                  onChange={(e) => setFeedbackText(e.target.value)}
+                  placeholder="e.g. more casual, closer to Brooklyn"
+                  style={{ flex: 1 }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && feedbackText.trim()) {
+                      onRerollWithFeedback(suggestion.id, feedbackText);
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
+                  disabled={submitting || !feedbackText.trim()}
+                >
+                  Regenerate
+                </button>
+              </div>
+            </>
+          ) : (
+            /* Non-picked card — attendee can propose this one instead */
             <button
               className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
+              onClick={() => onSuggestAlternative(suggestion.id)}
               disabled={submitting}
-              title="Keep this activity, find a different time"
+              title="Send this option back to the organizer as your preference"
             >
-              🕐 New time
+              ↩ Suggest this instead
             </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
-              disabled={submitting}
-              title="Keep this time slot, suggest a different activity"
-            >
-              🎲 New vibe
-            </button>
-          </div>
-          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-            <input
-              type="text"
-              className="form-control"
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-              placeholder="e.g. more casual, closer to Brooklyn"
-              style={{ flex: 1 }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && feedbackText.trim()) {
-                  onRerollWithFeedback(suggestion.id, feedbackText);
-                }
-              }}
-            />
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
-              disabled={submitting || !feedbackText.trim()}
-            >
-              Regenerate
-            </button>
-          </div>
+          )}
         </div>
       )}
 
@@ -538,6 +553,18 @@ export default function ItineraryView() {
       await load();
     } catch (err) { setActionErr(err.message); }
     finally { setRerolling(false); }
+  }
+
+  async function handleSuggestAlternative(suggestionId) {
+    // Attendee proposes a different card — send it back to organizer as a counter-pick.
+    // We reuse the confirm endpoint: sets attendee_status='accepted' on this suggestion,
+    // which resets organizer_status to 'sent' so organizer sees they need to re-pick.
+    setSubmitting(true); setActionErr('');
+    try {
+      await client.post('/schedule/confirm', { itineraryId, suggestionId, isSuggestAlternative: true });
+      await load();
+    } catch (err) { setActionErr(err.message || 'Could not suggest alternative.'); }
+    finally { setSubmitting(false); }
   }
 
   async function handleShowMore() {
@@ -697,6 +724,7 @@ export default function ItineraryView() {
                 suggestion={s}
                 isConfirmed={locked && s.id === confirmedId}
                 isPicked={!locked && role === 'organizer' && s.id === confirmedId}
+                isOrganizerPick={!locked && role === 'attendee' && s.id === confirmedId}
                 calendarEventId={locked && s.id === confirmedId ? (itinerary.calendar_event_id || null) : null}
                 itinerary={itinerary}
                 confirmedId={confirmedId}
@@ -707,6 +735,7 @@ export default function ItineraryView() {
                 onReroll={() => setRerollOpen(true)}
                 onPick={handlePick}
                 onRerollWithFeedback={handleRerollWithFeedback}
+                onSuggestAlternative={handleSuggestAlternative}
                 organizerName={organizerFirst}
                 attendeeName={attendeeFirst}
                 organizerLocation={organizerLocation}

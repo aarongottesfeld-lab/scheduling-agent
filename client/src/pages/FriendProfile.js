@@ -28,7 +28,10 @@ export default function FriendProfile() {
 
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState('');
-  const [saving,   setSaving]   = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [requesting,  setRequesting]  = useState(false);
+  const [requestSent, setRequestSent] = useState(false);
+  const [requestErr,  setRequestErr]  = useState('');
   const [saved,    setSaved]    = useState(false);
   const [saveErr,  setSaveErr]  = useState('');
 
@@ -73,6 +76,18 @@ export default function FriendProfile() {
     load();
     return () => { mounted = false; };
   }, [friendId]);
+
+  async function sendFriendRequest() {
+    setRequesting(true); setRequestErr('');
+    try {
+      await client.post('/friends/request', { targetUserId: friendId });
+      setRequestSent(true);
+    } catch (err) {
+      setRequestErr(err.response?.data?.error || err.message || 'Could not send request.');
+    } finally {
+      setRequesting(false);
+    }
+  }
 
   async function saveAnnotations(e) {
     e.preventDefault();
@@ -201,8 +216,19 @@ export default function FriendProfile() {
                   ⏳ Friend request pending — you can schedule once they accept.
                 </div>
               ) : (
-                <div style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>
-                  Add {profile.name.split(' ')[0]} as a friend to schedule plans.
+                <div>
+                  {requestErr && <div className="alert alert--error" style={{ marginBottom: 8 }}>{requestErr}</div>}
+                  {requestSent ? (
+                    <span className="badge badge--gray">Request sent</span>
+                  ) : (
+                    <button
+                      className="btn btn--secondary btn--sm"
+                      onClick={sendFriendRequest}
+                      disabled={requesting}
+                    >
+                      {requesting ? 'Sending…' : `+ Add ${profile.name.split(' ')[0]}`}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

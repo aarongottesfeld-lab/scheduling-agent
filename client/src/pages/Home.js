@@ -81,7 +81,9 @@ function ItineraryCard({ item }) {
     <Link to={`/schedule/${item.id}`} className="itinerary-card">
       <div className="avatar avatar--sm">{getInitials(friendName)}</div>
       <div className="itinerary-card__body">
-        <div className="itinerary-card__title">{friendName}</div>
+        <div className="itinerary-card__title">
+            {friendName}{item.event_title ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {item.event_title}</span> : ''}
+          </div>
         <div className="itinerary-card__meta">
           {displayDate && <span>{formatDate(displayDate)}</span>}
           {firstSuggestion?.neighborhood && (
