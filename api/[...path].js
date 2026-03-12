@@ -5,8 +5,4 @@
 
 const app = require('../server/index.js');
 
-// Wrap the Express app to log the incoming URL for debugging.
-module.exports = (req, res) => {
-  console.log('[api/[...path].js] req.url =', req.url);
-  app(req, res);
-};
+module.exports = app;
