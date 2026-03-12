@@ -206,12 +206,20 @@ export default function Home() {
     try { await client.delete(`/schedule/itinerary/${id}`); } catch { /* best-effort */ }
   }
 
-  // Bucket all itineraries into their respective tab categories.
+  // Sort itineraries by the first suggestion's date ascending (soonest first).
+  // Falls back to created_at if no suggestion date is present (e.g. reroll in progress).
+  function byEventDate(a, b) {
+    const dateA = a.suggestions?.[0]?.date || a.created_at || '';
+    const dateB = b.suggestions?.[0]?.date || b.created_at || '';
+    return dateA < dateB ? -1 : dateA > dateB ? 1 : 0;
+  }
+
+  // Bucket all itineraries into their respective tab categories, each sorted chronologically.
   const tabs = {
-    drafts:       allItins.filter(i => deriveTab(i) === 'drafts'),
-    waiting_them: allItins.filter(i => deriveTab(i) === 'waiting_them'),
-    waiting_you:  allItins.filter(i => deriveTab(i) === 'waiting_you'),
-    confirmed:    allItins.filter(i => deriveTab(i) === 'confirmed'),
+    drafts:       allItins.filter(i => deriveTab(i) === 'drafts').sort(byEventDate),
+    waiting_them: allItins.filter(i => deriveTab(i) === 'waiting_them').sort(byEventDate),
+    waiting_you:  allItins.filter(i => deriveTab(i) === 'waiting_you').sort(byEventDate),
+    confirmed:    allItins.filter(i => deriveTab(i) === 'confirmed').sort(byEventDate),
   };
 
   const TAB_CONFIG = [

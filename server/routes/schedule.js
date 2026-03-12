@@ -398,6 +398,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay);
 
+    // If both calendars are fully booked in the requested window, bail out early
+    // rather than letting Claude invent dates outside the window.
+    if (freeWindows.length === 0) {
+      return res.status(422).json({
+        error: 'No availability found in the selected time window. Try a different date or time of day.',
+      });
+    }
+
     // Call Claude
     const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes });
     let suggestions;
