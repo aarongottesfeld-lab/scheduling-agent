@@ -100,25 +100,16 @@ function createOAuth2Client(tokens) {
 }
 
 // ---------------------------------------------------------------------------
-// CSRF state tokens (in-memory — ephemeral by design)
-// These only live for the 1–2 seconds of the OAuth redirect flow.
-// Losing them on a cold start is harmless (user just has to click "Login" again).
+// CSRF state tokens — cookie-based (serverless-safe)
 // ---------------------------------------------------------------------------
-
-/**
- * CSRF state tokens: Map<state, { createdAt: number }>
- * Tokens are deleted immediately on use. This interval cleans up any orphans
- * (e.g. user navigated away before completing OAuth).
- */
-const oauthStates = new Map();
-
-// Purge OAuth states older than 10 minutes to prevent unbounded growth
-setInterval(() => {
-  const cutoff = Date.now() - 10 * 60 * 1000;
-  for (const [state, data] of oauthStates.entries()) {
-    if (data.createdAt < cutoff) oauthStates.delete(state);
-  }
-}, 5 * 60 * 1000).unref();
+// In-memory Maps don't survive across serverless cold starts: the /auth/google
+// handler and the /auth/google/callback handler can land on different instances,
+// so a Map populated in one will be empty in the other.
+//
+// Solution: write the state value into a short-lived HttpOnly cookie during the
+// redirect.  The browser sends that cookie back with the callback request, so
+// both ends of the handshake are in the browser (no server-side storage needed).
+// This is a standard "double-submit cookie" CSRF defence.
 
 // ---------------------------------------------------------------------------
 // Supabase session helpers
@@ -372,11 +363,22 @@ app.get('/health', async (req, res) => {
 /**
  * GET /auth/google
  * Kicks off the Google OAuth2 consent flow.
- * Generates and stores a CSRF state token, then redirects to Google.
+ * Writes the CSRF state into a short-lived HttpOnly cookie, then redirects to
+ * Google. The cookie is verified in /auth/google/callback — no server-side
+ * state storage required (works across serverless cold starts).
  */
 app.get('/auth/google', (req, res) => {
   const state = crypto.randomBytes(32).toString('hex');
-  oauthStates.set(state, { createdAt: Date.now() });
+
+  // Store state in a short-lived cookie so the callback can verify it.
+  // sameSite:'none' is required in production because Google redirects back
+  // cross-site; the browser must send the cookie with that cross-site request.
+  res.cookie('oauth_state', state, {
+    httpOnly: true,
+    secure:   IS_PROD,
+    sameSite: IS_PROD ? 'none' : 'lax',
+    maxAge:   10 * 60 * 1000, // 10 minutes — more than enough for the flow
+  });
 
   const authUrl = createOAuth2Client().generateAuthUrl({
     access_type: 'offline',
@@ -405,11 +407,13 @@ app.get('/auth/google/callback', async (req, res) => {
     return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Google authorization was denied')}`);
   }
 
-  // Validate CSRF state — reject if missing or unknown
-  if (!state || !oauthStates.has(state)) {
-    return res.status(400).json({ error: 'Invalid or expired OAuth state' });
+  // Validate CSRF state — compare query param against the cookie set in /auth/google.
+  // Clear the cookie immediately (one-time use) regardless of outcome.
+  const cookieState = req.cookies?.oauth_state;
+  res.clearCookie('oauth_state', { httpOnly: true, secure: IS_PROD, sameSite: IS_PROD ? 'none' : 'lax' });
+  if (!state || !cookieState || state !== cookieState) {
+    return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Login session expired. Please try again.')}`);
   }
-  oauthStates.delete(state); // consume the state token (one-time use)
 
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ error: 'Missing authorization code' });
