@@ -338,6 +338,10 @@ export default function MyProfile() {
               </label>
             ))}
           </div>
+          {/* Disclosure: dietary and mobility data flows into the Claude prompt for personalization */}
+          <p className="form-hint" style={{ marginTop: 10 }}>
+            These preferences may be shared with an AI model to generate personalized activity suggestions.
+          </p>
         </div>
         <div className="setup-actions">
           <button type="submit" className="btn btn--primary btn--lg" disabled={saving}>
