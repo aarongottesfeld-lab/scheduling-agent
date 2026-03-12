@@ -54,14 +54,16 @@ function deriveTab(item) {
   if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return null;
   if (item.isOrganizer) {
     if (item.organizer_status === 'pending') return 'drafts';
-    // Attendee suggested an alternative: organizer_status was reset to 'sent'
-    // but attendee_status is 'accepted' — attendee has acted, now waiting on organizer.
-    if (item.attendee_status === 'accepted' && item.organizer_status === 'sent') return 'waiting_you';
+    // Attendee counter-proposed: org=accepted, att=pending, attendeeSelected flag set.
+    // att stays 'pending' (not 'accepted') to avoid the DB auto-lock trigger.
+    const hasAttendeeSelected = (item.suggestions || []).some(s => s.attendeeSelected);
+    if (item.organizer_status === 'accepted' && hasAttendeeSelected) return 'waiting_you';
     return 'waiting_them';
   } else {
-    if (item.organizer_status === 'sent' && item.attendee_status === 'pending') return 'waiting_you';
-    if (item.attendee_status === 'accepted') return 'waiting_them';
     if (item.organizer_status === 'pending') return null; // draft, not visible to attendee yet
+    if (item.attendee_status === 'accepted') return 'waiting_them';
+    // org=accepted means organizer has picked and sent — attendee needs to respond
+    if (item.organizer_status === 'accepted' && item.attendee_status === 'pending') return 'waiting_you';
     return 'waiting_you';
   }
 }

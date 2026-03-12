@@ -131,9 +131,10 @@ function SuggestionCard({
   organizerName, attendeeName, organizerLocation,
   submitting, activeCardId, itinerary, calendarEventId,
 }) {
-  const [expanded,    setExpanded]    = useState(isConfirmed);
-  // feedbackText is reserved for future inline feedback UX; not yet wired up.
-  const [feedbackText, setFeedbackText] = useState(''); // eslint-disable-line no-unused-vars
+  const [expanded,       setExpanded]       = useState(isConfirmed);
+  // vibeInputOpen: toggles the inline prompt box when user clicks "New vibe"
+  const [vibeInputOpen,  setVibeInputOpen]  = useState(false);
+  const [vibeText,       setVibeText]       = useState('');
 
   const isOrganizer  = role === 'organizer';
   const isAttendee   = role === 'attendee';
@@ -283,7 +284,8 @@ function SuggestionCard({
               <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onRerollWithFeedback(suggestion.id, 'timing')}>
                 🕐 New time
               </button>
-              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onRerollWithFeedback(suggestion.id, 'activity')}>
+              <button className="btn btn--ghost btn--sm" disabled={submitting}
+                onClick={() => { setVibeInputOpen(v => !v); setVibeText(''); }}>
                 🎲 New vibe
               </button>
             </>
@@ -304,26 +306,34 @@ function SuggestionCard({
             </>
           )}
 
-          {/* Organizer re-evaluating after attendee suggested an alternative: all cards.
-              On the attendee's highlighted card: "Accept [Name]'s pick" (agreement = lock).
-              On any other card: "Suggest this instead" (counter-propose, keeps loop going). */}
+          {/* Organizer re-evaluating after attendee suggested an alternative.
+              Attendee's highlighted card: Accept | Decline.
+              Other cards: Suggest this instead | New time | New vibe (same controls as pre-send). */}
           {showOrganizerReevaluate && (
             <>
               {isAttendeePick ? (
-                <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
-                  Accept {attendeeName}'s pick
-                </button>
+                <>
+                  <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                    Accept {attendeeName}'s pick
+                  </button>
+                  <button className="btn btn--danger btn--sm" disabled={submitting} onClick={onDecline}>
+                    Decline
+                  </button>
+                </>
               ) : (
-                <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
-                  ↩ Suggest this instead
-                </button>
+                <>
+                  <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                    ↩ Suggest this instead
+                  </button>
+                  <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onRerollWithFeedback(suggestion.id, 'timing')}>
+                    🕐 New time
+                  </button>
+                  <button className="btn btn--ghost btn--sm" disabled={submitting}
+                    onClick={() => { setVibeInputOpen(v => !v); setVibeText(''); }}>
+                    🎲 New vibe
+                  </button>
+                </>
               )}
-              <button className="btn btn--danger btn--sm" disabled={submitting} onClick={onDecline}>
-                Decline
-              </button>
-              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={onReroll}>
-                ↻ Reroll all
-              </button>
             </>
           )}
 
@@ -342,7 +352,6 @@ function SuggestionCard({
           {/* Attendee: non-pick cards → counter-propose or swap */}
           {showAttendeeControls && !showAttendeeSentIndicator && !isOrganizerPick && (
             <>
-              {/* Suggest this instead: marks attendeeSelected in JSONB, puts ball back in organizer's court */}
               <button className="btn btn--ghost btn--sm" disabled={submitting}
                 onClick={() => onSuggestAlternative(suggestion.id)}>
                 {thisCardBusy
@@ -354,10 +363,42 @@ function SuggestionCard({
                 {thisCardBusy ? '…' : '🕐 New time'}
               </button>
               <button className="btn btn--ghost btn--sm" disabled={submitting}
-                onClick={() => onRerollWithFeedback(suggestion.id, 'activity')}>
+                onClick={() => { setVibeInputOpen(v => !v); setVibeText(''); }}>
                 {thisCardBusy ? '…' : '🎲 New vibe'}
               </button>
             </>
+          )}
+
+          {/* Inline vibe prompt — shown when user clicks "New vibe" on any card.
+              Submits the text as contextPrompt for the single-card activity reroll. */}
+          {vibeInputOpen && (
+            <div style={{ width: '100%', marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <textarea
+                autoFocus
+                className="form-control"
+                rows={2}
+                placeholder="e.g. 'something outdoors', 'more low-key', 'closer to Brooklyn'…"
+                value={vibeText}
+                onChange={(e) => setVibeText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    setVibeInputOpen(false);
+                    onRerollWithFeedback(suggestion.id, 'activity', vibeText.trim());
+                  }
+                  if (e.key === 'Escape') setVibeInputOpen(false);
+                }}
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn--primary btn--sm" disabled={submitting}
+                  onClick={() => { setVibeInputOpen(false); onRerollWithFeedback(suggestion.id, 'activity', vibeText.trim()); }}>
+                  Generate
+                </button>
+                <button className="btn btn--ghost btn--sm" onClick={() => setVibeInputOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -438,11 +479,16 @@ export default function ItineraryView() {
     const os = itin.organizer_status;
     const as = itin.attendee_status;
     if (os === 'pending') return 'pending';
-    // attendee_status='accepted' while organizer_status='sent' means the attendee counter-proposed
-    // (organizer was reset to 'sent' after accepting the counter-proposal flow).
-    if (os === 'sent' && as === 'accepted') return 'attendee_suggested';
-    if (os === 'sent') return 'sent';
-    if (os === 'accepted') return 'sent'; // organizer locked pick, awaiting attendee
+    // Both accepted but no lock: attendee counter-proposed a different card.
+    // Detected via attendeeSelected:true on any suggestion in the JSONB array.
+    // (The DB constraint forbids 'sent' as a status value, so we use the JSONB flag instead.)
+    // Attendee counter-proposed: org=accepted, att=pending, attendeeSelected flag set.
+    // (att stays 'pending' to avoid the DB auto-lock trigger which fires on both='accepted'.)
+    if (os === 'accepted' && as === 'pending') {
+      const hasAttendeeSelected = (itin.suggestions || []).some(s => s.attendeeSelected);
+      return hasAttendeeSelected ? 'attendee_suggested' : 'sent';
+    }
+    if (os === 'accepted') return 'sent';
     return 'sent';
   }
 
@@ -531,7 +577,12 @@ export default function ItineraryView() {
    * rerollType is 'timing' (same activity, new time) or 'activity' (same time, new activity).
    * activeCardId drives the per-card busy spinner in SuggestionCard.
    */
-  async function handleSingleCardReroll(suggestionId, rerollType) {
+  /**
+   * Per-card reroll with optional feedback text from the vibe prompt.
+   * feedback is scoped to only this card's replacement — passed as contextPrompt
+   * to the server which injects it into the single-card reroll instruction only.
+   */
+  async function handleSingleCardReroll(suggestionId, rerollType, feedback = '') {
     setSubmitting(true);
     setActiveCardId(suggestionId);
     setError('');
@@ -539,6 +590,7 @@ export default function ItineraryView() {
       await client.post(`/schedule/itinerary/${id}/reroll`, {
         replaceSuggestionId: suggestionId,
         rerollType,
+        ...(feedback ? { contextPrompt: feedback } : {}),
       });
       await load();
     } catch (err) { setError(err.message || 'Could not reroll. Please try again.'); }
@@ -593,22 +645,31 @@ export default function ItineraryView() {
 
   const isOrganizer = itin.organizer_id === myId;
   const status      = deriveStatus(itin);
-  // For attendees, sort the organizer's picked card to the top so it's immediately visible.
-  // Organizers see the original order (they built the list themselves).
+  // Sort suggestion cards so the most relevant card is always first:
+  //   Organizer re-evaluating (attendeeSelected set): attendee's suggested card floats to top
+  //   Attendee viewing organizer's pick: organizer's pick card floats to top
+  //   All other cases: original order preserved
+  const rawSuggestions = itin.suggestions || [];
+  const hasAttendeeSel = !itin.locked_at && rawSuggestions.some(s => s.attendeeSelected);
   const suggestions = (() => {
-    const raw = itin.suggestions || [];
-    if (isOrganizer) return raw;
-    const pickId = itin.attendee_status !== 'accepted' ? itin.selected_suggestion_id : null;
-    if (!pickId) return raw;
-    return [...raw].sort((a, b) => (a.id === pickId ? -1 : b.id === pickId ? 1 : 0));
+    if (isOrganizer && hasAttendeeSel) {
+      return [...rawSuggestions].sort((a, b) => (a.attendeeSelected ? -1 : b.attendeeSelected ? 1 : 0));
+    }
+    if (isOrganizer) return rawSuggestions;
+    // Attendee: sort organizer's pick to top, unless attendee has already counter-proposed
+    if (hasAttendeeSel) return rawSuggestions;
+    const pickId = itin.selected_suggestion_id;
+    if (!pickId) return rawSuggestions;
+    return [...rawSuggestions].sort((a, b) => (a.id === pickId ? -1 : b.id === pickId ? 1 : 0));
   })();
   const lockedSugId = itin.selected_suggestion_id; // only meaningful when locked_at is set
 
   // orgPickedId: tracks which card the organizer chose.
-  // When the attendee has counter-proposed (attendee_status='accepted'), they "own"
-  // selected_suggestion_id via the attendeeSelected JSONB flag — the organizer is in
-  // re-evaluation mode and we don't want to highlight their old pick as "still chosen".
-  const orgPickedId = itin.attendee_status !== 'accepted' ? itin.selected_suggestion_id : null;
+  // When the attendee has counter-proposed (attendeeSelected flag present), the organizer is
+  // in re-evaluation mode — null out orgPickedId so their old pick isn't highlighted as active.
+  // (attendee_status stays 'pending' during counter-propose to avoid the DB auto-lock trigger.)
+  const hasAttendeeSelected = hasAttendeeSel;
+  const orgPickedId = hasAttendeeSelected ? null : itin.selected_suggestion_id;
 
   // atPickedId: the card the attendee most recently counter-proposed.
   // Stored as attendeeSelected:true on the JSONB suggestion rather than in selected_suggestion_id,
@@ -628,13 +689,18 @@ export default function ItineraryView() {
     ? `${friendFirstName} · ${itin.event_title}`
     : `Plans with ${friendFirstName}`;
 
-  // True when the organizer has sent their pick and is waiting for the attendee to respond.
-  // In this state: hide the Edit button, show only the picked card, show the "waiting" prompt.
-  const sentAndWaiting = isOrganizer && itin.organizer_status === 'accepted' && !itin.locked_at;
+  // Organizer has sent their pick and is waiting — BUT only when the attendee hasn't yet
+  // counter-proposed. If attendeeSelected is set, the organizer needs to re-evaluate (not wait).
+  const sentAndWaiting = isOrganizer && itin.organizer_status === 'accepted' && !itin.locked_at && !hasAttendeeSelected;
 
-  // When waiting, only render the picked suggestion — the others are irrelevant until attendee responds.
+  // Attendee has counter-proposed and is now waiting for the organizer to respond.
+  const attendeeSentAndWaiting = !isOrganizer && hasAttendeeSelected && !itin.locked_at;
+
+  // In either waiting state, show only the relevant card (organizer's pick or attendee's pick).
   const visibleSuggestions = sentAndWaiting
     ? suggestions.filter(s => s.id === orgPickedId)
+    : attendeeSentAndWaiting
+    ? suggestions.filter(s => s.attendeeSelected)
     : suggestions;
 
   return (
@@ -653,8 +719,8 @@ export default function ItineraryView() {
 
       <main className="page">
         <div className="container container--sm">
-          {/* Edit button — hidden once the organizer has sent their pick */}
-          {!sentAndWaiting && (
+          {/* Edit button — hidden once either party is in a waiting state */}
+          {!sentAndWaiting && !attendeeSentAndWaiting && (
             <button className="btn btn--ghost btn--sm" style={{ marginBottom: 16 }}
               onClick={() => {
                 const friendId = isOrganizer ? itin.attendee_id : itin.organizer_id;
@@ -718,7 +784,7 @@ export default function ItineraryView() {
                   onDecline={handleDecline}
                   onReroll={() => setRerollOpen(true)}
                   onPick={handlePick}
-                  onRerollWithFeedback={(sugId, type) => handleSingleCardReroll(sugId, type)}
+                  onRerollWithFeedback={(sugId, type, feedback) => handleSingleCardReroll(sugId, type, feedback)}
                   onSuggestAlternative={handleSuggestAlternative}
                   organizerName={organizerName}
                   attendeeName={attendeeName}
@@ -732,8 +798,8 @@ export default function ItineraryView() {
             })}
           </div>
 
-          {/* Waiting state — shown to organizer after sending their pick */}
-          {sentAndWaiting && (
+          {/* Waiting state — shown after either party has committed to a pick */}
+          {(sentAndWaiting || attendeeSentAndWaiting) && (
             <div style={{ textAlign: 'center', padding: '24px 0 8px' }}>
               <p style={{ color: 'var(--text-2)', marginBottom: 16 }}>
                 We'll let you know when {friendFirstName} responds.
@@ -744,8 +810,8 @@ export default function ItineraryView() {
             </div>
           )}
 
-          {/* Generate More — only shown while organizer is still drafting (not yet sent) */}
-          {!itin.locked_at && !sentAndWaiting && (
+          {/* Generate More — only shown while neither party is in a waiting state */}
+          {!itin.locked_at && !sentAndWaiting && !attendeeSentAndWaiting && (
             <button
               className="btn btn--ghost btn--sm"
               style={{ marginTop: 8, width: '100%' }}

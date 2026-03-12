@@ -473,17 +473,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     };
 
     if (isSuggestAlternative && isAttendee) {
-      // Attendee counter-proposing: store their pick as a JSONB flag on the suggestion
-      // rather than overwriting selected_suggestion_id (which tracks the organizer's pick).
+      // Attendee counter-proposing: store their pick as a JSONB flag on the suggestion.
+      // IMPORTANT: keep attendee_status='pending' (not 'accepted') to avoid triggering the
+      // check_itinerary_lock DB trigger, which auto-locks when both statuses are 'accepted'.
+      // The attendeeSelected:true flag is the signal; deriveStatus reads it to show the
+      // 'attendee_suggested' state without needing a separate status column value.
       const updatedSuggestions = (itin.suggestions || []).map(s => ({
         ...s,
         attendeeSelected: s.id === suggestionId,
       }));
       updates.suggestions = updatedSuggestions;
-      updates.organizer_status = 'sent';
+      updates[statusField] = 'pending'; // override the 'accepted' set above — don't trigger lock
     } else {
-      // Regular accept — record the picked suggestion ID
+      // Regular accept — record the picked suggestion ID.
+      // Always clear attendeeSelected flags so the re-evaluate state resets regardless of
+      // whether the DB auto-lock trigger fires. Prevents organizer getting stuck in re-evaluate mode.
       updates.selected_suggestion_id = suggestionId;
+      updates.suggestions = (itin.suggestions || []).map(s => ({ ...s, attendeeSelected: false }));
 
       // Auto-lock when both sides have accepted the same card.
       // If the other side already accepted but chose a different card, the picker is
@@ -502,15 +508,15 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
           updates.attendee_status = 'pending';
           updates.suggestions = (itin.suggestions || []).map(s => ({ ...s, attendeeSelected: false }));
         } else {
-          // Attendee picking a different card than the organizer's current pick.
-          // Treat the same as isSuggestAlternative — mark the flag and reset organizer.
+          // Attendee picking a different card — same as isSuggestAlternative path.
+          // Keep attendee_status='pending' to avoid the auto-lock trigger.
           const updatedSuggestions = (itin.suggestions || []).map(s => ({
             ...s,
             attendeeSelected: s.id === suggestionId,
           }));
           updates.suggestions = updatedSuggestions;
-          updates.organizer_status = 'sent';
-          delete updates.selected_suggestion_id; // don't overwrite organizer's pick
+          updates[statusField] = 'pending';
+          delete updates.selected_suggestion_id;
         }
       }
     }
@@ -585,7 +591,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can send.' });
 
-    await supabase.from('itineraries').update({ organizer_status: 'sent' }).eq('id', req.params.id);
+    // Note: no status update needed here — /confirm (called immediately after) sets organizer_status='accepted'.
+    // The DB check constraint only allows pending/accepted/declined, so 'sent' cannot be stored.
 
     // Notify attendee
     const senderName = await getProfileName(req.userId, supabase);
@@ -709,8 +716,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     let suggestions;
     if (isSingleCard && newSuggestions.length > 0) {
       const replacement = { ...newSuggestions[0], id: replaceSuggestionId, attendeeSelected: false };
+      // Preserve attendeeSelected on all other cards — single-card reroll shouldn't wipe
+      // the attendee's counter-proposal flag, which the organizer still needs to see.
       suggestions = (itin.suggestions || []).map(s =>
-        s.id === replaceSuggestionId ? replacement : { ...s, attendeeSelected: false }
+        s.id === replaceSuggestionId ? replacement : s
       );
     } else if (isSingleCard) {
       return res.status(500).json({ error: 'Could not generate a replacement. Please try again.' });
