@@ -130,12 +130,44 @@ function timeOfDayHours(tod) {
  * Busy slots from Google Calendar freebusy are already in UTC, so the overlap
  * check is a straight UTC-vs-UTC comparison.
  */
-function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows = 20, timezoneOffsetMinutes = 0) {
+/**
+ * Infer event duration in minutes from the event title and optional context.
+ * Used to size free-window slots and as a hint to Claude for durationMinutes.
+ * Errs toward the typical activity length; defaults to 2 hours.
+ */
+function inferDurationMinutes(eventTitle, contextPrompt) {
+  const text = `${eventTitle || ''} ${contextPrompt || ''}`.toLowerCase();
+  if (/\bday[ -]?trip\b|full[ -]?day\b|all[ -]?day\b/.test(text))          return 360;
+  if (/\bhike\b|\bbiking\b|\bsurfing\b|\bclimbing\b/.test(text))            return 240;
+  if (/\bmovie\b|\bfilm\b|\bconcert\b|\bshow\b|\bgame\b|\bmatch\b/.test(text)) return 180;
+  if (/\bdinner\b|\bdate\b|\bnight\s+out\b|\beverning\s+out\b/.test(text))  return 120;
+  if (/\blunch\b|\bbrunch\b/.test(text))                                     return 90;
+  if (/\bcoffee\b|\bdrinks\b|\bcatch[ -]?up\b|\bquick\b|\bchat\b/.test(text)) return 60;
+  return 120;
+}
+
+/**
+ * Return free time windows within a date range that don't overlap any busy slot.
+ * Both busyA (organizer) and busyB (attendee) can be passed — pass [] to skip one.
+ * Windows are sized to durationMinutes so Claude gets slots the event will actually fit in.
+ *
+ * @param {Array}  busyA                - organizer busy slots [{start, end}]
+ * @param {Array}  busyB                - attendee busy slots
+ * @param {string} startDate            - "YYYY-MM-DD" inclusive
+ * @param {string} endDate              - "YYYY-MM-DD" inclusive
+ * @param {object} todFilter            - { type: 'morning'|'afternoon'|'evening'|'any' }
+ * @param {number} maxWindows           - cap on returned windows (default 20)
+ * @param {number} timezoneOffsetMinutes - client's getTimezoneOffset() value (EDT=240)
+ * @param {number} durationMinutes      - slot size in minutes (default 120)
+ */
+function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows = 20, timezoneOffsetMinutes = 0, durationMinutes = 120) {
   const [localStart, localEnd] = timeOfDayHours(todFilter);
   // Convert local hours to UTC hours using the client's timezone offset.
-  const offsetHours = timezoneOffsetMinutes / 60;  // positive = west of UTC (e.g. EDT = +4)
-  const utcStart = Math.max(0,  localStart + offsetHours);
-  const utcEnd   = Math.min(47, localEnd   + offsetHours); // 47 allows wrapping past midnight UTC
+  const offsetHours  = timezoneOffsetMinutes / 60;  // positive = west of UTC (e.g. EDT = +4)
+  const utcStart     = Math.max(0,  localStart + offsetHours);
+  const utcEnd       = Math.min(47, localEnd   + offsetHours); // 47 allows wrapping past midnight UTC
+  const durationHours = durationMinutes / 60;
+  const durationMs   = durationMinutes * 60000;
 
   const windows = [];
   // Use UTC date construction so the loop is timezone-agnostic on any server.
@@ -145,15 +177,15 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
   const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59));
 
   while (cur <= end && windows.length < maxWindows) {
-    for (let h = utcStart; h <= utcEnd - 2; h += 1) {
+    // Step by 1 hour through the day; each window spans durationMinutes from that hour.
+    for (let h = utcStart; h + durationHours <= utcEnd; h += 1) {
       const wStart = new Date(cur);
       wStart.setUTCHours(h, 0, 0, 0);
-      const wEnd = new Date(cur);
-      wEnd.setUTCHours(h + 2, 0, 0, 0);
+      const wEnd = new Date(wStart.getTime() + durationMs);
 
       const overlaps = (slots) => slots.some(s => {
         const sStart = new Date(s.start);
-        const sEnd = new Date(s.end);
+        const sEnd   = new Date(s.end);
         return sStart < wEnd && sEnd > wStart;
       });
 
@@ -192,7 +224,7 @@ function fmtWindowDate(d) {
   return `${weekday}, ${year}-${month}-${day} (${monthName} ${d.getUTCDate()}), ${h}:${String(m).padStart(2,'0')} ${ampm}`;
 }
 
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -202,7 +234,9 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
     return `- ${fmtWindowDate(s)} – ${eh}:${String(em2).padStart(2,'0')} ${eampm}`;
   }).join('\n');
 
+  const durationHint = durationMinutes || 120;
   return `You are Rendezvous, a NYC activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
+${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
 
 PERSON A: ${userA.name}
 Location: ${userA.location || 'NYC'}
@@ -220,6 +254,7 @@ AVAILABLE TIME WINDOWS (use one per suggestion):
 ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
+TARGET EVENT DURATION: ${durationHint} minutes — use this as durationMinutes for all suggestions
 
 ${contextPrompt ? `ADDITIONAL CONTEXT FROM USER: ${contextPrompt}` : ''}
 
@@ -231,7 +266,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "title": "Short catchy title",
       "date": "YYYY-MM-DD",
       "time": "7:00 PM",
-      "durationMinutes": 120,
+      "durationMinutes": ${durationHint},
       "neighborhood": "West Village",
       "venues": [
         { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, New York, NY" }
@@ -452,34 +487,36 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     const tzOffset = Number(timezoneOffsetMinutes) || 0;
 
-    // Only the attendee's calendar gates availability — the organizer chose this window
-    // intentionally and may be willing to move their own conflicts.
-    const freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset);
+    const durationMinutes = inferDurationMinutes(eventTitle, contextPrompt);
+
+    // Windows where the attendee is free — used to detect if the attendee is simply unavailable.
+    const attendeeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes);
 
     // If the attendee is fully booked in the requested window, bail out early.
-    if (freeWindows.length === 0) {
+    if (attendeeWindows.length === 0) {
       return res.status(422).json({
         error: 'No availability found in the selected time window. Try a different date or time of day.',
       });
     }
 
-    // If the organizer has conflicts during the suggested windows but hasn't confirmed,
-    // return a prompt asking them to confirm before generating.
-    if (!confirmedOrganizerConflict) {
-      const organizerConflict = busyA.some(busy =>
-        freeWindows.some(w => {
-          const bStart = new Date(busy.start);
-          const bEnd   = new Date(busy.end);
-          return bStart < new Date(w.end) && bEnd > new Date(w.start);
-        })
-      );
-      if (organizerConflict) {
-        return res.status(200).json({ needsConfirmation: true });
-      }
+    // Windows where BOTH organizer and attendee are free — the ideal case.
+    // If any exist, use them and skip the organizer entirely (their conflicts are excluded naturally).
+    // Only warn the organizer if they are completely blocked across the entire window with no gaps.
+    const bothWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes);
+    let freeWindows;
+    if (bothWindows.length > 0) {
+      // Organizer has some free time — use shared windows, no warning needed.
+      freeWindows = bothWindows;
+    } else if (!confirmedOrganizerConflict) {
+      // Organizer is fully blocked but attendee has availability — ask for confirmation.
+      return res.status(200).json({ needsConfirmation: true });
+    } else {
+      // Organizer confirmed override — schedule across their conflicts using attendee-only windows.
+      freeWindows = attendeeWindows;
     }
 
     // Call Claude
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -860,7 +897,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         error: 'Could not read calendar availability. Make sure both users have connected Google Calendar.',
       });
     }
-    const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' });
+    const rerollDuration = inferDurationMinutes(itin.event_title, itin.context_prompt);
+    const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' }, 20, 0, rerollDuration);
 
     if (rerollWindows.length === 0) {
       return res.status(422).json({
@@ -874,6 +912,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       freeWindows: rerollWindows,
       contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote, appendNote].filter(Boolean).join('. '),
       maxTravelMinutes: itin.max_travel_minutes || null,
+      eventTitle: itin.event_title || null,
+      durationMinutes: rerollDuration,
     });
 
     let newSuggestions;
