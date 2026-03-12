@@ -29,8 +29,22 @@ function getInitials(name = '') {
  */
 function formatDate(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  const d = new Date(dateStr + 'T00:00:00'); // force local time, not UTC midnight
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/**
+ * Formats a date range for display on pending/draft itinerary cards.
+ * If start and end are the same day, shows just that day.
+ * Otherwise shows "Mar 10 – Mar 15".
+ */
+function formatDateRange(startStr, endStr) {
+  if (!startStr) return '';
+  const opts = { month: 'short', day: 'numeric' };
+  const start = new Date(startStr + 'T00:00:00').toLocaleDateString('en-US', opts);
+  if (!endStr || startStr === endStr) return start;
+  const end = new Date(endStr + 'T00:00:00').toLocaleDateString('en-US', opts);
+  return `${start} – ${end}`;
 }
 
 /**
@@ -97,10 +111,19 @@ function NudgeCard({ nudge, onDismiss }) {
  */
 function ItineraryCard({ item, onDelete }) {
   const friendName = item.isOrganizer ? item.attendeeName : item.organizerName;
-  // Use the first suggestion's date/neighborhood as the teaser metadata.
-  const firstSuggestion = item.suggestions?.[0];
-  const displayDate = firstSuggestion?.date;
   const tab = deriveTab(item);
+
+  // Confirmed: show the specific date both users agreed to.
+  // Pending/draft: show the scheduling window they're choosing from.
+  const confirmedSuggestion = tab === 'confirmed'
+    ? (item.suggestions || []).find(s => s.id === item.selected_suggestion_id)
+      ?? item.suggestions?.[0]  // fallback if selected_suggestion_id is missing
+    : null;
+  const displayDate = confirmedSuggestion
+    ? formatDate(confirmedSuggestion.date)
+    : formatDateRange(item.date_range_start, item.date_range_end);
+
+  const firstSuggestion = item.suggestions?.[0];
 
   const badgeMap = {
     drafts:       { cls: 'badge--gray',  label: 'draft' },
@@ -119,7 +142,7 @@ function ItineraryCard({ item, onDelete }) {
             {friendName}{item.event_title ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {item.event_title}</span> : ''}
           </div>
           <div className="itinerary-card__meta">
-            {displayDate && <span>{formatDate(displayDate)}</span>}
+            {displayDate && <span>{displayDate}</span>}
             {firstSuggestion?.neighborhood && (
               <>
                 <span className="itinerary-card__dot" />

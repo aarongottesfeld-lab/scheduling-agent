@@ -456,9 +456,19 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
   app.get('/schedule/itineraries', requireAuth, async (req, res) => {
     const filter = req.query.filter; // 'waiting' | 'upcoming' | undefined = all
 
+    // Hard-delete any unlocked itineraries whose scheduling window has already passed.
+    // This runs as a side-effect of listing so no separate cron job is needed.
+    const todayStr = new Date().toISOString().split('T')[0];
+    await supabase
+      .from('itineraries')
+      .delete()
+      .or(`organizer_id.eq.${req.userId},attendee_id.eq.${req.userId}`)
+      .is('locked_at', null)
+      .lt('date_range_end', todayStr);
+
     let query = supabase
       .from('itineraries')
-      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count, event_title')
+      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count, event_title, date_range_start, date_range_end, selected_suggestion_id')
       .or(`organizer_id.eq.${req.userId},attendee_id.eq.${req.userId}`)
       .order('created_at', { ascending: false })
       .limit(50);
