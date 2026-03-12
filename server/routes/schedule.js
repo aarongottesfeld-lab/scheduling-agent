@@ -407,7 +407,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       });
     }
 
+    console.log('[suggest] start=%s end=%s timeOfDay=%j friendSession=%s busyA=%d busyB=%d',
+      start, end, timeOfDay, friendSession ? 'found' : 'null', busyA.length, busyB.length);
+    if (busyA.length || busyB.length) {
+      console.log('[suggest] busyA=%j busyB=%j', busyA.slice(0,3), busyB.slice(0,3));
+    }
+
     const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay);
+    console.log('[suggest] freeWindows=%d first=%j', freeWindows.length, freeWindows[0]);
 
     // If both calendars are fully booked in the requested window, bail out early
     // rather than letting Claude invent dates outside the window.
