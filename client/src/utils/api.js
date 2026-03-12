@@ -51,7 +51,17 @@ export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, e
   return res.data;
 }
 
-export async function confirmSuggestion(suggestionId) {
-  const res = await client.post('/schedule/confirm', { suggestionId });
+/**
+ * Accepts or counter-proposes a suggestion within an itinerary.
+ * Both parameters are required — the server validates that the caller
+ * is a participant in the itinerary before accepting the confirmation.
+ *
+ * @param {string} itineraryId  - UUID of the itinerary being acted on
+ * @param {string} suggestionId - ID of the suggestion being selected (e.g. "s1")
+ */
+export async function confirmSuggestion(itineraryId, suggestionId) {
+  // The server requires itineraryId to look up the itinerary and verify
+  // that the caller is the organizer or attendee before saving the status.
+  const res = await client.post('/schedule/confirm', { itineraryId, suggestionId });
   return res.data;
 }

@@ -1,11 +1,21 @@
 // routes/schedule.js — scheduling engine
-// POST /schedule/suggest      — AI suggestion engine (main feature)
-// GET  /schedule/itineraries  — list user's itineraries
-// GET  /schedule/itinerary/:id
-// POST /schedule/itinerary/:id/send
-// POST /schedule/itinerary/:id/decline
-// POST /schedule/itinerary/:id/reroll
-// POST /schedule/confirm
+//
+// POST /schedule/suggest       — AI suggestion engine (creates a new itinerary)
+// GET  /schedule/itineraries   — list the current user's itineraries
+// GET  /schedule/itinerary/:id — fetch a single itinerary with profiles
+// POST /schedule/itinerary/:id/send     — notify attendee that organizer has sent
+// POST /schedule/itinerary/:id/decline  — decline the itinerary
+// POST /schedule/itinerary/:id/reroll   — regenerate suggestions
+// POST /schedule/confirm       — accept / counter-propose a suggestion
+// PATCH /schedule/itinerary/:id/title   — update event title
+// POST  /schedule/itinerary/:id/changelog — append a changelog entry
+// DELETE /schedule/itinerary/:id — hard-delete a draft
+//
+// Session access:
+//   This router receives a `sessionStore` object (not the old in-memory Map).
+//   sessionStore.getSessionBySupabaseId(id) → async, returns session or null.
+//   Used to look up Google Calendar tokens for other users (friend free/busy,
+//   organizer/attendee calendar event creation).
 
 'use strict';
 const Anthropic = require('@anthropic-ai/sdk');
@@ -17,6 +27,13 @@ const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
 const IS_PROD = process.env.NODE_ENV === 'production';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL
   || (IS_PROD ? 'claude-sonnet-4-5-20250929' : 'claude-haiku-4-5-20251001');
+
+// UUID validation — used throughout this file to reject malformed IDs before
+// they reach Supabase.  The same pattern is used in friends.js and users.js;
+// keep the regex identical so behaviour is consistent across all routers.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Returns true only if s is a well-formed UUID v4 string. */
+function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
@@ -309,12 +326,42 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
   }
 }
 
-module.exports = function scheduleRouter(app, supabase, requireAuth, userSessions) {
+/**
+ * @param {object} sessionStore - { getSessionBySupabaseId } — replaces the old userSessions Map.
+ *   getSessionBySupabaseId(supabaseId) is async and queries the Supabase sessions table.
+ */
+module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStore) {
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
     const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle } = req.body;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
+
+    // Validate UUID format before any DB queries — mirrors the check in friends.js.
+    // Without this, a malformed value reaches .eq('id', targetUserId) and Supabase
+    // returns an opaque error instead of a clean 400.
+    if (!isValidUUID(targetUserId)) return res.status(400).json({ error: 'Invalid targetUserId.' });
+
+    // ── Daily rate limit ──────────────────────────────────────────────────────
+    // Cap each user at 10 new itinerary suggestions per UTC calendar day.
+    // Counted against the itineraries table (organizer_id = this user, created today).
+    // Checked before any profile fetches or Claude calls to fail fast and cheaply.
+    // The cap resets at UTC midnight — `todayUTC` is YYYY-MM-DD in UTC.
+    const todayUTC = new Date().toISOString().split('T')[0]; // e.g. "2026-03-12"
+    const { count: suggestCount, error: countErr } = await supabase
+      .from('itineraries')
+      .select('*', { count: 'exact', head: true }) // '*' required — Supabase JS v2 only populates .count when selector is '*'; head:true skips returning rows
+      .eq('organizer_id', req.userId)
+      .gte('created_at', `${todayUTC}T00:00:00.000Z`);
+
+    if (countErr) {
+      // Log but don't block on a count failure — fail open so a DB hiccup
+      // doesn't permanently lock users out of suggesting.
+      console.warn('suggest rate-limit count failed:', countErr.message);
+    } else if (suggestCount >= 10) {
+      return res.status(429).json({ error: 'Daily suggestion limit reached. Try again tomorrow.' });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const today = new Date().toISOString().split('T')[0];
     const start = startDate || today;
@@ -333,8 +380,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const startISO = new Date(start + 'T00:00:00').toISOString();
     const endISO   = new Date(end   + 'T23:59:59').toISOString();
 
-    // Get friend's session for calendar access (may not be logged in — graceful fallback)
-    const friendSession = [...(userSessions?.entries() || [])].find(([, s]) => s.supabaseId === targetUserId)?.[1];
+    // Look up the friend's session to access their Google Calendar tokens.
+    // Uses the Supabase sessions table via sessionStore (replaces old in-memory Map lookup).
+    // Returns null if the friend has no active session — fetchBusy falls back to mock slots.
+    const friendSession = await sessionStore.getSessionBySupabaseId(targetUserId);
 
     const [busyA, busyB] = await Promise.all([
       fetchBusy(req.userSession,  startISO, endISO, supabase, req.userId),
@@ -423,6 +472,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── GET /schedule/itinerary/:id ─────────────────────────── */
   app.get('/schedule/itinerary/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { data, error } = await supabase
       .from('itineraries')
       .select('*')
@@ -450,13 +501,16 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
   // Handles three distinct actions depending on who is calling and whether
   // isSuggestAlternative is set:
   //   Organizer (no flag): sets organizer_status='accepted', records selected_suggestion_id
-  //   Attendee  (no flag): sets attendee_status='accepted'; auto-locks if IDs match
-  //   Attendee  (flag):    marks attendeeSelected flag in JSONB, resets organizer to 'sent'
+  //   Attendee  (no flag): sets attendee_status='accepted'; auto-locks via DB trigger if IDs match
+  //   Attendee  (flag):    sets attendeeSelected:true on JSONB suggestion, keeps att=pending
+  //                        (avoids DB auto-lock trigger; deriveStatus reads the JSONB flag instead)
   app.post('/schedule/confirm', requireAuth, async (req, res) => {
     const { itineraryId, suggestionId, isSuggestAlternative } = req.body;
-    // Log receipt to confirm the request arrives and isSuggestAlternative is read correctly.
-    console.log('[confirm] Received:', { itineraryId, suggestionId, isSuggestAlternative, userId: req.userId });
     if (!itineraryId || !suggestionId) return res.status(400).json({ error: 'itineraryId and suggestionId required.' });
+    // Validate itineraryId is a real UUID before hitting the DB — same guard used on
+    // all other routes in this file.  suggestionId is a Claude-generated string like
+    // "s1" (not a UUID), so we only validate the DB-bound itineraryId here.
+    if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
@@ -560,9 +614,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       const organizerProfile = orgProfile.data || {};
       const attendeeProfile  = attProfile.data  || {};
 
-      // Get sessions for both users to access their tokens
-      const organizerSession = [...userSessions.entries()].find(([, s]) => s.supabaseId === itin.organizer_id)?.[1];
-      const attendeeSession  = [...userSessions.entries()].find(([, s]) => s.supabaseId === itin.attendee_id)?.[1];
+      // Look up sessions for both parties to find valid Google Calendar tokens.
+      // Note: token refresh inside createCalendarEventForUser mutates the local session
+      // object but does NOT persist back to the DB for these indirect lookups.
+      // Worst case: next calendar operation re-refreshes. The event creation is best-effort.
+      const [organizerSession, attendeeSession] = await Promise.all([
+        sessionStore.getSessionBySupabaseId(itin.organizer_id),
+        sessionStore.getSessionBySupabaseId(itin.attendee_id),
+      ]);
 
       // Create event using whichever user has valid tokens (organizer preferred)
       const activeSession = organizerSession || attendeeSession;
@@ -587,6 +646,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── POST /schedule/itinerary/:id/send ───────────────────── */
   app.post('/schedule/itinerary/:id/send', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { data: itin } = await supabase.from('itineraries').select('organizer_id,attendee_id,organizer_status').eq('id', req.params.id).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can send.' });
@@ -608,6 +669,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── POST /schedule/itinerary/:id/decline ────────────────── */
   app.post('/schedule/itinerary/:id/decline', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { data: itin } = await supabase.from('itineraries').select('organizer_id,attendee_id').eq('id', req.params.id).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
@@ -631,6 +694,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
   /* ── POST /schedule/itinerary/:id/reroll ─────────────────── */
   app.post('/schedule/itinerary/:id/reroll', requireAuth, async (req, res) => {
     const itineraryId = req.params.id;
+    if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
@@ -758,7 +823,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       // appendMode: preserve all statuses — we're only adding options, not resetting negotiation
       organizer_status: preserveOrgPick
         ? itin.organizer_status
-        : isOrganizer ? 'pending' : (itin.organizer_status === 'accepted' ? 'sent' : itin.organizer_status),
+        : isOrganizer ? 'pending' : (itin.organizer_status === 'accepted' ? 'pending' : itin.organizer_status), // attendee reroll resets organizer to pending so they must re-confirm the new options; 'sent' is not a valid DB status
       attendee_status: appendMode ? itin.attendee_status : 'pending',
     };
     // Clear the org's pick reference only when we're NOT preserving it.
@@ -793,6 +858,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── PATCH /schedule/itinerary/:id/title ─────────────────── */
   app.patch('/schedule/itinerary/:id/title', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { eventTitle } = req.body;
     if (eventTitle !== null && eventTitle !== undefined && typeof eventTitle !== 'string') {
       return res.status(400).json({ error: 'eventTitle must be a string or null.' });
@@ -812,6 +879,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
   /* ── POST /schedule/itinerary/:id/changelog ──────────────── */
   app.post('/schedule/itinerary/:id/changelog', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: 'message is required.' });
 
@@ -828,6 +897,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
   /* ── DELETE /schedule/itinerary/:id ─────────────────────── */
   // Only the organizer can delete a draft (organizer_status = 'pending', not locked)
   app.delete('/schedule/itinerary/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
     const { data: itin } = await supabase
       .from('itineraries')
       .select('organizer_id, locked_at')

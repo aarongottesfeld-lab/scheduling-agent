@@ -1,0 +1,17 @@
+{
+  "name": "rendezvous",
+  "private": true,
+  "scripts": {
+    "build": "cd client && npm install && npm run build"
+  },
+  "_comment": [
+    "Root package.json — required by Vercel to understand the monorepo structure.",
+    "The build script installs client dependencies and runs the CRA production build.",
+    "vercel.json points @vercel/static-build at client/package.json so Vercel runs",
+    "the client's own build script directly; this root build script is a convenience",
+    "for running the same build locally: `npm run build` from the project root.",
+    "",
+    "The server/ directory has its own package.json and is deployed independently",
+    "as a serverless function — no root-level install step is needed for the server."
+  ]
+}

@@ -104,6 +104,33 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     if (!isValidUUID(targetUserId)) return res.status(400).json({ error: 'Invalid targetUserId.' });
     if (targetUserId === req.userId) return res.status(400).json({ error: 'Cannot add yourself.' });
 
+    // ── Daily rate limit ──────────────────────────────────────────────────────
+    // Cap each user at 50 outgoing friend requests per UTC calendar day.
+    // Without this, a user could send unlimited requests to distinct user IDs,
+    // generating unlimited notifications for victims (notification spam vector).
+    //
+    // We count pending outgoing rows created today — accepted/declined requests
+    // don't accumulate against the cap since they've already been processed.
+    //
+    // Pattern mirrors the itinerary suggestion cap in schedule.js:
+    //   - Use { count: 'exact', head: true } for a cheap COUNT-only DB query
+    //   - Fail open on DB error (log the problem, don't block the request)
+    const todayUTC = new Date().toISOString().split('T')[0]; // e.g. "2026-03-12"
+    const { count: requestCount, error: requestCountErr } = await supabase
+      .from('friendships')
+      .select('*', { count: 'exact', head: true }) // '*' required for Supabase JS v2 count to work
+      .eq('user_id', req.userId)
+      .eq('status', 'pending')
+      .gte('created_at', `${todayUTC}T00:00:00.000Z`);
+
+    if (requestCountErr) {
+      // Non-fatal: a count failure shouldn't lock users out of sending requests
+      console.warn('friend-request rate-limit count failed:', requestCountErr.message);
+    } else if (requestCount >= 50) {
+      return res.status(429).json({ error: 'Too many friend requests today. Try again tomorrow.' });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Check for existing friendship or request
     const { data: existing } = await supabase
       .from('friendships').select('id, status')
@@ -181,17 +208,22 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     res.json({ ok: true });
   });
 
-  // GET /friends/:id/profile — public profile of a friend
-  // Issue 3c: only public fields are selected — annotations are never included.
+  // GET /friends/:id/profile — view another user's profile
+  // Privacy gate: non-friends receive only public fields (id, full_name, username, avatar_url).
+  // Sensitive fields (bio, location, timezone, dietary/mobility/activity preferences) are
+  // only returned when the requester has an accepted friendship with the target user.
+  // Annotations (private notes) are never included regardless of friendship status.
   app.get('/friends/:id/profile', requireAuth, async (req, res) => {
     const { id } = req.params;
     if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid user ID.' });
 
     const [profileRes, friendshipRes] = await Promise.all([
+      // Fetch the full profile row — we'll filter fields based on friendship status below
       supabase.from('profiles')
         .select('id, full_name, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url')
         .eq('id', id).single(),
-      // Two separate queries then pick whichever row exists — avoids nested and() in .or()
+      // Friendship check: try both directions (A→B and B→A) since friendships are stored
+      // as two rows but the requester may appear in either column depending on who sent the request.
       (async () => {
         const a = await supabase.from('friendships').select('status')
           .eq('user_id', req.userId).eq('friend_id', id).maybeSingle();
@@ -204,13 +236,31 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     const { data, error } = profileRes;
     if (error || !data) return res.status(404).json({ error: 'Profile not found.' });
 
+    const friendshipStatus = friendshipRes.data?.status || null;
+    const isFriend = friendshipStatus === 'accepted';
+
+    if (!isFriend) {
+      // Non-friends (strangers, pending requests) get only the public-facing fields.
+      // This prevents any authenticated user from harvesting dietary/health/location data
+      // by guessing UUIDs — they must be an accepted friend to see the full profile.
+      return res.json({
+        id:               data.id,
+        full_name:        data.full_name,
+        name:             data.full_name,
+        username:         data.username,
+        avatar_url:       data.avatar_url,
+        friendshipStatus,
+      });
+    }
+
+    // Accepted friends get the full profile including preferences used for AI suggestions
     res.json({
       ...data,
       name:             data.full_name,
       activities:       data.activity_preferences,
       dietary:          data.dietary_restrictions,
       mobility:         data.mobility_restrictions,
-      friendshipStatus: friendshipRes.data?.status || null,
+      friendshipStatus,
     });
   });
 
@@ -269,6 +319,56 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     }, { onConflict: 'user_id,friend_id' });
 
     if (error) return res.status(500).json({ error: 'Could not save annotations.' });
+    res.json({ ok: true });
+  });
+
+  // DELETE /friends/:id — remove an accepted friend
+  // Deletes the friendship rows in both directions (A→B and B→A) so neither
+  // party sees the other as a friend anymore. Also cleans up private annotations
+  // in both directions since they lose meaning once the friendship ends.
+  // Itineraries are intentionally left intact — past plans remain visible.
+  // Silent operation: no notification is sent to the removed friend.
+  app.delete('/friends/:id', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUUID(id)) return res.status(400).json({ error: 'Invalid user ID.' });
+
+    // Confirm an accepted friendship exists in either direction before deleting.
+    // Without this check a user could silently fire delete requests against strangers.
+    const { data: existing } = await supabase
+      .from('friendships')
+      .select('id')
+      .or(
+        `and(user_id.eq.${req.userId},friend_id.eq.${id}),` +
+        `and(user_id.eq.${id},friend_id.eq.${req.userId})`
+      )
+      .eq('status', 'accepted')
+      .limit(1)
+      .maybeSingle();
+
+    if (!existing) return res.status(404).json({ error: 'No accepted friendship found.' });
+
+    // Delete both directions of the friendship row.
+    // Friendships are stored bidirectionally (accept writes two rows), so we must
+    // remove both or the other user still sees this user as a friend.
+    await supabase
+      .from('friendships')
+      .delete()
+      .or(
+        `and(user_id.eq.${req.userId},friend_id.eq.${id}),` +
+        `and(user_id.eq.${id},friend_id.eq.${req.userId})`
+      );
+
+    // Clean up private annotations in both directions.
+    // Each user may have written notes about the other; remove both sets.
+    // These are private to each user so no consent from the other party is needed.
+    await supabase
+      .from('friend_annotations')
+      .delete()
+      .or(
+        `and(user_id.eq.${req.userId},friend_id.eq.${id}),` +
+        `and(user_id.eq.${id},friend_id.eq.${req.userId})`
+      );
+
     res.json({ ok: true });
   });
 

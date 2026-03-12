@@ -50,7 +50,56 @@
 
 - MyProfile.js has an unused navigate variable (ESLint warning — low priority)
 - Session persistence in production: swap sessionStorage bridge for Supabase sessions + HTTP-only cookies before Vercel deploy
-- End-to-end test of full flow (login → friend → new event → send → switch user → accept → lock) before deploy
+- [x] End-to-end test of full flow (login → friend → new event → send → switch user → accept → lock) — passed
+- [x] Full codebase audit completed — saved as audit-2026-03-12.md in project root
+- [x] audit-2026-03-12.md severity revised: schedule.js:761 'sent' bug downgraded to Medium (dead code path through UI)
+
+## Release gating decision (March 12, 2026)
+Output quality, location/travel mode, and group planning must all be in place before sharing
+with real users. First impressions with friends are hard to recover from — a functional but
+generic app will be mentally filed as "not ready" and re-engagement is difficult. The revised
+sequence is:
+
+  1. ✅ Session persistence + OAuth cookie fix — DONE (March 12)
+  2. Privacy/security fixes (friends.js:186, rate limiting, avatar MIME)
+  3. Deploy to Vercel (needed for Maps API referrer restriction + live testing)
+  4. Output quality — prompt engineering first (highest ROI, zero new infrastructure)
+  5. Location & Travel Mode
+  6. Group planning
+  7. Share with real users
+  8. React Native migration + App Store (after feature set is proven on live users)
+
+See TODO.md for full task breakdown per phase.
+
+## Roadmap documents
+- OUTPUT_QUALITY_ROADMAP.md — suggestion quality, venue filtering, route sequencing,
+  re-roll improvements, and full location/travel mode spec (added March 12)
+
+## Next session (March 13, 2026)
+
+### First priority — fix before sharing with any test users
+- friends.js:186 — any authenticated user can read any user's full profile (High / Privacy)
+  Fix: if friendshipStatus !== 'accepted', return only public fields (full_name, username, avatar_url)
+  This must be done before adding any test users outside your immediate circle
+
+### Queue for same session
+- schedule.js:761 — replace 'sent' with 'pending' in reroll route (Medium — dead code but clean it up)
+- schedule.js:315 — add per-user daily suggestion cap to prevent API credit abuse (High / Security)
+- users.js:170 — magic-bytes MIME type validation on avatar uploads (High / Security)
+
+### Pre-deploy blockers (already known — save for deploy sprint)
+- index.js:250 — session key + supabaseId in OAuth redirect URL → move to HTTP-only cookie
+- index.js:75 — in-memory sessions incompatible with Vercel serverless → persist to Supabase
+
+### Low priority / quality cleanup (can batch into one Claude Code session)
+- Stale 'sent' comments: ItineraryView.js:8,10,499,603 and schedule.js:454
+- Duplicate JSDoc block: ItineraryView.js:576–579
+- console.log PII: schedule.js:458 — gate behind !IS_PROD
+- Duplicate sanitizeSearch helper — extract to server/utils/sanitize.js
+- friends.js:299 — create anthropic as module-level singleton
+- notifications.js:18–33 — add error handling to read/read-all routes
+- showOrganizerWaitingIndicator unused variable — remove or implement
+- MyProfile.js — remove unused navigate variable
 - Duplicate title safety audit: verify all itinerary lookups use UUID not title throughout client and server
 - Full codebase audit (consistency, security, privacy, disaster recovery) — prompt saved in Apple Notes
 

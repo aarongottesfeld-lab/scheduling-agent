@@ -110,18 +110,46 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
 
     if (error) return res.status(500).json({ error: 'Search failed.' });
 
-    // Batch friendship check — single query, not N+1
+    // Batch friendship check — single query for all statuses (accepted + pending), not N+1.
+    // We fetch all friendships in either direction so that:
+    //   - accepted friends show a "Friends" badge
+    //   - outgoing pending requests show a "Pending" badge
+    //   - incoming pending requests also show "Pending" (they haven't replied yet)
     const ids = (data || []).map(u => u.id);
-    let friendIds = new Set();
+
+    // Map from user id → friendship status ('accepted' | 'pending' | null)
+    const statusMap = {};
+
     if (ids.length > 0) {
-      const { data: friends } = await supabase
-        .from('friendships').select('friend_id')
-        .eq('user_id', req.userId).eq('status', 'accepted').in('friend_id', ids);
-      friendIds = new Set((friends || []).map(f => f.friend_id));
+      // Outgoing: rows where current user is the sender (user_id = me)
+      const { data: outgoing } = await supabase
+        .from('friendships')
+        .select('friend_id, status')
+        .eq('user_id', req.userId)
+        .in('friend_id', ids);
+
+      // Incoming: rows where current user is the recipient (friend_id = me)
+      const { data: incoming } = await supabase
+        .from('friendships')
+        .select('user_id, status')
+        .eq('friend_id', req.userId)
+        .in('user_id', ids);
+
+      for (const row of (outgoing || [])) statusMap[row.friend_id] = row.status;
+      // Incoming rows fill in any gaps; if already set (outgoing accepted wins), skip.
+      for (const row of (incoming || [])) {
+        if (!statusMap[row.user_id]) statusMap[row.user_id] = row.status;
+      }
     }
 
     res.json({
-      users: (data || []).map(u => ({ ...u, name: u.full_name, isFriend: friendIds.has(u.id) })),
+      users: (data || []).map(u => ({
+        ...u,
+        name:             u.full_name,
+        isFriend:         statusMap[u.id] === 'accepted',
+        // friendshipStatus is 'accepted', 'pending', or null (no relationship)
+        friendshipStatus: statusMap[u.id] || null,
+      })),
     });
   });
 
@@ -157,7 +185,10 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
   });
 
   // POST /users/avatar — upload profile picture
-  // Accepts multipart/form-data with field "avatar" (image file, max 5MB)
+  // Accepts multipart/form-data with field "avatar" (JPEG or PNG only, max 5MB).
+  // Security: validates actual file content via magic bytes, not just the Content-Type
+  // header declared by the client. A malicious file with a spoofed image MIME type
+  // will be rejected after the buffer is assembled.
   app.post('/users/avatar', requireAuth, async (req, res) => {
     const busboy = require('busboy');
     const bb = busboy({ headers: req.headers, limits: { fileSize: 5 * 1024 * 1024 } });
@@ -166,6 +197,9 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     let fileSizeOk = true;
 
     bb.on('file', (fieldname, file, info) => {
+      // mimeType comes from the multipart Content-Type header — client-declared, not trusted.
+      // We record it here for the extension and storage contentType, but the actual format
+      // is verified via magic bytes after the buffer is assembled (see bb.on('close')).
       mimeType = info.mimeType;
       const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
       if (!allowed.includes(mimeType)) { file.resume(); fileSizeOk = false; return; }
@@ -176,10 +210,29 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     });
 
     bb.on('close', async () => {
-      if (!fileSizeOk) return res.status(400).json({ error: 'File too large or invalid type (JPEG, PNG, WebP, GIF only, max 5MB).' });
+      if (!fileSizeOk) return res.status(400).json({ error: 'File too large or invalid type (JPEG or PNG only, max 5MB).' });
       if (!fileBuffer) return res.status(400).json({ error: 'No image received.' });
 
-      const ext  = mimeType.split('/')[1].replace('jpeg', 'jpg');
+      // ── Magic-bytes validation ────────────────────────────────────────────
+      // Read the first 4 bytes of the actual file content to confirm the format,
+      // independent of whatever Content-Type the client declared.
+      //   JPEG: starts with FF D8 FF
+      //   PNG:  starts with 89 50 4E 47 (i.e. \x89PNG)
+      // Reject anything that doesn't match — this blocks e.g. a PHP script or
+      // HTML file uploaded with Content-Type: image/jpeg.
+      // Note: WebP and GIF are intentionally excluded here even though they were
+      // previously allowed via MIME type — magic-byte support is limited to the
+      // two most common formats to keep the check simple and auditable.
+      const b0 = fileBuffer[0], b1 = fileBuffer[1], b2 = fileBuffer[2], b3 = fileBuffer[3];
+      const isJpeg = b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF;
+      const isPng  = b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47;
+      if (!isJpeg && !isPng) {
+        return res.status(400).json({ error: 'Invalid file type. Only JPEG and PNG are supported.' });
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
+      // Derive a safe extension from the verified magic bytes, not from the MIME header
+      const ext  = isJpeg ? 'jpg' : 'png';
       const path = `${req.userId}/avatar.${ext}`;
 
       const { error: uploadErr } = await supabase.storage

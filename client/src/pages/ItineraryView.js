@@ -3,12 +3,13 @@
 // Shows suggestion cards with context-sensitive action buttons depending on the viewer's
 // role (organizer or attendee) and the current negotiation state.
 //
-// State machine summary:
-//   organizer_status=pending                       → organizer drafting, attendee can't see yet
-//   organizer_status=sent, attendee_status=pending → attendee evaluating
-//   organizer_status=accepted                      → organizer locked their pick, awaiting attendee
-//   organizer_status=sent, attendee_status=accepted→ attendee counter-proposed (attendee_suggested)
-//   locked_at set                                  → both agreed, plan is confirmed
+// State machine summary (DB check constraint only allows pending/accepted/declined — no 'sent'):
+//   org=pending                                         → organizer drafting; attendee can't see
+//   org=accepted, att=pending, no attendeeSelected flag → organizer sent pick; attendee evaluating
+//   org=accepted, att=pending, attendeeSelected:true    → attendee counter-proposed (attendee_suggested)
+//   locked_at set                                       → both agreed; plan confirmed
+//
+// deriveStatus() maps the two DB columns + JSONB flag to: 'pending' | 'sent' | 'attendee_suggested' | 'confirmed'
 //
 // Attendee's counter-proposal is tracked via attendeeSelected:true on the JSONB suggestion
 // object rather than overwriting selected_suggestion_id (which tracks the organizer's pick only).
@@ -16,7 +17,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { getUserId, getSupabaseId } from '../utils/auth';
+// No auth imports needed — isOrganizer is computed server-side in the API response.
+// The session cookie is sent automatically; no manual auth header required.
 import client from '../utils/client';
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -426,10 +428,6 @@ export default function ItineraryView() {
   const { id }   = useParams();
   const navigate = useNavigate();
 
-  // Prefer supabaseId for DB comparisons — session tokens are hex strings, but
-  // organizer_id / attendee_id in the DB are Supabase UUIDs.
-  const [myId, setMyId] = useState(() => getSupabaseId() || getUserId());
-
   const [itin,         setItin]       = useState(null);
   const [loading,      setLoading]    = useState(true);
   const [error,        setError]      = useState('');
@@ -455,7 +453,6 @@ export default function ItineraryView() {
     try {
       const res = await client.get(`/schedule/itinerary/${id}`);
       setItin(res.data);
-      setMyId(getSupabaseId() || getUserId());
     } catch {
       setError('Could not load this itinerary.');
     } finally {
@@ -496,8 +493,8 @@ export default function ItineraryView() {
 
   /**
    * Organizer picks a suggestion and sends the itinerary in one step.
-   * Calls /send first (changes organizer_status to 'sent') then /confirm
-   * (records the pick and sets organizer_status to 'accepted').
+   * Calls /send first (notifies the attendee; no status change — 'sent' is not a valid DB value)
+   * then /confirm (records selected_suggestion_id and sets organizer_status='accepted').
    */
   async function handlePick(suggestionId) {
     setSubmitting(true);
@@ -575,12 +572,9 @@ export default function ItineraryView() {
   /**
    * Per-card reroll: swaps out a single suggestion while preserving the others.
    * rerollType is 'timing' (same activity, new time) or 'activity' (same time, new activity).
+   * feedback is the optional vibe prompt text from the inline textarea — scoped to this
+   * card only and passed as contextPrompt in the request.
    * activeCardId drives the per-card busy spinner in SuggestionCard.
-   */
-  /**
-   * Per-card reroll with optional feedback text from the vibe prompt.
-   * feedback is scoped to only this card's replacement — passed as contextPrompt
-   * to the server which injects it into the single-card reroll instruction only.
    */
   async function handleSingleCardReroll(suggestionId, rerollType, feedback = '') {
     setSubmitting(true);
@@ -600,8 +594,9 @@ export default function ItineraryView() {
   /**
    * Attendee counter-proposes a non-pick card.
    * Posts to /confirm with isSuggestAlternative=true, which sets attendeeSelected:true
-   * on the JSONB suggestion object and resets organizer_status to 'sent' so the organizer
-   * knows they need to re-evaluate.
+   * on the JSONB suggestion object and keeps attendee_status='pending' (not 'accepted')
+   * to avoid triggering the DB auto-lock trigger. The organizer sees the attendee_suggested
+   * state via deriveStatus() reading the JSONB flag.
    */
   async function handleSuggestAlternative(suggestionId) {
     setSubmitting(true);
@@ -643,7 +638,10 @@ export default function ItineraryView() {
     </div></main></>
   );
 
-  const isOrganizer = itin.organizer_id === myId;
+  // isOrganizer is computed server-side (organizer_id === req.userId in the API route)
+  // and included in the response. This is more reliable than a client-side UUID
+  // comparison, which required storing supabaseId in sessionStorage.
+  const isOrganizer = itin.isOrganizer;
   const status      = deriveStatus(itin);
   // Sort suggestion cards so the most relevant card is always first:
   //   Organizer re-evaluating (attendeeSelected set): attendee's suggested card floats to top

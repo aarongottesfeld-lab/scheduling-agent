@@ -1,10 +1,15 @@
-// 7/10 — FriendProfile
+// FriendProfile.js — detail page for a single friend's profile
+//
 // Two-panel layout:
 //   Public section  — read-only: avatar, name, username, bio, location,
-//                     activity preferences (pills), dietary/mobility info.
+//                     activity preferences (pills), dietary/mobility info,
+//                     and a context-sensitive CTA block (schedule / pending / add / remove).
 //   Private annotations — only visible to the current user, never shared:
 //                     nickname, shared interests (pill input + AI suggestions),
 //                     free-form notes.
+//
+// The Remove friend button only renders when profile.friendshipStatus === 'accepted'.
+// It is absent for pending, non-friend, and error states.
 
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
@@ -13,6 +18,8 @@ import PillInput from '../components/PillInput';
 import client from '../utils/client';
 
 /* ── Helpers ────────────────────────────────────────────────── */
+
+/** Produces two-letter uppercase initials from a full name string. */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
@@ -26,15 +33,29 @@ export default function FriendProfile() {
   const [annotations,    setAnnotations]    = useState({ nickname: '', sharedInterests: [], notes: '' });
   const [aiSuggestions,  setAiSuggestions]  = useState([]);
 
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState('');
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState('');
   const [saving,      setSaving]      = useState(false);
   const [requesting,  setRequesting]  = useState(false);
   const [requestSent, setRequestSent] = useState(false);
   const [requestErr,  setRequestErr]  = useState('');
-  const [saved,    setSaved]    = useState(false);
-  const [saveErr,  setSaveErr]  = useState('');
+  const [saved,       setSaved]       = useState(false);
+  const [saveErr,     setSaveErr]     = useState('');
 
+  // removing: true while the DELETE /friends/:id request is in flight (disables buttons)
+  // removeErr: non-empty string if the remove request failed (shown as an alert near the button)
+  // showRemoveConfirm: true when the inline "Remove [name]? Yes / Cancel" block is visible.
+  //   Clicking "Remove friend" opens it; "Cancel" closes it; confirmed remove closes + fires DELETE.
+  const [removing,           setRemoving]           = useState(false);
+  const [removeErr,          setRemoveErr]          = useState('');
+  const [showRemoveConfirm,  setShowRemoveConfirm]  = useState(false);
+
+  /**
+   * Loads the friend's profile, the current user's private annotations for them,
+   * and AI-suggested shared interests — all in parallel.
+   * Uses allSettled so a failing annotations/suggestions fetch doesn't block the profile.
+   * Cleans up via the mounted flag to avoid state updates after unmount.
+   */
   useEffect(() => {
     let mounted = true;
 
@@ -77,6 +98,10 @@ export default function FriendProfile() {
     return () => { mounted = false; };
   }, [friendId]);
 
+  /**
+   * Sends a friend request to the viewed user.
+   * Sets requestSent on success so the button swaps to a static badge.
+   */
   async function sendFriendRequest() {
     setRequesting(true); setRequestErr('');
     try {
@@ -89,6 +114,31 @@ export default function FriendProfile() {
     }
   }
 
+  /**
+   * Removes the currently viewed user as a friend.
+   * Called only after the user has confirmed via the inline confirmation UI
+   * (showRemoveConfirm === true), so no window.confirm() is needed here.
+   * On success, navigates back to /friends — there's nothing useful left to show
+   * on this page once the friendship is gone.
+   * On failure, surfaces removeErr near the Remove button.
+   */
+  async function removeFriend() {
+    setShowRemoveConfirm(false); // close confirmation UI regardless of outcome
+    setRemoving(true);
+    setRemoveErr('');
+    try {
+      await client.delete(`/friends/${friendId}`);
+      navigate('/friends');
+    } catch (err) {
+      setRemoveErr(err.message || 'Could not remove friend. Please try again.');
+      setRemoving(false); // only reset on error — on success we navigate away
+    }
+  }
+
+  /**
+   * Saves the current user's private annotations (nickname, shared interests, notes)
+   * for this friend. Shows a temporary "✓ Saved" state for 3 seconds on success.
+   */
   async function saveAnnotations(e) {
     e.preventDefault();
     setSaving(true);
@@ -202,15 +252,73 @@ export default function FriendProfile() {
               </div>
             )}
 
-            {/* Schedule CTA — only available once friendship is accepted */}
+            {/* Schedule CTA — context-sensitive based on friendship status */}
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
               {profile.friendshipStatus === 'accepted' ? (
-                <Link
-                  to={`/schedule/new?friendId=${friendId}`}
-                  className="btn btn--primary"
-                >
-                  Schedule with {profile.name.split(' ')[0]}
-                </Link>
+                <>
+                  {/* Primary action: schedule a plan */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <Link
+                      to={`/schedule/new?friendId=${friendId}`}
+                      className="btn btn--primary"
+                    >
+                      Schedule with {profile.name.split(' ')[0]}
+                    </Link>
+
+                    {/* Remove friend — clicking opens the inline confirmation block below
+                        instead of a blocking window.confirm(). Disabled while in-flight. */}
+                    {!showRemoveConfirm && (
+                      <button
+                        className="btn btn--ghost btn--sm"
+                        style={{ color: 'var(--text-3)' }}
+                        onClick={() => setShowRemoveConfirm(true)}
+                        disabled={removing}
+                      >
+                        {removing ? 'Removing…' : 'Remove friend'}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Inline confirmation — replaces window.confirm() so the page stays
+                      interactive. Only renders when showRemoveConfirm is true. */}
+                  {showRemoveConfirm && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        flexWrap: 'wrap',
+                        fontSize: '0.88rem',
+                        color: 'var(--text-2)',
+                      }}
+                    >
+                      <span>Remove {profile.name.split(' ')[0]} as a friend?</span>
+                      <button
+                        className="btn btn--ghost btn--sm"
+                        style={{ color: 'var(--danger, #c0392b)', fontWeight: 600 }}
+                        onClick={removeFriend}
+                        disabled={removing}
+                      >
+                        Yes, remove
+                      </button>
+                      <button
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => setShowRemoveConfirm(false)}
+                        disabled={removing}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Inline error shown directly below the confirmation / remove button */}
+                  {removeErr && (
+                    <div className="alert alert--error" style={{ marginTop: 10 }}>
+                      {removeErr}
+                    </div>
+                  )}
+                </>
               ) : profile.friendshipStatus === 'pending' ? (
                 <div style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>
                   ⏳ Friend request pending — you can schedule once they accept.
@@ -263,7 +371,7 @@ export default function FriendProfile() {
                   placeholder="Things you both enjoy…"
                 />
 
-                {/* AI-suggested shared interests */}
+                {/* AI-suggested shared interests — filtered to exclude already-added pills */}
                 {aiSuggestions.length > 0 && (
                   <div style={{ marginTop: 10 }}>
                     <p className="form-hint" style={{ marginBottom: 6 }}>✨ AI suggested</p>

@@ -1,10 +1,14 @@
-// 6/10 — Friends
+// Friends.js — friends management page
+// Three sections: user search, incoming friend requests, and the accepted friends list.
+// All friend mutations (add, accept/decline, remove) update local state optimistically
+// so the UI responds immediately without a full reload.
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { searchUserByEmail } from '../utils/api';
 import client from '../utils/client';
 
+/** Produces two-letter uppercase initials from a full name string. */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
@@ -25,9 +29,16 @@ export default function Friends() {
   // Inline action errors instead of alert()
   const [actionErr, setActionErr] = useState('');
 
+  // confirmRemoveId: the friend.id whose remove-confirmation row is currently showing.
+  // null means no confirmation is open. Set to a friend's id to reveal the inline
+  // "Remove [name]? Yes / Cancel" row for that specific card only.
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+
   const [copied,    setCopied]    = useState(false);
   const [myProfile, setMyProfile] = useState(null);
 
+  // Fetch friends list, incoming requests, and own profile in parallel on mount.
+  // Uses allSettled so a single failing request doesn't blank the whole page.
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -51,6 +62,10 @@ export default function Friends() {
     return () => { mounted = false; };
   }, []);
 
+  /**
+   * Searches users by email or username. Wraps the shared searchUserByEmail helper.
+   * Clears previous results on each new submission so stale data is never shown.
+   */
   const handleSearch = useCallback(async (e) => {
     e.preventDefault();
     const q = query.trim();
@@ -69,6 +84,11 @@ export default function Friends() {
     }
   }, [query]);
 
+  /**
+   * Sends a friend request to a search result user.
+   * Optimistically marks the result card as "Request sent" so the button
+   * disappears immediately without a refetch.
+   */
   async function sendRequest(userId) {
     setActionErr('');
     try {
@@ -81,6 +101,11 @@ export default function Friends() {
     }
   }
 
+  /**
+   * Accepts or declines a pending incoming friend request.
+   * On accept, refetches the friends list so the new friend appears immediately.
+   * On decline, just removes the request card from the pending list.
+   */
   async function respondToRequest(requestId, accept) {
     setActionErr('');
     try {
@@ -95,6 +120,31 @@ export default function Friends() {
     }
   }
 
+  /**
+   * Removes an accepted friend. Called only after the user has confirmed via the
+   * inline confirmation row (confirmRemoveId === friendId), so no window.confirm() needed.
+   * Optimistically removes the friend from local state on success so the card
+   * disappears immediately. Sets actionErr on failure so the user knows it didn't work.
+   * Only available on the accepted friends list — not search results or pending requests.
+   *
+   * @param {string} friendId - Supabase UUID of the friend to remove
+   */
+  async function removeFriend(friendId) {
+    setConfirmRemoveId(null); // close the confirmation row regardless of outcome
+    setActionErr('');
+    try {
+      await client.delete(`/friends/${friendId}`);
+      // Optimistic update: remove from local state without a full refetch
+      setFriends((prev) => prev.filter((f) => f.id !== friendId));
+    } catch (err) {
+      setActionErr(err.message || 'Could not remove friend. Please try again.');
+    }
+  }
+
+  /**
+   * Copies the user's shareable profile URL to the clipboard.
+   * Falls back to a prompt() dialog on browsers that block clipboard access.
+   */
   async function handleShareProfile() {
     const username = myProfile?.username;
     if (!username) return;
@@ -185,8 +235,10 @@ export default function Friends() {
                     <div className="friend-card__actions">
                       {user.isFriend ? (
                         <span className="badge badge--green">Friends</span>
-                      ) : user.requestSent ? (
-                        <span className="badge badge--gray">Request sent</span>
+                      ) : (user.friendshipStatus === 'pending' || user.requestSent) ? (
+                        // 'pending' covers both outgoing requests (server returned friendshipStatus)
+                        // and optimistically-sent requests (requestSent flag set by sendRequest()).
+                        <span className="badge badge--gray">Pending</span>
                       ) : (
                         <button className="btn btn--secondary btn--sm" onClick={() => sendRequest(user.id)}>
                           Add
@@ -241,7 +293,7 @@ export default function Friends() {
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {friends.map((f) => (
-                      <div key={f.id} className="friend-card">
+                      <div key={f.id} className="friend-card" style={{ flexWrap: 'wrap' }}>
                         <Link to={`/friends/${f.id}`} className="avatar" style={{ textDecoration:'none' }}>
                           {getInitials(f.name)}
                         </Link>
@@ -253,7 +305,48 @@ export default function Friends() {
                         </div>
                         <div className="friend-card__actions">
                           <Link to={`/friends/${f.id}`} className="btn btn--ghost btn--sm">View profile</Link>
+                          {/* Muted color signals secondary/destructive — clicking shows the
+                              inline confirmation row instead of a blocking window.confirm(). */}
+                          <button
+                            className="btn btn--ghost btn--sm"
+                            style={{ color: 'var(--text-3)' }}
+                            onClick={() => setConfirmRemoveId(f.id)}
+                          >
+                            Remove
+                          </button>
                         </div>
+
+                        {/* Inline confirmation row — only visible for the card that was clicked.
+                            Replaces window.confirm() so the rest of the page stays interactive. */}
+                        {confirmRemoveId === f.id && (
+                          <div
+                            style={{
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              paddingTop: 10,
+                              borderTop: '1px solid var(--border)',
+                              fontSize: '0.88rem',
+                              color: 'var(--text-2)',
+                            }}
+                          >
+                            <span>Remove {f.name.split(' ')[0]} as a friend?</span>
+                            <button
+                              className="btn btn--ghost btn--sm"
+                              style={{ color: 'var(--danger, #c0392b)', fontWeight: 600 }}
+                              onClick={() => removeFriend(f.id)}
+                            >
+                              Yes, remove
+                            </button>
+                            <button
+                              className="btn btn--ghost btn--sm"
+                              onClick={() => setConfirmRemoveId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
