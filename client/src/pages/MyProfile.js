@@ -1,6 +1,6 @@
 // MyProfile.js — view and edit the current user's own profile
 import React, { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+// useNavigate removed — navigation not used in this component
 import NavBar from '../components/NavBar';
 import PillInput from '../components/PillInput';
 import client from '../utils/client';
@@ -64,7 +64,6 @@ function getInitials(name = '') {
 }
 
 export default function MyProfile() {
-  const navigate = useNavigate();
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
