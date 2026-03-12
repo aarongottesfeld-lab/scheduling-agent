@@ -451,16 +451,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
 
     const tzOffset = Number(timezoneOffsetMinutes) || 0;
-    console.log('[suggest] start=%s end=%s timeOfDay=%j tzOffset=%d friendSession=%s busyA=%d busyB=%d',
-      start, end, timeOfDay, tzOffset, friendSession ? 'found' : 'null', busyA.length, busyB.length);
-    if (busyA.length || busyB.length) {
-      console.log('[suggest] busyA=%j busyB=%j', busyA.slice(0,3), busyB.slice(0,3));
-    }
 
     // Only the attendee's calendar gates availability — the organizer chose this window
     // intentionally and may be willing to move their own conflicts.
     const freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset);
-    console.log('[suggest] freeWindows=%d first=%j', freeWindows.length, freeWindows[0]);
 
     // If the attendee is fully booked in the requested window, bail out early.
     if (freeWindows.length === 0) {
