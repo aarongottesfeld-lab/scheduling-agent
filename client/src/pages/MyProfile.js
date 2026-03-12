@@ -74,6 +74,7 @@ export default function MyProfile() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [locating,   setLocating]   = useState(false);
   const [locError,   setLocError]   = useState('');
+  const [locSuccess, setLocSuccess] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
 
   const [form, setForm] = useState({
@@ -135,13 +136,17 @@ export default function MyProfile() {
     }
     setLocating(true);
     setLocError('');
+    setLocSuccess('');
     navigator.geolocation.getCurrentPosition(
       async ({ coords }) => {
         try {
           const res = await client.get('/geocode', {
             params: { lat: coords.latitude, lng: coords.longitude },
           });
-          setForm((prev) => ({ ...prev, location: res.data.location || '' }));
+          console.log('[handleUseLocation] /geocode response:', res.data);
+          const resolved = res.data.location || '';
+          setForm((prev) => ({ ...prev, location: resolved }));
+          if (resolved) setLocSuccess(resolved);
         } catch {
           setLocError('Could not determine your location. Enter it manually.');
         } finally {
@@ -282,7 +287,7 @@ export default function MyProfile() {
                 type="text"
                 className="form-control"
                 value={form.location}
-                onChange={set('location')}
+                onChange={e => { setLocError(''); setLocSuccess(''); setForm(p => ({ ...p, location: e.target.value })); }}
                 placeholder="City or neighborhood"
                 style={{ flex: 1 }}
               />
@@ -296,7 +301,8 @@ export default function MyProfile() {
                 {locating ? '…' : '📍 Use my location'}
               </button>
             </div>
-            {locError && <div className="form-error" style={{ marginTop: 4 }}>{locError}</div>}
+            {locError   && <div className="form-error"   style={{ marginTop: 4 }}>{locError}</div>}
+            {locSuccess && <div className="alert alert--success" style={{ marginTop: 4 }}>Location set to: {locSuccess}</div>}
           </div>
           <div className="form-group">
             <label className="form-label" htmlFor="timezone">Timezone</label>
