@@ -1,29 +1,7 @@
 {
-  "_comment_overview": [
-    "Vercel monorepo config for Rendezvous.",
-    "Two separate builds run in parallel:",
-    "  1. React frontend (client/) — built as a static site via @vercel/static-build",
-    "  2. Express backend (server/) — deployed as a serverless function via @vercel/node",
-    "",
-    "Routing priority (evaluated top-to-bottom, first match wins):",
-    "  /api/* → Express serverless function",
-    "  /*     → React static build (SPA fallback: always serves index.html so",
-    "            client-side React Router routes work on hard refresh)",
-    "",
-    "IMPORTANT — path prefix:",
-    "  All client API calls must use the /api prefix in production so they are",
-    "  routed to the Express function rather than the SPA fallback.",
-    "  client/.env.production sets REACT_APP_SERVER_URL=/api for this reason.",
-    "  Express receives the full path including /api (e.g. GET /api/auth/me),",
-    "  so server/index.js mounts a path-strip middleware that removes the /api",
-    "  prefix before the request reaches the route handlers."
-  ],
-
   "version": 2,
-
   "builds": [
     {
-      "_comment": "Build the React app from client/. @vercel/static-build runs `npm run build` and serves the output from the distDir.",
       "src": "client/package.json",
       "use": "@vercel/static-build",
       "config": {
@@ -31,20 +9,16 @@
       }
     },
     {
-      "_comment": "Deploy server/index.js as a Node.js serverless function. @vercel/node wraps the exported Express app so Vercel can invoke it per-request.",
       "src": "server/index.js",
       "use": "@vercel/node"
     }
   ],
-
   "routes": [
     {
-      "_comment": "Route all /api/* requests to the Express serverless function. The full path (including /api) is forwarded; server/index.js strips the prefix.",
       "src": "/api/(.*)",
       "dest": "server/index.js"
     },
     {
-      "_comment": "SPA fallback: everything else is served from the React build output. React Router handles the URL on the client side.",
       "src": "/(.*)",
       "dest": "client/build/$1"
     }
