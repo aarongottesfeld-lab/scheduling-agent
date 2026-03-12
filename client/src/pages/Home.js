@@ -121,7 +121,8 @@ function ItineraryCard({ item, onDelete }) {
     : null;
   const displayDate = confirmedSuggestion
     ? formatDate(confirmedSuggestion.date)
-    : formatDateRange(item.date_range_start, item.date_range_end);
+    : formatDateRange(item.date_range_start, item.date_range_end)
+      || formatDate(item.suggestions?.[0]?.date); // fallback for itineraries missing date_range fields
 
   const firstSuggestion = item.suggestions?.[0];
 
