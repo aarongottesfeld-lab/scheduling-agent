@@ -382,7 +382,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes } = req.body;
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict } = req.body;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
@@ -462,12 +462,26 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset);
     console.log('[suggest] freeWindows=%d first=%j', freeWindows.length, freeWindows[0]);
 
-    // If both calendars are fully booked in the requested window, bail out early
-    // rather than letting Claude invent dates outside the window.
+    // If the attendee is fully booked in the requested window, bail out early.
     if (freeWindows.length === 0) {
       return res.status(422).json({
         error: 'No availability found in the selected time window. Try a different date or time of day.',
       });
+    }
+
+    // If the organizer has conflicts during the suggested windows but hasn't confirmed,
+    // return a prompt asking them to confirm before generating.
+    if (!confirmedOrganizerConflict) {
+      const organizerConflict = busyA.some(busy =>
+        freeWindows.some(w => {
+          const bStart = new Date(busy.start);
+          const bEnd   = new Date(busy.end);
+          return bStart < new Date(w.end) && bEnd > new Date(w.start);
+        })
+      );
+      if (organizerConflict) {
+        return res.status(200).json({ needsConfirmation: true });
+      }
     }
 
     // Call Claude

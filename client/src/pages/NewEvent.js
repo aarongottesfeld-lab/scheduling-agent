@@ -104,8 +104,9 @@ export default function NewEvent() {
   const [eventTitle,   setEventTitle]   = useState('');
 
   // UI state
-  const [generating,   setGenerating]   = useState(false);
-  const [error,        setError]        = useState('');
+  const [generating,            setGenerating]            = useState(false);
+  const [error,                 setError]                 = useState('');
+  const [awaitingConflictOk,    setAwaitingConflictOk]    = useState(false);
 
   /* ── Effects ── */
 
@@ -164,12 +165,10 @@ export default function NewEvent() {
    * rather than the form — this prevents them from going back, tweaking dates,
    * and re-submitting, which would create a duplicate itinerary.
    */
-  async function handleSubmit(e) {
-    e.preventDefault();
-    const err = validate();
-    if (err) { setError(err); return; }
+  async function submitSuggestions(confirmedOrganizerConflict = false) {
     setGenerating(true);
     setError('');
+    setAwaitingConflictOk(false);
     try {
       const daysAhead = daysFromToday(endDate);
       const timePayload = timeOfDay === 'custom'
@@ -182,12 +181,15 @@ export default function NewEvent() {
         maxTravelMinutes: maxTravel || null,
         contextPrompt: context,
         eventTitle: eventTitle.trim() || null,
-        // getTimezoneOffset() returns minutes west of UTC (e.g. EDT = +240).
-        // The server uses this to convert local time-of-day preference to UTC
-        // for the free-window search, so "evening" means 5–10pm in the user's
-        // timezone rather than 5–10pm UTC.
         timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+        confirmedOrganizerConflict,
       });
+      // Server found a conflict on the organizer's calendar — ask before generating.
+      if (data?.needsConfirmation) {
+        setAwaitingConflictOk(true);
+        setGenerating(false);
+        return;
+      }
       const itineraryId = data?.itineraryId || data?.id;
       if (!itineraryId) throw new Error('No itinerary ID returned from server.');
       navigate(`/schedule/${itineraryId}`);
@@ -195,6 +197,13 @@ export default function NewEvent() {
       setError(err.message || 'Could not generate suggestions. Please try again.');
       setGenerating(false);
     }
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const err = validate();
+    if (err) { setError(err); return; }
+    submitSuggestions(false);
   }
 
   /* ── Form ── */
@@ -211,6 +220,19 @@ export default function NewEvent() {
             <div className="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)' }}>
               <div className="spinner spinner--sm" />
               <span>Checking calendars and generating suggestions…</span>
+            </div>
+          )}
+          {awaitingConflictOk && (
+            <div className="alert alert--warning" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <span>⚠️ Looks like you have a scheduling conflict during this window. Are you sure this works for you?</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn btn--primary btn--sm" onClick={() => submitSuggestions(true)}>
+                  Yes, generate anyway
+                </button>
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => setAwaitingConflictOk(false)}>
+                  Go back
+                </button>
+              </div>
             </div>
           )}
           <form onSubmit={handleSubmit} noValidate>

@@ -46,8 +46,8 @@ export async function saveProfile(profile) {
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
 
-export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes }) {
-  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes });
+export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict }) {
+  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict });
   return res.data;
 }
 
