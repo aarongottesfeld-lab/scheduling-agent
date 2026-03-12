@@ -457,7 +457,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.log('[suggest] busyA=%j busyB=%j', busyA.slice(0,3), busyB.slice(0,3));
     }
 
-    const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, tzOffset);
+    // Only the attendee's calendar gates availability — the organizer chose this window
+    // intentionally and may be willing to move their own conflicts.
+    const freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset);
     console.log('[suggest] freeWindows=%d first=%j', freeWindows.length, freeWindows[0]);
 
     // If both calendars are fully booked in the requested window, bail out early
