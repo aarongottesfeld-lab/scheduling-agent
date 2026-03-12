@@ -182,6 +182,11 @@ export default function NewEvent() {
         maxTravelMinutes: maxTravel || null,
         contextPrompt: context,
         eventTitle: eventTitle.trim() || null,
+        // getTimezoneOffset() returns minutes west of UTC (e.g. EDT = +240).
+        // The server uses this to convert local time-of-day preference to UTC
+        // for the free-window search, so "evening" means 5–10pm in the user's
+        // timezone rather than 5–10pm UTC.
+        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
       });
       const itineraryId = data?.itineraryId || data?.id;
       if (!itineraryId) throw new Error('No itinerary ID returned from server.');

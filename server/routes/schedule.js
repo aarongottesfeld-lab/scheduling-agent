@@ -98,7 +98,10 @@ async function fetchBusy(session, startISO, endISO, supabase, userId) {
   return [];
 }
 
-/** Parse a time-of-day filter into [startHour, endHour] (24h). */
+/**
+ * Parse a time-of-day filter into [startHour, endHour] in the user's LOCAL time (24h).
+ * The returned hours are in local time and must be converted to UTC before use.
+ */
 function timeOfDayHours(tod) {
   if (!tod || tod.type === 'any') return [8, 23];
   if (tod.type === 'morning')   return [8, 12];
@@ -106,7 +109,7 @@ function timeOfDayHours(tod) {
   if (tod.type === 'evening')   return [17, 23];
   if (tod.type === 'custom') {
     const [timePart, ampm] = tod.time.split(' ');
-    let [h, m] = timePart.split(':').map(Number);
+    let [h] = timePart.split(':').map(Number);
     if (ampm === 'PM' && h !== 12) h += 12;
     if (ampm === 'AM' && h === 12) h = 0;
     const winHours = Math.ceil((Number(tod.windowMinutes) || 60) / 60);
@@ -115,19 +118,38 @@ function timeOfDayHours(tod) {
   return [8, 23];
 }
 
-/** Generate candidate 2-hour windows across a date range that don't overlap busy slots. */
-function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows = 20) {
-  const [startHour, endHour] = timeOfDayHours(todFilter);
+/**
+ * Generate candidate 2-hour windows across a date range that don't overlap busy slots.
+ *
+ * Hours are computed in UTC throughout. The caller must convert local time-of-day
+ * preferences to UTC using timezoneOffsetMinutes (from the client's
+ * Intl.DateTimeFormat().resolvedOptions().timeZone converted to an offset, or
+ * new Date().getTimezoneOffset()). getTimezoneOffset() returns minutes WEST of UTC,
+ * so EDT = +240. To convert local hour → UTC: utcHour = localHour + offset/60.
+ *
+ * Busy slots from Google Calendar freebusy are already in UTC, so the overlap
+ * check is a straight UTC-vs-UTC comparison.
+ */
+function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows = 20, timezoneOffsetMinutes = 0) {
+  const [localStart, localEnd] = timeOfDayHours(todFilter);
+  // Convert local hours to UTC hours using the client's timezone offset.
+  const offsetHours = timezoneOffsetMinutes / 60;  // positive = west of UTC (e.g. EDT = +4)
+  const utcStart = Math.max(0,  localStart + offsetHours);
+  const utcEnd   = Math.min(47, localEnd   + offsetHours); // 47 allows wrapping past midnight UTC
+
   const windows = [];
-  const cur = new Date(startDate + 'T00:00:00');
-  const end = new Date(endDate + 'T23:59:59');
+  // Use UTC date construction so the loop is timezone-agnostic on any server.
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const cur = new Date(Date.UTC(sy, sm - 1, sd));
+  const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59));
 
   while (cur <= end && windows.length < maxWindows) {
-    for (let h = startHour; h <= endHour - 2; h += 1) {
+    for (let h = utcStart; h <= utcEnd - 2; h += 1) {
       const wStart = new Date(cur);
-      wStart.setHours(h, 0, 0, 0);
+      wStart.setUTCHours(h, 0, 0, 0);
       const wEnd = new Date(cur);
-      wEnd.setHours(h + 2, 0, 0, 0);
+      wEnd.setUTCHours(h + 2, 0, 0, 0);
 
       const overlaps = (slots) => slots.some(s => {
         const sStart = new Date(s.start);
@@ -140,7 +162,7 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
         if (windows.length >= maxWindows) break;
       }
     }
-    cur.setDate(cur.getDate() + 1);
+    cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return windows;
 }
@@ -151,12 +173,33 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
  * defaulting to the prior year when the free windows span a year boundary or when
  * Claude's training data year differs from the current calendar year.
  */
+// Month/day name tables for unambiguous UTC date formatting in the Claude prompt.
+// We avoid toLocaleDateString/toLocaleTimeString because ICU data availability
+// varies across Lambda environments and can produce unexpected formats.
+const _MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const _WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+/** Format a UTC Date as "Friday, 2026-03-13, 5:00 PM" */
+function fmtWindowDate(d) {
+  const year  = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day   = String(d.getUTCDate()).padStart(2, '0');
+  const weekday = _WEEKDAYS[d.getUTCDay()];
+  const monthName = _MONTHS[d.getUTCMonth()];
+  let h = d.getUTCHours(), m = d.getUTCMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12; else if (h === 0) h = 12;
+  return `${weekday}, ${year}-${month}-${day} (${monthName} ${d.getUTCDate()}), ${h}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
 function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
-    // year:'numeric' is critical — without it Claude writes dates like "2025-03-12"
-    // even when the actual windows are in 2026, because it has no year signal in the prompt.
-    return `- ${s.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric', year:'numeric' })} ${s.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}–${new Date(w.end).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}`;
+    const e = new Date(w.end);
+    let eh = e.getUTCHours(), em2 = e.getUTCMinutes();
+    const eampm = eh >= 12 ? 'PM' : 'AM';
+    if (eh > 12) eh -= 12; else if (eh === 0) eh = 12;
+    return `- ${fmtWindowDate(s)} – ${eh}:${String(em2).padStart(2,'0')} ${eampm}`;
   }).join('\n');
 
   return `You are Rendezvous, a NYC activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
@@ -339,7 +382,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle } = req.body;
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes } = req.body;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
@@ -407,13 +450,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       });
     }
 
-    console.log('[suggest] start=%s end=%s timeOfDay=%j friendSession=%s busyA=%d busyB=%d',
-      start, end, timeOfDay, friendSession ? 'found' : 'null', busyA.length, busyB.length);
+    const tzOffset = Number(timezoneOffsetMinutes) || 0;
+    console.log('[suggest] start=%s end=%s timeOfDay=%j tzOffset=%d friendSession=%s busyA=%d busyB=%d',
+      start, end, timeOfDay, tzOffset, friendSession ? 'found' : 'null', busyA.length, busyB.length);
     if (busyA.length || busyB.length) {
       console.log('[suggest] busyA=%j busyB=%j', busyA.slice(0,3), busyB.slice(0,3));
     }
 
-    const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay);
+    const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, tzOffset);
     console.log('[suggest] freeWindows=%d first=%j', freeWindows.length, freeWindows[0]);
 
     // If both calendars are fully booked in the requested window, bail out early
