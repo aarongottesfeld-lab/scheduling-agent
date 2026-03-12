@@ -137,12 +137,12 @@ function timeOfDayHours(tod) {
  */
 function inferDurationMinutes(eventTitle, contextPrompt) {
   const text = `${eventTitle || ''} ${contextPrompt || ''}`.toLowerCase();
-  if (/\bday[ -]?trip\b|full[ -]?day\b|all[ -]?day\b/.test(text))          return 360;
-  if (/\bhike\b|\bbiking\b|\bsurfing\b|\bclimbing\b/.test(text))            return 240;
-  if (/\bmovie\b|\bfilm\b|\bconcert\b|\bshow\b|\bgame\b|\bmatch\b/.test(text)) return 180;
-  if (/\bdinner\b|\bdate\b|\bnight\s+out\b|\beverning\s+out\b/.test(text))  return 120;
-  if (/\blunch\b|\bbrunch\b/.test(text))                                     return 90;
-  if (/\bcoffee\b|\bdrinks\b|\bcatch[ -]?up\b|\bquick\b|\bchat\b/.test(text)) return 60;
+  if (/\bday[ -]?trip\b|full[ -]?day\b|all[ -]?day\b/.test(text))                          return 360;
+  if (/\bhike\b|\bbiking\b|\bsurfing\b|\bclimbing\b/.test(text))                            return 240;
+  if (/\bmovie\b|\bfilm\b|\bconcert\b|\bshow\b|\bgame\b|\bmatch\b|\bknicks\b|\bmets\b|\byankees\b|\bgiants\b|\bjets\b|\bnets\b/.test(text)) return 180;
+  if (/\bdinner\b|\bdate\b|\bnight\s+out\b|\beverning\s+out\b/.test(text))                  return 120;
+  if (/\blunch\b|\bbrunch\b/.test(text))                                                     return 90;
+  if (/\bcoffee\b|\bdrinks\b|\bcatch[ -]?up\b|\bquick\b|\bchat\b/.test(text))               return 60;
   return 120;
 }
 
@@ -532,6 +532,36 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       // Never expose internal API errors (billing, keys, etc.) to the client
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
     }
+
+    // Validate Claude's suggestions against the free windows.
+    // Claude occasionally picks times that weren't in the provided window list.
+    // We reject any suggestion whose local date+time (converted to UTC via the client's
+    // timezone offset) doesn't overlap with at least one computed free window.
+    suggestions = suggestions.filter(s => {
+      if (!s.date || !s.time) return true; // can't validate, keep it
+      const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (!match) return true;
+      let h = parseInt(match[1]);
+      const min = parseInt(match[2]);
+      const ampm = match[3].toUpperCase();
+      if (ampm === 'PM' && h !== 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      const [sy2, sm2, sd2] = s.date.split('-').map(Number);
+      // Treat the suggestion's date+time as local, then shift to UTC using client offset.
+      // Date.UTC gives us ms for those numbers in UTC; adding tzOffset (minutes west) converts
+      // to true UTC (e.g. 7 PM EDT + 240 min = 11 PM UTC).
+      const localMs  = Date.UTC(sy2, sm2 - 1, sd2, h, min, 0);
+      const utcStart = new Date(localMs + tzOffset * 60000);
+      const durMs    = (s.durationMinutes || durationMinutes) * 60000;
+      const utcEnd   = new Date(utcStart.getTime() + durMs);
+      const inWindow = freeWindows.some(w =>
+        utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+      );
+      if (!inWindow) {
+        console.warn(`[suggest] Dropping hallucinated suggestion: ${s.date} ${s.time} (UTC ${utcStart.toISOString()})`);
+      }
+      return inWindow;
+    });
 
     // Persist itinerary
     const { data: itinerary, error: insertErr } = await supabase
@@ -928,6 +958,31 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('Claude reroll error:', e.message);
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
+
+    // Filter out any suggestions whose date+time falls outside the computed free windows.
+    // Reroll has no client-side tzOffset, so default to 0 (UTC). Reroll windows were built
+    // with tzOffset=0, so suggestions generated from them will already be in UTC-relative slots.
+    newSuggestions = newSuggestions.filter(s => {
+      if (!s.date || !s.time) return true;
+      const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (!match) return true;
+      let h = parseInt(match[1]);
+      const min = parseInt(match[2]);
+      const ampm = match[3].toUpperCase();
+      if (ampm === 'PM' && h !== 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      const [sy2, sm2, sd2] = s.date.split('-').map(Number);
+      const utcStart = new Date(Date.UTC(sy2, sm2 - 1, sd2, h, min, 0));
+      const durMs    = (s.durationMinutes || rerollDuration) * 60000;
+      const utcEnd   = new Date(utcStart.getTime() + durMs);
+      const inWindow = rerollWindows.some(w =>
+        utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+      );
+      if (!inWindow) {
+        console.warn(`[reroll] Dropping hallucinated suggestion: ${s.date} ${s.time}`);
+      }
+      return inWindow;
+    });
 
     // Single-card: swap only the targeted card, preserve the rest.
     // appendMode: tag new suggestions with fresh IDs and append to existing list.
