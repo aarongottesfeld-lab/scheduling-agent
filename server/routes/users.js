@@ -174,11 +174,35 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     if (!process.env.GOOGLE_MAPS_API_KEY) return res.status(500).json({ error: 'Maps not configured.' });
 
     try {
-      // Use validated numbers (not raw strings) in URL — no injection risk
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&result_type=locality|sublocality|neighborhood&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+      // Use validated numbers (not raw strings) in URL — no injection risk.
+      // No result_type filter: fetch all results and extract the most useful
+      // human-readable locality from address_components (neighborhood > sublocality > locality > city).
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
       const r = await fetch(url);
       const json = await r.json();
-      res.json({ location: json.results?.[0]?.formatted_address || null });
+      console.log('[geocode] status=%s results=%d', json.status, json.results?.length);
+
+      // Walk address_components of the first result to find the most specific place name.
+      // Preference order: neighborhood > sublocality > locality (city) > admin_area_level_2.
+      let location = null;
+      const components = json.results?.[0]?.address_components || [];
+      const pick = (...types) => {
+        for (const type of types) {
+          const c = components.find(c => c.types.includes(type));
+          if (c) return c.long_name;
+        }
+        return null;
+      };
+      location = pick('neighborhood', 'sublocality_level_1', 'sublocality', 'locality', 'administrative_area_level_2');
+      // Append city if we picked a neighborhood/sublocality so the string is meaningful
+      if (location) {
+        const city = pick('locality');
+        if (city && city !== location) location = `${location}, ${city}`;
+      }
+      // Last resort: use the formatted_address of the first result
+      if (!location) location = json.results?.[0]?.formatted_address || null;
+
+      res.json({ location });
     } catch {
       res.status(500).json({ error: 'Geocode failed.' });
     }
