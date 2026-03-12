@@ -384,7 +384,11 @@ app.get('/auth/google', (req, res) => {
     access_type: 'offline',
     scope:       GOOGLE_SCOPES,
     state,
-    prompt: 'consent', // ensures refresh_token is always issued
+    // No prompt:'consent' — Google only shows the full consent screen when the
+    // user hasn't previously granted these scopes.  For returning users it skips
+    // straight to account selection, which is the expected UX.
+    // We preserve the stored refresh_token in the callback for returning users
+    // since Google only issues a new one when consent is explicitly re-granted.
   });
 
   res.redirect(authUrl);
@@ -451,6 +455,22 @@ app.get('/auth/google/callback', async (req, res) => {
         return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Account setup failed. Please try again.')}`);
       }
       supabaseId = created.id;
+    }
+
+    // Google only issues a refresh_token when the user explicitly re-grants
+    // consent (prompt:'consent').  For returning users it's omitted, so we
+    // fall back to the most recent stored refresh_token for this account.
+    if (!tokens.refresh_token) {
+      const { data: prev } = await supabase
+        .from('sessions')
+        .select('tokens')
+        .eq('supabase_id', supabaseId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (prev?.tokens?.refresh_token) {
+        tokens.refresh_token = prev.tokens.refresh_token;
+      }
     }
 
     // Persist the session to Supabase and set the HTTP-only cookie
