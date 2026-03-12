@@ -1,17 +1,30 @@
-// 9/10 — ItineraryView
-// Fetches an itinerary by ID and renders up to 3 suggestion cards.
-// Button set adapts based on the current user's role (organizer / attendee)
-// and the itinerary's status.
-// Includes a re-roll modal with an editable context prompt, and a changelog
-// section visible once the itinerary is locked/confirmed.
+// ItineraryView.js — detail view for a single itinerary (scheduling session between two users).
+//
+// Shows suggestion cards with context-sensitive action buttons depending on the viewer's
+// role (organizer or attendee) and the current negotiation state.
+//
+// State machine summary:
+//   organizer_status=pending                       → organizer drafting, attendee can't see yet
+//   organizer_status=sent, attendee_status=pending → attendee evaluating
+//   organizer_status=accepted                      → organizer locked their pick, awaiting attendee
+//   organizer_status=sent, attendee_status=accepted→ attendee counter-proposed (attendee_suggested)
+//   locked_at set                                  → both agreed, plan is confirmed
+//
+// Attendee's counter-proposal is tracked via attendeeSelected:true on the JSONB suggestion
+// object rather than overwriting selected_suggestion_id (which tracks the organizer's pick only).
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { getUserId } from '../utils/auth';
+import { getUserId, getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
 
 /* ── Helpers ────────────────────────────────────────────────── */
+
+/**
+ * Formats a YYYY-MM-DD date and optional "7:00 PM" time string into a human-readable label.
+ * Uses local date construction (not UTC) to avoid off-by-one day from timezone offset.
+ */
 function formatDateTime(dateStr, timeStr) {
   if (!dateStr) return '';
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -21,34 +34,24 @@ function formatDateTime(dateStr, timeStr) {
   return timeStr ? `${datePart} at ${timeStr}` : datePart;
 }
 
-function formatTimestamp(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  return d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric',
-    hour: 'numeric', minute: '2-digit',
-  });
-}
-
+/**
+ * Builds a Google Calendar "Add to Calendar" deep-link for a confirmed suggestion.
+ * Uses the TEMPLATE action so the event pre-fills without requiring Google sign-in.
+ * Duration defaults to 2 hours if not specified.
+ */
 function buildGCalUrl(suggestion, itinerary) {
-  // Title: e.g. "Bowling with Jamie" using first venue or activity type
-  const venueName = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
+  const venueName  = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
   const otherFirst = (itinerary?.attendee?.full_name || itinerary?.organizer?.full_name || '').split(' ')[0] || 'Friend';
-  const title = `${venueName} with ${otherFirst}`;
-
-  // Location: first venue address, fall back to neighborhood
-  const location = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
-
-  // Description: narrative + venue list
+  const title      = `${venueName} with ${otherFirst}`;
+  const location   = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
   const venueLines = (suggestion.venues || []).map(v => `${v.name}${v.address ? ' — ' + v.address : ''}`).join('\n');
-  const details = [suggestion.narrative, venueLines ? '\nStops:\n' + venueLines : ''].filter(Boolean).join('\n\n');
+  const details    = [suggestion.narrative, venueLines ? '\nStops:\n' + venueLines : ''].filter(Boolean).join('\n\n');
 
-  // Dates: GCal needs YYYYMMDDTHHmmss format
+  /** Converts a YYYY-MM-DD + "7:00 PM" pair into the GCal dates parameter format. */
   function toGCalDate(dateStr, timeStr) {
     if (!dateStr) return '';
     const [y, m, d] = dateStr.split('-');
     if (!timeStr) return `${y}${m}${d}`;
-    // parse "7:00 PM" style
     const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
     if (!match) return `${y}${m}${d}`;
     let h = parseInt(match[1]);
@@ -56,29 +59,28 @@ function buildGCalUrl(suggestion, itinerary) {
     const ampm = match[3].toUpperCase();
     if (ampm === 'PM' && h !== 12) h += 12;
     if (ampm === 'AM' && h === 12) h = 0;
-    const hh = String(h).padStart(2, '0');
-    const durMins = suggestion.durationMinutes || 120;
-    const endMs = new Date(`${dateStr}T${hh}:${min}:00`).getTime() + durMins * 60000;
-    const end = new Date(endMs);
+    const hh     = String(h).padStart(2, '0');
+    const durMs  = (suggestion.durationMinutes || 120) * 60000;
+    const endMs  = new Date(`${dateStr}T${hh}:${min}:00`).getTime() + durMs;
+    const end    = new Date(endMs);
     const endStr = `${end.getFullYear()}${String(end.getMonth()+1).padStart(2,'0')}${String(end.getDate()).padStart(2,'0')}T${String(end.getHours()).padStart(2,'0')}${String(end.getMinutes()).padStart(2,'0')}00`;
     return `${y}${m}${d}T${hh}${min}00/${endStr}`;
   }
 
-  const dates = toGCalDate(suggestion.date, suggestion.time);
-  const params = new URLSearchParams({
-    action: 'TEMPLATE',
-    text: title,
-    details,
-    location,
-    ...(dates ? { dates } : {}),
-  });
+  const dates  = toGCalDate(suggestion.date, suggestion.time);
+  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location, ...(dates ? { dates } : {}) });
   return `https://calendar.google.com/calendar/render?${params}`;
 }
 
-/* ── Re-roll Modal ──────────────────────────────────────────── */
+/* ── RerollModal ────────────────────────────────────────────── */
+
+/**
+ * Modal dialog for a full-board reroll (all 3 suggestions replaced).
+ * User can edit the context prompt before re-generating.
+ * The parent controls the loading state; Cancel / backdrop-click closes without submitting.
+ */
 function RerollModal({ initialContext, onClose, onSubmit, loading }) {
   const [context, setContext] = useState(initialContext || '');
-
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="reroll-title">
@@ -89,24 +91,15 @@ function RerollModal({ initialContext, onClose, onSubmit, loading }) {
         <div className="modal__body">
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label" htmlFor="reroll-context">What would you like to change?</label>
-            <textarea
-              id="reroll-context"
-              className="form-control"
-              value={context}
-              onChange={(e) => setContext(e.target.value)}
-              rows={4}
-              placeholder="e.g. 'something outdoors', 'closer to downtown', 'more casual'"
-            />
+            <textarea id="reroll-context" className="form-control" value={context}
+              onChange={(e) => setContext(e.target.value)} rows={4}
+              placeholder="e.g. 'something outdoors', 'closer to downtown', 'more casual'" />
             <p className="form-hint">Edit or add to the original prompt — the AI will adjust accordingly.</p>
           </div>
         </div>
         <div className="modal__footer">
           <button className="btn btn--ghost" onClick={onClose} disabled={loading}>Cancel</button>
-          <button
-            className="btn btn--primary"
-            onClick={() => onSubmit(context)}
-            disabled={loading}
-          >
+          <button className="btn btn--primary" onClick={() => onSubmit(context)} disabled={loading}>
             {loading ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</> : 'Generate New Suggestions'}
           </button>
         </div>
@@ -115,28 +108,68 @@ function RerollModal({ initialContext, onClose, onSubmit, loading }) {
   );
 }
 
-/* ── Suggestion Card ────────────────────────────────────────── */
-function SuggestionCard({
-  suggestion, isConfirmed, isPicked, isOrganizerPick, role, status,
-  onConfirm, onAccept, onDecline, onReroll, onPick, onRerollWithFeedback, onSuggestAlternative,
-  organizerName, attendeeName, organizerLocation,
-  submitting, itinerary, calendarEventId,
-}) {
-  const [expanded,     setExpanded]     = useState(isConfirmed);
-  const [feedbackText, setFeedbackText] = useState('');
+/* ── SuggestionCard ─────────────────────────────────────────── */
 
-  const isOrganizer = role === 'organizer';
-  const isAttendee  = role === 'attendee';
-  const notSentYet  = status === 'pending';
-  const awaitingMe  = status === 'sent' && isAttendee;
-  const locked      = status === 'confirmed';
+/**
+ * Renders a single itinerary suggestion with its date, venues, narrative, and action buttons.
+ *
+ * Action button visibility depends on role + status + which card this is:
+ *   Organizer / pending:           Pick this one | New time | New vibe (all cards)
+ *   Organizer / sent + picked:     Reroll all | Accept | Decline (their pick only, pre-confirm)
+ *   Organizer / attendee_suggested:Accept | Decline | Reroll all (all cards, re-evaluate mode)
+ *   Attendee  / sent + org pick:   Accept | Decline (organizer's pick only)
+ *   Attendee  / sent + other cards:Suggest this instead | New time | New vibe
+ *   Locked:                        Add to Calendar link
+ *
+ * thisCardBusy tracks per-card spinner state so only the acting card shows a loading indicator
+ * while the rest remain visible (controlled by activeCardId in the parent).
+ */
+function SuggestionCard({
+  suggestion, isConfirmed, isPicked, isOrganizerPick, isAttendeePick,
+  role, status,
+  onAccept, onDecline, onReroll, onPick, onRerollWithFeedback, onSuggestAlternative,
+  organizerName, attendeeName, organizerLocation,
+  submitting, activeCardId, itinerary, calendarEventId,
+}) {
+  const [expanded,    setExpanded]    = useState(isConfirmed);
+  // feedbackText is reserved for future inline feedback UX; not yet wired up.
+  const [feedbackText, setFeedbackText] = useState(''); // eslint-disable-line no-unused-vars
+
+  const isOrganizer  = role === 'organizer';
+  const isAttendee   = role === 'attendee';
+  const locked       = !!isConfirmed;
+  // True when this specific card's async action (reroll or suggest) is in-flight.
+  const thisCardBusy = activeCardId === suggestion.id;
 
   const narrative = suggestion.narrative || '';
   const truncated = narrative.length > 100 ? narrative.slice(0, 100) + '…' : narrative;
 
+  // ── Visibility flags ──────────────────────────────────────────
+  // Organizer pre-send: can pick / swap any card before sending
+  const showOrganizerPreSendControls = isOrganizer && status === 'pending';
+
+  // True once organizer confirmed their pick (organizer_status='accepted') — they wait
+  const organizerHasConfirmed = itinerary?.organizer_status === 'accepted';
+
+  // Organizer awaiting attendee: only their picked card shows action buttons
+  const showOrganizerAwaitingControls = isOrganizer && status === 'sent' && isOrganizerPick && !organizerHasConfirmed;
+
+  // Unused in JSX but kept for future "waiting" badge logic
+  const showOrganizerWaitingIndicator = isOrganizer && organizerHasConfirmed && isOrganizerPick && !isConfirmed; // eslint-disable-line no-unused-vars
+
+  // Attendee suggested a different card: organizer needs to re-evaluate all cards
+  const showOrganizerReevaluate = isOrganizer && status === 'attendee_suggested';
+
+  // Attendee can act on all cards while the itinerary is in their court
+  const showAttendeeControls = isAttendee && (status === 'sent' || status === 'attendee_suggested');
+
+  // Attendee already counter-proposed this card — show "waiting" badge, hide action buttons
+  const showAttendeeSentIndicator = isAttendeePick && !isConfirmed && isAttendee;
+
   return (
-    <div className={`suggestion-card${isConfirmed ? ' suggestion-card--confirmed' : ''}`}>
-      {/* Card header */}
+    <div className={`suggestion-card${isConfirmed ? ' suggestion-card--confirmed' : ''}${isAttendeePick ? ' suggestion-card--highlighted' : ''}`}>
+
+      {/* ── Card header ── */}
       <div className={`suggestion-card__header${isConfirmed ? ' suggestion-card__header--confirmed' : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
@@ -151,103 +184,71 @@ function SuggestionCard({
             </span>
           )}
         </div>
+
+        {/* Status badges inside the header */}
         {isConfirmed && (
-          <div style={{ marginTop: 8, fontSize: '0.82rem', fontWeight: 700, opacity: .9 }}>
-            ✓ Confirmed plan
+          <div style={{ marginTop: 8, fontSize: '0.82rem', fontWeight: 700, opacity: .9 }}>✓ Confirmed plan</div>
+        )}
+        {isPicked && !isConfirmed && isOrganizer && (
+          <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.18)', borderRadius: 6, display: 'inline-block', padding: '2px 10px' }}>
+            ✓ Your pick — waiting on them
           </div>
         )}
-        {isPicked && !isConfirmed && (
+        {isAttendeePick && !isConfirmed && isOrganizer && (
+          <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.25)', borderRadius: 6, display: 'inline-block', padding: '2px 10px' }}>
+            ↩ {attendeeName} suggested this — waiting on you
+          </div>
+        )}
+        {showAttendeeSentIndicator && (
           <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.18)', borderRadius: 6, display: 'inline-block', padding: '2px 10px' }}>
             ✓ Your pick — waiting on them
           </div>
         )}
       </div>
 
+      {/* ── Card body (collapsed / expanded) ── */}
       <div className="suggestion-card__body">
-        {/* Always-visible collapsed preview */}
-        {!expanded && narrative && (
-          <p className="suggestion-card__narrative">{truncated}</p>
-        )}
+        {!expanded && narrative && <p className="suggestion-card__narrative">{truncated}</p>}
         {!expanded && suggestion.tags?.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
             {suggestion.tags.map((tag, i) => (
-              <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>
-                {tag}
-              </span>
+              <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
             ))}
           </div>
         )}
-
-        {/* Toggle button — always visible */}
-        <button
-          className="btn btn--ghost btn--sm"
-          style={{ marginTop: 10, padding: '4px 0', fontSize: '0.82rem' }}
-          onClick={() => setExpanded(e => !e)}
-        >
+        <button className="btn btn--ghost btn--sm" style={{ marginTop: 10, padding: '4px 0', fontSize: '0.82rem' }}
+          onClick={() => setExpanded(e => !e)}>
           {expanded ? 'Collapse ↑' : 'See details & route ↓'}
         </button>
 
-        {/* Animated expandable section */}
-        <div style={{
-          overflow: 'hidden',
-          maxHeight: expanded ? '2000px' : '0',
-          opacity: expanded ? 1 : 0,
-          transition: 'max-height 0.3s ease, opacity 0.3s ease',
-        }}>
-          {/* Full narrative */}
-          {narrative && (
-            <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>
-          )}
-
-          {/* Venues */}
+        {/* Expanded detail panel — CSS transition on maxHeight for smooth animation */}
+        <div style={{ overflow: 'hidden', maxHeight: expanded ? '2000px' : '0', opacity: expanded ? 1 : 0, transition: 'max-height 0.3s ease, opacity 0.3s ease' }}>
+          {narrative && <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>}
           {suggestion.venues?.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
               {suggestion.venues.map((v, i) => (
                 <div key={i}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <a
-                      href={`https://maps.google.com/?q=${encodeURIComponent(v.address || v.name)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}
-                    >
-                      {v.name}
-                    </a>
-                    {v.type && (
-                      <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>
-                        {v.type}
-                      </span>
-                    )}
+                    <a href={`https://maps.google.com/?q=${encodeURIComponent(v.address || v.name)}`} target="_blank" rel="noopener noreferrer"
+                      style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}>{v.name}</a>
+                    {v.type && <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>{v.type}</span>}
                   </div>
-                  {v.address && (
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>
-                      {v.address}
-                    </div>
-                  )}
+                  {v.address && <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>{v.address}</div>}
                 </div>
               ))}
             </div>
           )}
-
-          {/* Duration */}
           {suggestion.durationMinutes > 0 && (
-            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>
-              ~{Math.round(suggestion.durationMinutes / 60)} hrs
-            </div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>~{Math.round(suggestion.durationMinutes / 60)} hrs</div>
           )}
-
-          {/* Tags */}
           {suggestion.tags?.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 10 }}>
               {suggestion.tags.map((tag, i) => (
-                <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>
-                  {tag}
-                </span>
+                <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
               ))}
             </div>
           )}
-
-          {/* Getting there */}
+          {/* Directions link — uses organizer's location as origin if available */}
           {(() => {
             const dest   = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
             const origin = organizerLocation || '';
@@ -255,22 +256,11 @@ function SuggestionCard({
             const href = `https://maps.google.com/?saddr=${encodeURIComponent(origin)}&daddr=${encodeURIComponent(dest)}`;
             return (
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                  Getting there
-                </div>
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '8px 0', borderBottom: '1px solid var(--border)',
-                    textDecoration: 'none', color: 'var(--text-1)',
-                  }}
-                >
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Getting there</div>
+                <a href={href} target="_blank" rel="noopener noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', textDecoration: 'none', color: 'var(--text-1)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>🗺️</span>
-                    <span style={{ fontSize: '0.88rem' }}>Open in Google Maps</span>
+                    <span>🗺️</span><span style={{ fontSize: '0.88rem' }}>Open in Google Maps</span>
                   </span>
                   <span style={{ fontSize: '0.78rem', color: 'var(--brand)' }}>Open →</span>
                 </a>
@@ -280,148 +270,103 @@ function SuggestionCard({
         </div>
       </div>
 
-      {/* Footer — organizer: pending (not yet sent) */}
-      {isOrganizer && notSentYet && (
-        <div className="suggestion-card__footer" style={{ flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn btn--primary"
-              onClick={() => onPick(suggestion.id)}
-              disabled={submitting}
-            >
-              Pick this one
-            </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
-              disabled={submitting}
-              title="Keep this activity, find a different time"
-            >
-              🕐 New time
-            </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
-              disabled={submitting}
-              title="Keep this time slot, suggest a different activity"
-            >
-              🎲 New vibe
-            </button>
-          </div>
-          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-            <input
-              type="text"
-              className="form-control"
-              value={feedbackText}
-              onChange={(e) => setFeedbackText(e.target.value)}
-              placeholder="e.g. more casual, closer to Brooklyn"
-              style={{ flex: 1 }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && feedbackText.trim()) {
-                  onRerollWithFeedback(suggestion.id, feedbackText);
-                }
-              }}
-            />
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
-              disabled={submitting || !feedbackText.trim()}
-            >
-              Regenerate
-            </button>
-          </div>
-        </div>
-      )}
+      {/* ── Card footer action buttons ── */}
+      {!locked && (showOrganizerPreSendControls || showOrganizerAwaitingControls || showOrganizerReevaluate || (showAttendeeControls && !showAttendeeSentIndicator)) && (
+        <div className="suggestion-card__footer">
 
-      {/* Footer — attendee: awaiting response */}
-      {isAttendee && awaitingMe && (
-        <div className="suggestion-card__footer" style={{ flexDirection: 'column', gap: 10 }}>
-          {isOrganizerPick ? (
-            /* Organizer's chosen card — full Accept/Decline + reroll controls */
+          {/* Organizer pre-send: pick, swap time, or swap activity on any card */}
+          {showOrganizerPreSendControls && (
             <>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="btn btn--primary"
-                  onClick={() => onAccept(suggestion.id)}
-                  disabled={submitting}
-                >
-                  Accept
-                </button>
-                <button
-                  className="btn btn--danger"
-                  onClick={() => onDecline(suggestion.id)}
-                  disabled={submitting}
-                >
-                  Decline
-                </button>
-                <button
-                  className="btn btn--ghost btn--sm"
-                  onClick={() => onRerollWithFeedback(suggestion.id, '', 'timing')}
-                  disabled={submitting}
-                  title="Keep this activity, find a different time"
-                >
-                  🕐 New time
-                </button>
-                <button
-                  className="btn btn--ghost btn--sm"
-                  onClick={() => onRerollWithFeedback(suggestion.id, '', 'activity')}
-                  disabled={submitting}
-                  title="Keep this time slot, suggest a different activity"
-                >
-                  🎲 New vibe
-                </button>
-              </div>
-              <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={feedbackText}
-                  onChange={(e) => setFeedbackText(e.target.value)}
-                  placeholder="e.g. more casual, closer to Brooklyn"
-                  style={{ flex: 1 }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && feedbackText.trim()) {
-                      onRerollWithFeedback(suggestion.id, feedbackText);
-                    }
-                  }}
-                />
-                <button
-                  className="btn btn--ghost btn--sm"
-                  onClick={() => onRerollWithFeedback(suggestion.id, feedbackText, 'both')}
-                  disabled={submitting || !feedbackText.trim()}
-                >
-                  Regenerate
-                </button>
-              </div>
+              <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onPick(suggestion.id)}>
+                Pick this one
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onRerollWithFeedback(suggestion.id, 'timing')}>
+                🕐 New time
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onRerollWithFeedback(suggestion.id, 'activity')}>
+                🎲 New vibe
+              </button>
             </>
-          ) : (
-            /* Non-picked card — attendee can propose this one instead */
-            <button
-              className="btn btn--ghost btn--sm"
-              onClick={() => onSuggestAlternative(suggestion.id)}
-              disabled={submitting}
-              title="Send this option back to the organizer as your preference"
-            >
-              ↩ Suggest this instead
-            </button>
+          )}
+
+          {/* Organizer awaiting attendee: their picked card only */}
+          {showOrganizerAwaitingControls && (
+            <>
+              <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                Accept
+              </button>
+              <button className="btn btn--danger btn--sm" disabled={submitting} onClick={onDecline}>
+                Decline
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={onReroll}>
+                ↻ Reroll all
+              </button>
+            </>
+          )}
+
+          {/* Organizer re-evaluating after attendee suggested an alternative: all cards.
+              On the attendee's highlighted card: "Accept [Name]'s pick" (agreement = lock).
+              On any other card: "Suggest this instead" (counter-propose, keeps loop going). */}
+          {showOrganizerReevaluate && (
+            <>
+              {isAttendeePick ? (
+                <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                  Accept {attendeeName}'s pick
+                </button>
+              ) : (
+                <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                  ↩ Suggest this instead
+                </button>
+              )}
+              <button className="btn btn--danger btn--sm" disabled={submitting} onClick={onDecline}>
+                Decline
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting} onClick={onReroll}>
+                ↻ Reroll all
+              </button>
+            </>
+          )}
+
+          {/* Attendee: organizer's picked card → Accept or Decline only */}
+          {showAttendeeControls && !showAttendeeSentIndicator && isOrganizerPick && (
+            <>
+              <button className="btn btn--primary btn--sm" disabled={submitting} onClick={() => onAccept(suggestion.id)}>
+                Accept
+              </button>
+              <button className="btn btn--danger btn--sm" disabled={submitting} onClick={onDecline}>
+                Decline
+              </button>
+            </>
+          )}
+
+          {/* Attendee: non-pick cards → counter-propose or swap */}
+          {showAttendeeControls && !showAttendeeSentIndicator && !isOrganizerPick && (
+            <>
+              {/* Suggest this instead: marks attendeeSelected in JSONB, puts ball back in organizer's court */}
+              <button className="btn btn--ghost btn--sm" disabled={submitting}
+                onClick={() => onSuggestAlternative(suggestion.id)}>
+                {thisCardBusy
+                  ? <><span className="spinner" style={{ width: 12, height: 12 }} /> Sending…</>
+                  : '↩ Suggest this instead'}
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting}
+                onClick={() => onRerollWithFeedback(suggestion.id, 'timing')}>
+                {thisCardBusy ? '…' : '🕐 New time'}
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={submitting}
+                onClick={() => onRerollWithFeedback(suggestion.id, 'activity')}>
+                {thisCardBusy ? '…' : '🎲 New vibe'}
+              </button>
+            </>
           )}
         </div>
       )}
 
-      {/* Confirmed actions */}
-      {locked && isConfirmed && (
+      {/* Calendar link shown only once the plan is locked */}
+      {locked && (
         <div className="suggestion-card__footer">
-          {/* Always use the template URL — the eventedit/{id} pattern triggers a
-               500 because Google requires full event context, not a bare event ID.
-               buildGCalUrl opens GCal pre-filled with all details which works
-               reliably regardless of whether a calendar event was auto-created. */}
-          <a
-            href={buildGCalUrl(suggestion, itinerary)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn--secondary"
-          >
-            📅 {calendarEventId ? 'View in Google Calendar' : 'Add to Calendar'}
+          <a href={buildGCalUrl(suggestion, itinerary)} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
+            {calendarEventId ? '📅 View in Google Calendar' : '📅 Add to Calendar'}
           </a>
         </div>
       )}
@@ -429,391 +374,391 @@ function SuggestionCard({
   );
 }
 
-/* ── Main Component ─────────────────────────────────────────── */
+/* ── ItineraryView ──────────────────────────────────────────── */
+
+/**
+ * Main itinerary detail page.
+ * Loads the itinerary by ID from the URL, determines the viewer's role,
+ * and renders suggestion cards with the appropriate action buttons.
+ */
 export default function ItineraryView() {
-  const { itineraryId } = useParams();
-  const navigate        = useNavigate();
-  const myUserId        = getUserId();
+  const { id }   = useParams();
+  const navigate = useNavigate();
 
-  const [itinerary,   setItinerary]   = useState(null);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState('');
-  const [submitting,  setSubmitting]  = useState(false);
-  const [actionErr,   setActionErr]   = useState('');
+  // Prefer supabaseId for DB comparisons — session tokens are hex strings, but
+  // organizer_id / attendee_id in the DB are Supabase UUIDs.
+  const [myId, setMyId] = useState(() => getSupabaseId() || getUserId());
 
-  const [rerollOpen,   setRerollOpen]   = useState(false);
-  const [rerolling,    setRerolling]    = useState(false);
-  const [loadingMore,  setLoadingMore]  = useState(false);
+  const [itin,         setItin]       = useState(null);
+  const [loading,      setLoading]    = useState(true);
+  const [error,        setError]      = useState('');
+  const [submitting,   setSubmitting] = useState(false);
+  // Tracks the suggestion.id whose per-card action is in-flight (for spinners).
+  const [activeCardId, setActiveCardId] = useState(null);
+  const [rerollOpen,      setRerollOpen]      = useState(false);
+  const [rerolling,       setRerolling]       = useState(false);
+  // True while the "Generate More" append request is in-flight.
+  const [generatingMore,  setGeneratingMore]  = useState(false);
 
-  const [changeText,  setChangeText]  = useState('');
-  const [addingChange,setAddingChange]= useState(false);
+  // Inline title editing
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft,   setTitleDraft]   = useState('');
 
+  /**
+   * Fetches the latest itinerary data from the server and refreshes myId in case
+   * sessionStorage wasn't populated yet on the initial render.
+   * Wrapped in useCallback so it can be used as a useEffect dependency without
+   * re-creating on every render — only recreated when `id` changes.
+   */
   const load = useCallback(async () => {
     try {
-      const res = await client.get(`/schedule/itinerary/${itineraryId}`);
-      setItinerary(res.data);
-    } catch (err) {
-      setError(err.message || 'Could not load this itinerary.');
+      const res = await client.get(`/schedule/itinerary/${id}`);
+      setItin(res.data);
+      setMyId(getSupabaseId() || getUserId());
+    } catch {
+      setError('Could not load this itinerary.');
     } finally {
       setLoading(false);
     }
-  }, [itineraryId]);
+  }, [id]);
 
   useEffect(() => { load(); }, [load]);
 
-  /* Derived state */
-  // Use the server-computed isOrganizer flag — the server compares against the
-  // real Supabase UUID, whereas getUserId() returns the session key which is a
-  // different string and would always fail the organizer_id comparison.
-  const role = itinerary?.isOrganizer ? 'organizer' : 'attendee';
-  const myStatus    = role === 'organizer' ? itinerary?.organizer_status : itinerary?.attendee_status;
-  const otherStatus = role === 'organizer' ? itinerary?.attendee_status  : itinerary?.organizer_status;
-  const locked      = !!itinerary?.locked_at;
-  // 'sent' covers both 'sent' (organizer chose nothing yet) and 'accepted'
-  // (organizer used "Pick this one" which sends+confirms in one step) — in both
-  // cases the ball is in the attendee's court.
-  const status      = locked ? 'confirmed'
-    : (myStatus === 'declined' || otherStatus === 'declined') ? 'declined'
-    : (itinerary?.organizer_status === 'sent' || itinerary?.organizer_status === 'accepted') ? 'sent'
-    : 'pending';
-  const confirmedId = itinerary?.selected_suggestion_id;
-  const context     = itinerary?.context_prompt || '';
-
-  const organizerFirst    = (itinerary?.organizer?.full_name || '').split(' ')[0] || 'Organizer';
-  const attendeeFirst     = (itinerary?.attendee?.full_name  || '').split(' ')[0] || 'Friend';
-  const organizerLocation = itinerary?.organizer?.location || '';
-
-  /* Actions */
-  async function handleSend() {
-    setSubmitting(true); setActionErr('');
-    try {
-      await client.post(`/schedule/itinerary/${itineraryId}/send`);
-      await load();
-    } catch (err) { setActionErr(err.message || 'Could not send.'); }
-    finally { setSubmitting(false); }
+  /**
+   * Derives a simplified status string from the raw organizer/attendee status fields.
+   * This collapses the two-column status into a single value the UI can branch on:
+   *   'pending'           — organizer hasn't sent yet (draft)
+   *   'sent'              — organizer sent; attendee evaluating (or org locked their pick)
+   *   'attendee_suggested'— attendee counter-proposed; organizer needs to re-evaluate
+   *   'confirmed'         — both agreed; locked_at is set
+   */
+  function deriveStatus(itin) {
+    if (!itin) return 'pending';
+    if (itin.locked_at) return 'confirmed';
+    const os = itin.organizer_status;
+    const as = itin.attendee_status;
+    if (os === 'pending') return 'pending';
+    // attendee_status='accepted' while organizer_status='sent' means the attendee counter-proposed
+    // (organizer was reset to 'sent' after accepting the counter-proposal flow).
+    if (os === 'sent' && as === 'accepted') return 'attendee_suggested';
+    if (os === 'sent') return 'sent';
+    if (os === 'accepted') return 'sent'; // organizer locked pick, awaiting attendee
+    return 'sent';
   }
 
+  /* ── Action handlers ── */
+
+  /**
+   * Organizer picks a suggestion and sends the itinerary in one step.
+   * Calls /send first (changes organizer_status to 'sent') then /confirm
+   * (records the pick and sets organizer_status to 'accepted').
+   */
   async function handlePick(suggestionId) {
-    setSubmitting(true); setActionErr('');
+    setSubmitting(true);
     try {
-      await client.post(`/schedule/itinerary/${itineraryId}/send`);
-      await client.post('/schedule/confirm', { itineraryId, suggestionId });
+      await client.post(`/schedule/itinerary/${id}/send`);
+      await client.post('/schedule/confirm', { itineraryId: id, suggestionId });
       await load();
-    } catch (err) { setActionErr(err.message || 'Could not pick suggestion.'); }
+    } catch { setError('Could not send your pick. Please try again.'); }
     finally { setSubmitting(false); }
   }
 
+  /**
+   * Either party accepts a suggestion.
+   * If both sides have now accepted the same card, the server sets locked_at and the
+   * plan is confirmed. Always reloads after to reflect the latest state.
+   */
   async function handleAccept(suggestionId) {
-    setSubmitting(true); setActionErr('');
+    setSubmitting(true);
     try {
-      await client.post('/schedule/confirm', { itineraryId, suggestionId });
+      await client.post('/schedule/confirm', { itineraryId: id, suggestionId });
       await load();
-    } catch (err) { setActionErr(err.message || 'Could not confirm.'); }
+    } catch { setError('Could not confirm. Please try again.'); }
     finally { setSubmitting(false); }
   }
 
-  async function handleDecline(suggestionId) {
-    setSubmitting(true); setActionErr('');
+  /**
+   * Either party declines the itinerary entirely.
+   * Navigates home on success; the itinerary is marked declined on the server.
+   */
+  async function handleDecline() {
+    setSubmitting(true);
     try {
-      await client.post(`/schedule/itinerary/${itineraryId}/decline`, { suggestionId });
-      await load();
-    } catch (err) { setActionErr(err.message); }
+      await client.post(`/schedule/itinerary/${id}/decline`);
+      navigate('/');
+    } catch { setError('Could not decline. Please try again.'); }
     finally { setSubmitting(false); }
   }
 
-  async function handleReroll(newContext) {
-    setRerolling(true); setActionErr('');
+  /**
+   * Full-board reroll: replaces all 3 suggestions using a new context prompt.
+   * Called from the RerollModal. The modal always closes in the finally block regardless
+   * of success or failure — errors are displayed in the main view, not inside the modal,
+   * so we need the modal out of the way for the user to see them.
+   */
+  async function handleRerollSubmit(context) {
+    setRerolling(true);
     try {
-      const res = await client.post(`/schedule/itinerary/${itineraryId}/reroll`, {
-        contextPrompt: newContext,
-      });
-      const newId = res.data?.itineraryId || res.data?.id;
+      await client.post(`/schedule/itinerary/${id}/reroll`, { contextPrompt: context });
+      await load();
+    } catch { setError('Could not generate new suggestions. Please try again.'); }
+    finally {
+      setRerolling(false);
+      // Close the modal in finally (not the try block) so it closes on both success
+      // and failure — without this, a failed reroll leaves the modal open while the
+      // error message sits invisible behind it.
       setRerollOpen(false);
-      if (newId && newId !== itineraryId) {
-        navigate(`/schedule/${newId}`);
-      } else {
-        await load();
-      }
-    } catch (err) { setActionErr(err.message); }
-    finally { setRerolling(false); }
+    }
   }
 
-  async function handleRerollWithFeedback(suggestionId, feedback, rerollType = 'both') {
-    setRerolling(true); setActionErr('');
+  /**
+   * Generates additional suggestions and appends them to the existing list.
+   * Uses appendMode=true on the reroll endpoint so statuses and the organizer's pick
+   * are untouched — we're just adding more options, not resetting the negotiation.
+   */
+  async function handleGenerateMore() {
+    setGeneratingMore(true);
+    setError('');
     try {
-      await client.post(`/schedule/itinerary/${itineraryId}/reroll`, {
-        contextPrompt: context,
-        feedback: feedback || '',
+      await client.post(`/schedule/itinerary/${id}/reroll`, { appendMode: true });
+      await load();
+    } catch { setError('Could not generate more suggestions. Please try again.'); }
+    finally { setGeneratingMore(false); }
+  }
+
+  /**
+   * Per-card reroll: swaps out a single suggestion while preserving the others.
+   * rerollType is 'timing' (same activity, new time) or 'activity' (same time, new activity).
+   * activeCardId drives the per-card busy spinner in SuggestionCard.
+   */
+  async function handleSingleCardReroll(suggestionId, rerollType) {
+    setSubmitting(true);
+    setActiveCardId(suggestionId);
+    setError('');
+    try {
+      await client.post(`/schedule/itinerary/${id}/reroll`, {
         replaceSuggestionId: suggestionId,
         rerollType,
       });
-      setRerollOpen(false);
       await load();
-    } catch (err) { setActionErr(err.message); }
-    finally { setRerolling(false); }
+    } catch (err) { setError(err.message || 'Could not reroll. Please try again.'); }
+    finally { setSubmitting(false); setActiveCardId(null); }
   }
 
+  /**
+   * Attendee counter-proposes a non-pick card.
+   * Posts to /confirm with isSuggestAlternative=true, which sets attendeeSelected:true
+   * on the JSONB suggestion object and resets organizer_status to 'sent' so the organizer
+   * knows they need to re-evaluate.
+   */
   async function handleSuggestAlternative(suggestionId) {
-    // Attendee proposes a different card — send it back to organizer as a counter-pick.
-    // We reuse the confirm endpoint: sets attendee_status='accepted' on this suggestion,
-    // which resets organizer_status to 'sent' so organizer sees they need to re-pick.
-    setSubmitting(true); setActionErr('');
+    setSubmitting(true);
+    setActiveCardId(suggestionId);
+    setError('');
     try {
-      await client.post('/schedule/confirm', { itineraryId, suggestionId, isSuggestAlternative: true });
+      await client.post('/schedule/confirm', { itineraryId: id, suggestionId, isSuggestAlternative: true });
       await load();
-    } catch (err) { setActionErr(err.message || 'Could not suggest alternative.'); }
-    finally { setSubmitting(false); }
+    } catch (err) { setError(err.message || 'Could not suggest alternative. Please try again.'); }
+    finally { setSubmitting(false); setActiveCardId(null); }
   }
 
-  async function handleShowMore() {
-    setLoadingMore(true); setActionErr('');
-    try {
-      await client.post(`/schedule/itinerary/${itineraryId}/reroll`, {
-        contextPrompt: context,
-        feedback: 'Generate 3 additional different suggestions, different vibes from the existing ones',
-      });
-      await load();
-    } catch (err) { setActionErr(err.message || 'Could not load more options.'); }
-    finally { setLoadingMore(false); }
-  }
-
-  async function handleSuggestChange() {
-    const text = changeText.trim();
-    if (!text) return;
-    setAddingChange(true);
-    try {
-      await client.post(`/schedule/itinerary/${itineraryId}/changelog`, { message: text });
-      setChangeText('');
-      await load();
-    } catch (err) { setActionErr(err.message); }
-    finally { setAddingChange(false); }
-  }
-
+  /**
+   * Saves an updated event title inline. Best-effort: failures don't surface to the user
+   * because the title is cosmetic (just a label in the plans list).
+   */
   async function handleSaveTitle() {
-    const title = titleDraft.trim();
-    setSubmitting(true); setActionErr('');
+    const trimmed = titleDraft.trim().slice(0, 80);
     try {
-      await client.patch(`/schedule/itinerary/${itineraryId}/title`, { eventTitle: title || null });
-      setEditingTitle(false);
-      await load();
-    } catch (err) { setActionErr(err.message || 'Could not save title.'); }
-    finally { setSubmitting(false); }
+      await client.patch(`/schedule/itinerary/${id}/title`, { eventTitle: trimmed || null });
+      setItin(prev => ({ ...prev, event_title: trimmed || null }));
+    } catch { /* best-effort — title is cosmetic, don't block the user on failure */ }
+    setEditingTitle(false);
   }
 
-  /* ── Render ──────────────────────────────────────────────── */
+  /* ── Render ── */
 
-  if (loading) {
-    return (
-      <>
-        <NavBar />
-        <main className="page">
-          <div className="container container--sm">
-            <div className="loading"><div className="spinner spinner--lg" /></div>
-          </div>
-        </main>
-      </>
-    );
-  }
+  if (loading) return (
+    <><NavBar /><main className="page"><div className="container">
+      <div className="loading"><div className="spinner spinner--lg" /><span>Loading…</span></div>
+    </div></main></>
+  );
 
-  if (error || !itinerary) {
-    return (
-      <>
-        <NavBar />
-        <main className="page">
-          <div className="container container--sm">
-            <div className="alert alert--error">{error || 'Itinerary not found.'}</div>
-            <button className="btn btn--ghost" onClick={() => navigate('/home')}>← Home</button>
-          </div>
-        </main>
-      </>
-    );
-  }
+  // Fatal error (e.g., 404 or network failure on initial load)
+  if (error && !itin) return (
+    <><NavBar /><main className="page"><div className="container">
+      <div className="alert alert--error">{error}</div>
+      <button className="btn btn--ghost" onClick={() => navigate('/')}>← Back</button>
+    </div></main></>
+  );
 
-  const otherPerson = role === 'organizer' ? itinerary.attendee : itinerary.organizer;
-  const otherName = otherPerson?.full_name || otherPerson?.name || 'friend';
-  const suggestions = itinerary.suggestions || [];
+  const isOrganizer = itin.organizer_id === myId;
+  const status      = deriveStatus(itin);
+  // For attendees, sort the organizer's picked card to the top so it's immediately visible.
+  // Organizers see the original order (they built the list themselves).
+  const suggestions = (() => {
+    const raw = itin.suggestions || [];
+    if (isOrganizer) return raw;
+    const pickId = itin.attendee_status !== 'accepted' ? itin.selected_suggestion_id : null;
+    if (!pickId) return raw;
+    return [...raw].sort((a, b) => (a.id === pickId ? -1 : b.id === pickId ? 1 : 0));
+  })();
+  const lockedSugId = itin.selected_suggestion_id; // only meaningful when locked_at is set
+
+  // orgPickedId: tracks which card the organizer chose.
+  // When the attendee has counter-proposed (attendee_status='accepted'), they "own"
+  // selected_suggestion_id via the attendeeSelected JSONB flag — the organizer is in
+  // re-evaluation mode and we don't want to highlight their old pick as "still chosen".
+  const orgPickedId = itin.attendee_status !== 'accepted' ? itin.selected_suggestion_id : null;
+
+  // atPickedId: the card the attendee most recently counter-proposed.
+  // Stored as attendeeSelected:true on the JSONB suggestion rather than in selected_suggestion_id,
+  // so we can preserve the organizer's pick reference independently.
+  const atPickedId = !itin.locked_at
+    ? ((itin.suggestions || []).find(s => s.attendeeSelected)?.id || null)
+    : null;
+
+  const attendeeName      = itin.attendee?.full_name  || 'Friend';
+  const organizerName     = itin.organizer?.full_name || 'Organizer';
+  const organizerLocation = itin.organizer?.location  || '';
+  const role              = isOrganizer ? 'organizer' : 'attendee';
+  const friendName        = isOrganizer ? attendeeName : organizerName;
+  const friendFirstName   = friendName.split(' ')[0] || friendName;
+
+  const titleDisplay = itin.event_title
+    ? `${friendFirstName} · ${itin.event_title}`
+    : `Plans with ${friendFirstName}`;
+
+  // True when the organizer has sent their pick and is waiting for the attendee to respond.
+  // In this state: hide the Edit button, show only the picked card, show the "waiting" prompt.
+  const sentAndWaiting = isOrganizer && itin.organizer_status === 'accepted' && !itin.locked_at;
+
+  // When waiting, only render the picked suggestion — the others are irrelevant until attendee responds.
+  const visibleSuggestions = sentAndWaiting
+    ? suggestions.filter(s => s.id === orgPickedId)
+    : suggestions;
 
   return (
     <>
       <NavBar />
-      <main className="page">
-        <div className="container container--sm">
 
-          {/* Header */}
-          <div className="itinerary-header">
-            <div className="itinerary-header__left">
-              <button
-                className="btn btn--ghost btn--sm"
-                onClick={() => navigate('/home')}
-                style={{ marginBottom: 12 }}
-              >
-                ← Home
-              </button>
-              {editingTitle ? (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                  <input
-                    className="form-control"
-                    value={titleDraft}
-                    onChange={(e) => setTitleDraft(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') setEditingTitle(false); }}
-                    maxLength={80}
-                    autoFocus
-                    style={{ fontSize: '1.25rem', fontWeight: 700, padding: '4px 10px' }}
-                  />
-                  <button className="btn btn--primary btn--sm" onClick={handleSaveTitle} disabled={submitting}>Save</button>
-                  <button className="btn btn--ghost btn--sm" onClick={() => setEditingTitle(false)}>Cancel</button>
-                </div>
-              ) : (
-                <h1
-                  className="page-title"
-                  style={{ marginBottom: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
-                  title="Click to rename"
-                  onClick={() => { setTitleDraft(itinerary.event_title || ('Plans with ' + otherName.split(' ')[0])); setEditingTitle(true); }}
-                >
-                  {itinerary.event_title || ('Plans with ' + otherName.split(' ')[0])}
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-3)', fontWeight: 400 }}>✏️</span>
-                </h1>
-              )}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className={`badge${status === 'confirmed' ? ' badge--green' : status === 'declined' ? ' badge--red' : ' badge--amber'}`}>
-                  {status}
-                </span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>
-                  {role === 'organizer' ? 'You created this' : 'From ' + (itinerary.organizer?.full_name || itinerary.organizer?.name || 'organizer')}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {actionErr && <div className="alert alert--error">{actionErr}</div>}
-
-          {/* Confirmed banner */}
-          {/* Attendee sees this when organizer hasn't sent yet */}
-          {!locked && role === 'attendee' && status === 'pending' && (
-            <div style={{
-              background: 'var(--surface-2)', border: '1px solid var(--border)',
-              borderRadius: 10, padding: '16px 20px', textAlign: 'center',
-              color: 'var(--text-2)', fontSize: '0.92rem', marginBottom: 16,
-            }}>
-              ⏳ Waiting for {organizerFirst} to pick a plan to send you.
-            </div>
-          )}
-
-          {locked && (
-            <div className="confirmed-banner">
-              <span style={{ fontSize: '1.4rem' }}>🎉</span>
-              <span>You're both confirmed! See you there.</span>
-            </div>
-          )}
-
-          {/* Suggestion cards */}
-          {suggestions.length === 0 ? (
-            <div className="card card-pad">
-              <div className="empty-state">
-                <div className="empty-state__icon">🔄</div>
-                <div className="empty-state__title">No suggestions yet</div>
-                <p className="empty-state__text">They're being generated — refresh in a moment.</p>
-              </div>
-            </div>
-          ) : (
-            suggestions.map((s) => (
-              <SuggestionCard
-                key={s.id}
-                suggestion={s}
-                isConfirmed={locked && s.id === confirmedId}
-                isPicked={!locked && role === 'organizer' && s.id === confirmedId}
-                isOrganizerPick={!locked && role === 'attendee' && s.id === confirmedId}
-                calendarEventId={locked && s.id === confirmedId ? (itinerary.calendar_event_id || null) : null}
-                itinerary={itinerary}
-                confirmedId={confirmedId}
-                role={role}
-                status={status}
-                onAccept={handleAccept}
-                onDecline={handleDecline}
-                onReroll={() => setRerollOpen(true)}
-                onPick={handlePick}
-                onRerollWithFeedback={handleRerollWithFeedback}
-                onSuggestAlternative={handleSuggestAlternative}
-                organizerName={organizerFirst}
-                attendeeName={attendeeFirst}
-                organizerLocation={organizerLocation}
-                submitting={submitting || rerolling}
-              />
-            ))
-          )}
-
-          {/* Show More options */}
-          {!locked && (itinerary?.reroll_count ?? 0) < 10 && suggestions.length > 0 && (
-            <div style={{ marginTop: 8, textAlign: 'center' }}>
-              {loadingMore ? (
-                <div className="loading" style={{ padding: '12px 0' }}>
-                  <div className="spinner" />
-                  <span style={{ fontSize: '0.88rem', color: 'var(--text-2)' }}>Finding more options…</span>
-                </div>
-              ) : (
-                <button
-                  className="btn btn--ghost"
-                  onClick={handleShowMore}
-                  disabled={submitting || rerolling}
-                >
-                  Show more options
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Suggest a change (confirmed itineraries) */}
-          {locked && (
-            <div className="card card-pad" style={{ marginTop: 8 }}>
-              <div className="section-title" style={{ marginBottom: 8 }}>Suggest a change</div>
-              <div className="change-input-row">
-                <input
-                  type="text"
-                  className="form-control"
-                  value={changeText}
-                  onChange={(e) => setChangeText(e.target.value)}
-                  placeholder="e.g. 'Can we push to 7pm instead?'"
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleSuggestChange(); }}
-                />
-                <button
-                  className="btn btn--secondary"
-                  onClick={handleSuggestChange}
-                  disabled={addingChange || !changeText.trim()}
-                >
-                  {addingChange ? '…' : 'Send'}
-                </button>
-              </div>
-
-              {/* Changelog */}
-              {itinerary.changelog?.length > 0 && (
-                <div style={{ marginTop: 20 }}>
-                  <div className="form-label" style={{ marginBottom: 8 }}>Change log</div>
-                  <ul className="changelog">
-                    {itinerary.changelog.map((entry, i) => (
-                      <li key={i} className="changelog-item">
-                        <span className="changelog-item__time">{formatTimestamp(entry.ts || entry.timestamp)}</span>
-                        <span>{entry.message}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* Re-roll modal */}
+      {/* Full-board reroll modal — rendered outside the main flow so it overlays correctly */}
       {rerollOpen && (
         <RerollModal
-          initialContext={context}
-          onClose={() => { if (!rerolling) setRerollOpen(false); }}
-          onSubmit={handleReroll}
+          initialContext={itin.context_prompt || ''}
+          onClose={() => setRerollOpen(false)}
+          onSubmit={handleRerollSubmit}
           loading={rerolling}
         />
       )}
+
+      <main className="page">
+        <div className="container container--sm">
+          {/* Edit button — hidden once the organizer has sent their pick */}
+          {!sentAndWaiting && (
+            <button className="btn btn--ghost btn--sm" style={{ marginBottom: 16 }}
+              onClick={() => {
+                const friendId = isOrganizer ? itin.attendee_id : itin.organizer_id;
+                navigate(`/schedule/new?friendId=${friendId}`);
+              }}>
+              ← Edit
+            </button>
+          )}
+
+          {/* Page title with inline edit (pencil icon) */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+            {editingTitle ? (
+              <>
+                <input
+                  autoFocus
+                  type="text"
+                  className="form-control"
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') setEditingTitle(false); }}
+                  maxLength={80}
+                  style={{ flex: 1, minWidth: 160, fontSize: '1.1rem' }}
+                />
+                <button className="btn btn--primary btn--sm" onClick={handleSaveTitle}>Save</button>
+                <button className="btn btn--ghost btn--sm" onClick={() => setEditingTitle(false)}>Cancel</button>
+              </>
+            ) : (
+              <>
+                <h1 className="page-title" style={{ marginBottom: 0, flex: 1 }}>{titleDisplay}</h1>
+                <button
+                  title="Edit title"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem', color: 'var(--text-3)' }}
+                  onClick={() => { setTitleDraft(itin.event_title || ''); setEditingTitle(true); }}
+                >✏️</button>
+              </>
+            )}
+          </div>
+
+          {/* Non-fatal error banner (e.g., a failed reroll after successful initial load) */}
+          {error && <div className="alert alert--error" style={{ marginBottom: 12 }}>{error}</div>}
+
+          {/* Suggestion cards — all shown normally; only the picked card shown while waiting */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {visibleSuggestions.map((s) => {
+              // A suggestion is "confirmed" only when the plan is locked AND it's the picked one.
+              const isThisConfirmed    = !!itin.locked_at && lockedSugId === s.id;
+              const isThisOrgPick      = orgPickedId === s.id && !itin.locked_at;
+              const isThisAttendeePick = atPickedId === s.id && !itin.locked_at;
+
+              return (
+                <SuggestionCard
+                  key={s.id}
+                  suggestion={s}
+                  isConfirmed={isThisConfirmed}
+                  isPicked={isThisOrgPick && isOrganizer}
+                  isOrganizerPick={isThisOrgPick}
+                  isAttendeePick={isThisAttendeePick}
+                  role={role}
+                  status={status}
+                  onAccept={handleAccept}
+                  onDecline={handleDecline}
+                  onReroll={() => setRerollOpen(true)}
+                  onPick={handlePick}
+                  onRerollWithFeedback={(sugId, type) => handleSingleCardReroll(sugId, type)}
+                  onSuggestAlternative={handleSuggestAlternative}
+                  organizerName={organizerName}
+                  attendeeName={attendeeName}
+                  organizerLocation={organizerLocation}
+                  submitting={submitting}
+                  activeCardId={activeCardId}
+                  itinerary={itin}
+                  calendarEventId={itin.calendar_event_id}
+                />
+              );
+            })}
+          </div>
+
+          {/* Waiting state — shown to organizer after sending their pick */}
+          {sentAndWaiting && (
+            <div style={{ textAlign: 'center', padding: '24px 0 8px' }}>
+              <p style={{ color: 'var(--text-2)', marginBottom: 16 }}>
+                We'll let you know when {friendFirstName} responds.
+              </p>
+              <button className="btn btn--primary" onClick={() => navigate('/')}>
+                Return Home
+              </button>
+            </div>
+          )}
+
+          {/* Generate More — only shown while organizer is still drafting (not yet sent) */}
+          {!itin.locked_at && !sentAndWaiting && (
+            <button
+              className="btn btn--ghost btn--sm"
+              style={{ marginTop: 8, width: '100%' }}
+              disabled={generatingMore || submitting}
+              onClick={handleGenerateMore}
+            >
+              {generatingMore
+                ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</>
+                : '+ Generate More Options'}
+            </button>
+          )}
+        </div>
+      </main>
     </>
   );
 }

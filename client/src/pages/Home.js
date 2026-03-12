@@ -1,6 +1,9 @@
-// 5/10 — Home
-// Dashboard: AI nudge cards, friends preview, itineraries awaiting response,
-// and upcoming confirmed events.
+// Home.js — tabbed dashboard showing the user's plans and friends.
+// Fetches nudges, friends, and itineraries in parallel on mount.
+// Itineraries are bucketed into four tabs (Drafts, Waiting for them,
+// Waiting for you, Confirmed) using client-side status derivation.
+// Each tab shows the first INITIAL_VISIBLE items; a "Show all" button
+// expands the list without a new API call.
 
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -8,11 +11,22 @@ import NavBar from '../components/NavBar';
 import { getUserName } from '../utils/auth';
 import client from '../utils/client';
 
+/* ── Constants ──────────────────────────────────────────────── */
+
+// How many itinerary cards to show per tab before the "Show all" button appears.
+const INITIAL_VISIBLE = 3;
+
 /* ── Helpers ────────────────────────────────────────────────── */
+
+/** Produces two-letter uppercase initials from a full name string. */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
+/**
+ * Formats a date string for display on an itinerary card.
+ * Uses short weekday/month/day — e.g. "Wed, Mar 12".
+ */
 function formatDate(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
@@ -20,40 +34,44 @@ function formatDate(dateStr) {
 }
 
 /**
- * Derive a human-readable status from an itinerary row.
- * isOrganizer = whether the current user is the organizer.
+ * Derives which dashboard tab an itinerary belongs to based on its status fields.
+ * Returns one of: 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
+ * null means the item should not appear on any tab (e.g., declined, or draft not
+ * yet sent to the attendee).
+ *
+ * State machine:
+ *   Organizer: pending → drafts
+ *              sent/accepted (attendee pending) → waiting_them
+ *              attendee accepted (counter-proposal) → waiting_you
+ *   Attendee:  organizer pending → null (not visible yet)
+ *              organizer sent, attendee pending → waiting_you
+ *              attendee accepted → waiting_them
+ *   Both:      locked_at set → confirmed
+ *              either declined → null
  */
-function deriveStatus(item) {
+function deriveTab(item) {
   if (item.locked_at) return 'confirmed';
-  if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return 'declined';
-
+  if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return null;
   if (item.isOrganizer) {
-    // Organizer perspective
-    if (item.organizer_status === 'pending') return 'draft';           // not sent yet
-    if (item.attendee_status  === 'pending') return 'awaiting them';   // sent, friend hasn't responded
-    if (item.attendee_status  === 'accepted') return 'they accepted';  // friend accepted, you need to confirm
+    if (item.organizer_status === 'pending') return 'drafts';
+    // Attendee suggested an alternative: organizer_status was reset to 'sent'
+    // but attendee_status is 'accepted' — attendee has acted, now waiting on organizer.
+    if (item.attendee_status === 'accepted' && item.organizer_status === 'sent') return 'waiting_you';
+    return 'waiting_them';
   } else {
-    // Attendee perspective
-    if (item.organizer_status === 'sent' && item.attendee_status === 'pending') return 'respond';
-    if (item.attendee_status  === 'accepted') return 'awaiting them';
+    if (item.organizer_status === 'sent' && item.attendee_status === 'pending') return 'waiting_you';
+    if (item.attendee_status === 'accepted') return 'waiting_them';
+    if (item.organizer_status === 'pending') return null; // draft, not visible to attendee yet
+    return 'waiting_you';
   }
-  return 'pending';
 }
 
-function statusBadge(status) {
-  const map = {
-    confirmed:      'badge--green',
-    declined:       'badge--red',
-    'respond':      'badge--amber',
-    draft:          'badge--gray',
-    'awaiting them':'badge--gray',
-    'they accepted':'badge--amber',
-    pending:        'badge--gray',
-  };
-  return `badge ${map[status] || 'badge--gray'}`;
-}
+/* ── Sub-components ─────────────────────────────────────────── */
 
-/* ── Nudge card ─────────────────────────────────────────────── */
+/**
+ * Renders a single AI-generated nudge card with an action CTA and a dismiss button.
+ * Nudges are friend-specific prompts suggesting the user reach out and plan something.
+ */
 function NudgeCard({ nudge, onDismiss }) {
   return (
     <div className="nudge-card">
@@ -70,37 +88,64 @@ function NudgeCard({ nudge, onDismiss }) {
   );
 }
 
-/* ── Itinerary list item ─────────────────────────────────────── */
-function ItineraryCard({ item }) {
+/**
+ * Renders a single itinerary row linking to the itinerary detail page.
+ * Shows the friend's name, event title, first suggestion date/neighborhood, and a status badge.
+ * Includes a delete button only on draft items (which haven't been sent yet).
+ */
+function ItineraryCard({ item, onDelete }) {
   const friendName = item.isOrganizer ? item.attendeeName : item.organizerName;
+  // Use the first suggestion's date/neighborhood as the teaser metadata.
   const firstSuggestion = item.suggestions?.[0];
   const displayDate = firstSuggestion?.date;
-  const status = deriveStatus(item);
+  const tab = deriveTab(item);
+
+  const badgeMap = {
+    drafts:       { cls: 'badge--gray',  label: 'draft' },
+    waiting_them: { cls: 'badge--gray',  label: 'waiting on them' },
+    waiting_you:  { cls: 'badge--amber', label: 'waiting on you' },
+    confirmed:    { cls: 'badge--green', label: 'confirmed' },
+  };
+  const badge = badgeMap[tab] || { cls: 'badge--gray', label: tab || 'pending' };
 
   return (
-    <Link to={`/schedule/${item.id}`} className="itinerary-card">
-      <div className="avatar avatar--sm">{getInitials(friendName)}</div>
-      <div className="itinerary-card__body">
-        <div className="itinerary-card__title">
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <Link to={`/schedule/${item.id}`} className="itinerary-card" style={{ flex: 1 }}>
+        <div className="avatar avatar--sm">{getInitials(friendName)}</div>
+        <div className="itinerary-card__body">
+          <div className="itinerary-card__title">
             {friendName}{item.event_title ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {item.event_title}</span> : ''}
           </div>
-        <div className="itinerary-card__meta">
-          {displayDate && <span>{formatDate(displayDate)}</span>}
-          {firstSuggestion?.neighborhood && (
-            <>
-              <span className="itinerary-card__dot" />
-              <span>{firstSuggestion.neighborhood}</span>
-            </>
-          )}
-          <span className="itinerary-card__dot" />
-          <span className={statusBadge(status)}>{status}</span>
+          <div className="itinerary-card__meta">
+            {displayDate && <span>{formatDate(displayDate)}</span>}
+            {firstSuggestion?.neighborhood && (
+              <>
+                <span className="itinerary-card__dot" />
+                <span>{firstSuggestion.neighborhood}</span>
+              </>
+            )}
+            <span className="itinerary-card__dot" />
+            <span className={`badge ${badge.cls}`}>{badge.label}</span>
+          </div>
         </div>
-      </div>
-    </Link>
+      </Link>
+      {/* Delete button is only available on unsent drafts to prevent accidental deletion. */}
+      {tab === 'drafts' && onDelete && (
+        <button
+          className="btn btn--ghost btn--sm"
+          title="Delete draft"
+          onClick={(e) => { e.preventDefault(); onDelete(item.id); }}
+          style={{ color: 'var(--text-3)', flexShrink: 0 }}
+        >
+          🗑
+        </button>
+      )}
+    </div>
   );
 }
 
-/* ── Component ──────────────────────────────────────────────── */
+/* ── Main component ─────────────────────────────────────────── */
+
 export default function Home() {
   const navigate = useNavigate();
   const name     = getUserName();
@@ -110,10 +155,16 @@ export default function Home() {
   const [allItins,  setAllItins]  = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
+  const [activeTab,    setActiveTab]    = useState('waiting_you');
+  // How many items are currently visible in the active tab.
+  // Starts at INITIAL_VISIBLE and grows by INITIAL_VISIBLE on each "Load more" click.
+  // Resets to INITIAL_VISIBLE whenever the user switches tabs.
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
 
+  // Fetch all dashboard data in parallel on mount using Promise.allSettled so a
+  // single failing request doesn't block the rest of the page from rendering.
   useEffect(() => {
     let mounted = true;
-
     async function load() {
       try {
         const [nudgesRes, friendsRes, itinsRes] = await Promise.allSettled([
@@ -121,9 +172,8 @@ export default function Home() {
           client.get('/friends'),
           client.get('/schedule/itineraries'),
         ]);
-
         if (!mounted) return;
-        if (nudgesRes.status === 'fulfilled')  setNudges(nudgesRes.value.data?.nudges   ?? []);
+        if (nudgesRes.status === 'fulfilled')  setNudges(nudgesRes.value.data?.nudges ?? []);
         if (friendsRes.status === 'fulfilled') setFriends(friendsRes.value.data?.friends ?? []);
         if (itinsRes.status === 'fulfilled')   setAllItins(itinsRes.value.data?.itineraries ?? []);
       } catch {
@@ -132,45 +182,56 @@ export default function Home() {
         if (mounted) setLoading(false);
       }
     }
-
     load();
     return () => { mounted = false; };
   }, []);
 
+  /**
+   * Optimistically removes the nudge from the list, then fires the dismiss API call.
+   * Best-effort: a failed dismiss won't bring the nudge back.
+   */
   async function dismissNudge(id) {
     setNudges((prev) => prev.filter((n) => n.id !== id));
     try { await client.post(`/nudges/${id}/dismiss`); } catch { /* best-effort */ }
   }
 
-  // Split itineraries into sections client-side so we use one API call
-  const waiting = allItins.filter(i => {
-    if (i.locked_at) return false;
-    if (i.organizer_status === 'declined' || i.attendee_status === 'declined') return false;
-    // "Waiting on you" = you need to take action
-    if (!i.isOrganizer && i.organizer_status === 'sent' && i.attendee_status === 'pending') return true;
-    if (i.isOrganizer && i.attendee_status === 'accepted' && i.organizer_status !== 'accepted') return true;
-    return false;
-  });
+  /**
+   * Optimistically removes the draft from the list, then fires the delete API call.
+   * Best-effort: a failed delete won't restore the item in the UI.
+   */
+  async function deleteDraft(id) {
+    setAllItins((prev) => prev.filter((i) => i.id !== id));
+    try { await client.delete(`/schedule/itinerary/${id}`); } catch { /* best-effort */ }
+  }
 
-  const inProgress = allItins.filter(i => {
-    if (i.locked_at) return false;
-    if (i.organizer_status === 'declined' || i.attendee_status === 'declined') return false;
-    // Active but not waiting on current user
-    return !waiting.includes(i);
-  });
+  // Bucket all itineraries into their respective tab categories.
+  const tabs = {
+    drafts:       allItins.filter(i => deriveTab(i) === 'drafts'),
+    waiting_them: allItins.filter(i => deriveTab(i) === 'waiting_them'),
+    waiting_you:  allItins.filter(i => deriveTab(i) === 'waiting_you'),
+    confirmed:    allItins.filter(i => deriveTab(i) === 'confirmed'),
+  };
 
-  const upcoming = allItins.filter(i => !!i.locked_at);
+  const TAB_CONFIG = [
+    { key: 'waiting_you',  label: 'Waiting for you' },
+    { key: 'waiting_them', label: 'Waiting for them' },
+    { key: 'drafts',       label: 'Drafts' },
+    { key: 'confirmed',    label: 'Confirmed' },
+  ];
 
+  // Show only the first 4 friends as avatar chips; "View all" links to /friends.
   const visibleFriends = friends.slice(0, 4);
-  const firstName      = (name || '').split(' ')[0] || 'there';
+  const firstName = (name || '').split(' ')[0] || 'there';
+  const activeItems = tabs[activeTab] || [];
+  // Show only the first visibleCount items; "Load more" increments this.
+  const displayedItems = activeItems.slice(0, visibleCount);
+  const hasMore = visibleCount < activeItems.length;
 
   return (
     <>
       <NavBar />
       <main className="page">
         <div className="container">
-
-          {/* Greeting */}
           <div style={{ marginBottom: 28 }}>
             <h1 className="home-greeting">Hey {firstName} 👋</h1>
             <p className="home-greeting__sub">
@@ -184,26 +245,24 @@ export default function Home() {
             <div className="loading"><div className="spinner spinner--lg" /><span>Loading your dashboard…</span></div>
           ) : (
             <>
-              {/* ── AI Nudges ─────────────────────────────── */}
+              {/* AI-generated nudges prompting the user to reach out to friends */}
               {nudges.length > 0 && (
                 <section className="section">
                   <div className="section-title">✨ Suggested plans</div>
                   <div className="scroll-row" role="list">
-                    {nudges.map((n) => (
-                      <NudgeCard key={n.id} nudge={n} onDismiss={dismissNudge} />
-                    ))}
+                    {nudges.map((n) => <NudgeCard key={n.id} nudge={n} onDismiss={dismissNudge} />)}
                   </div>
                 </section>
               )}
 
-              {/* ── New event CTA ─────────────────────────── */}
-              <div style={{ marginBottom: 28 }}>
+              {/* Primary CTA to start a new event */}
+              <div style={{ marginBottom: 24 }}>
                 <button className="btn btn--primary" onClick={() => navigate('/schedule/new')}>
                   + New Event
                 </button>
               </div>
 
-              {/* ── Friends preview ───────────────────────── */}
+              {/* Friends strip — first 4 friends as tappable avatar chips */}
               {visibleFriends.length > 0 && (
                 <section className="section">
                   <div className="section-title">
@@ -221,32 +280,71 @@ export default function Home() {
                 </section>
               )}
 
-              {/* ── Waiting on you ────────────────────────── */}
-              {waiting.length > 0 && (
+              {/* Tabbed itinerary list */}
+              {allItins.length > 0 && (
                 <section className="section">
-                  <div className="section-title">Waiting on you</div>
-                  {waiting.map((item) => <ItineraryCard key={item.id} item={item} />)}
+                  {/* Tab bar — clicking a tab also resets the "show all" expansion. */}
+                  <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+                    {TAB_CONFIG.map(({ key, label }) => {
+                      const count = tabs[key]?.length || 0;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => { setActiveTab(key); setVisibleCount(INITIAL_VISIBLE); }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '8px 12px',
+                            fontSize: '0.85rem',
+                            fontWeight: activeTab === key ? 700 : 400,
+                            color: activeTab === key ? 'var(--brand)' : 'var(--text-2)',
+                            borderBottom: activeTab === key ? '2px solid var(--brand)' : '2px solid transparent',
+                            marginBottom: -1,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {label}{count > 0 ? ` (${count})` : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Tab content — shows visibleCount items; "Load more" reveals the next batch */}
+                  {activeItems.length === 0 ? (
+                    <div style={{ padding: '20px 0', color: 'var(--text-3)', fontSize: '0.88rem', textAlign: 'center' }}>
+                      Nothing here yet.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {displayedItems.map((item) => (
+                          <ItineraryCard
+                            key={item.id}
+                            item={item}
+                            onDelete={activeTab === 'drafts' ? deleteDraft : null}
+                          />
+                        ))}
+                      </div>
+
+                      {/* Load more button — increments visibleCount by INITIAL_VISIBLE each click.
+                          All items are already in state so no extra API call is needed. */}
+                      {hasMore && (
+                        <button
+                          className="btn btn--ghost btn--sm"
+                          style={{ marginTop: 12, width: '100%' }}
+                          onClick={() => setVisibleCount(prev => prev + INITIAL_VISIBLE)}
+                        >
+                          Load more ({activeItems.length - visibleCount} remaining)
+                        </button>
+                      )}
+                    </>
+                  )}
                 </section>
               )}
 
-              {/* ── In progress ───────────────────────────── */}
-              {inProgress.length > 0 && (
-                <section className="section">
-                  <div className="section-title">In progress</div>
-                  {inProgress.map((item) => <ItineraryCard key={item.id} item={item} />)}
-                </section>
-              )}
-
-              {/* ── Upcoming ─────────────────────────────── */}
-              {upcoming.length > 0 && (
-                <section className="section">
-                  <div className="section-title">Upcoming</div>
-                  {upcoming.map((item) => <ItineraryCard key={item.id} item={item} />)}
-                </section>
-              )}
-
-              {/* Empty state */}
-              {!nudges.length && !waiting.length && !inProgress.length && !upcoming.length && friends.length === 0 && (
+              {/* Empty state — first time the user has no plans, nudges, or friends */}
+              {allItins.length === 0 && nudges.length === 0 && friends.length === 0 && (
                 <div className="card card-pad">
                   <div className="empty-state">
                     <div className="empty-state__icon">📅</div>

@@ -20,6 +20,11 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
+/**
+ * Creates a fresh Google OAuth2 client, optionally pre-loaded with stored tokens.
+ * A new instance is created per-request/per-operation to avoid shared mutable state
+ * across concurrent requests.
+ */
 function createOAuth2Client(tokens) {
   const c = new (require('googleapis').google.auth.OAuth2)(
     process.env.GOOGLE_CLIENT_ID,
@@ -118,11 +123,18 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
   return windows;
 }
 
-/** Build the Claude prompt for generating itinerary suggestions. */
+/**
+ * Build the Claude prompt for generating itinerary suggestions.
+ * Window strings include the year (e.g. "Wed, Mar 12, 2026") to prevent Claude from
+ * defaulting to the prior year when the free windows span a year boundary or when
+ * Claude's training data year differs from the current calendar year.
+ */
 function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
-    return `- ${s.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' })} ${s.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}–${new Date(w.end).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}`;
+    // year:'numeric' is critical — without it Claude writes dates like "2025-03-12"
+    // even when the actual windows are in 2026, because it has no year signal in the prompt.
+    return `- ${s.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric', year:'numeric' })} ${s.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}–${new Date(w.end).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}`;
   }).join('\n');
 
   return `You are Rendezvous, a NYC activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
@@ -180,6 +192,11 @@ Rules:
 }
 
 
+/**
+ * Looks up a user's first name by their Supabase UUID.
+ * Used for notification body text (e.g. "Jamie rolled new suggestions").
+ * Falls back to 'Someone' if the profile can't be found.
+ */
 async function getProfileName(userId, supabase) {
   const { data } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
   return data?.full_name?.split(' ')[0] || 'Someone';
@@ -208,11 +225,16 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
 
     const calendar = google.calendar({ version: 'v3', auth });
 
-    // Build start/end datetimes
+    /**
+     * Convert a suggestion's date + time into an RFC 3339 datetime string.
+     * Accepts "7:00 PM" style time strings from Claude's JSON output.
+     * Logs a warning if the year looks like a past year — this is a signal that
+     * buildSuggestPrompt's window strings are missing the year field and Claude
+     * defaulted to the wrong year.
+     */
     function toRFC3339(dateStr, timeStr) {
       if (!dateStr) return null;
-      // Parse "7:00 PM" style
-      if (!timeStr) return dateStr; // date-only fallback
+      if (!timeStr) return dateStr; // date-only fallback — calendar event will be all-day
       const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
       if (!match) return dateStr;
       let h = parseInt(match[1]);
@@ -221,6 +243,17 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
       if (ampm === 'PM' && h !== 12) h += 12;
       if (ampm === 'AM' && h === 12) h = 0;
       const hh = String(h).padStart(2, '0');
+
+      // Safety net: warn if Claude returned a date in the past year.
+      // Root cause is usually missing year:'numeric' in buildSuggestPrompt's window list.
+      const parsedYear = parseInt((dateStr || '').split('-')[0], 10);
+      if (parsedYear && parsedYear < new Date().getFullYear()) {
+        console.warn(
+          `[toRFC3339] Suggestion date "${dateStr}" is in a past year (${parsedYear}). ` +
+          'Check that buildSuggestPrompt includes year in window date strings.'
+        );
+      }
+
       return `${dateStr}T${hh}:${min}:00`;
     }
 
@@ -414,8 +447,15 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
   });
 
   /* ── POST /schedule/confirm ──────────────────────────────── */
+  // Handles three distinct actions depending on who is calling and whether
+  // isSuggestAlternative is set:
+  //   Organizer (no flag): sets organizer_status='accepted', records selected_suggestion_id
+  //   Attendee  (no flag): sets attendee_status='accepted'; auto-locks if IDs match
+  //   Attendee  (flag):    marks attendeeSelected flag in JSONB, resets organizer to 'sent'
   app.post('/schedule/confirm', requireAuth, async (req, res) => {
     const { itineraryId, suggestionId, isSuggestAlternative } = req.body;
+    // Log receipt to confirm the request arrives and isSuggestAlternative is read correctly.
+    console.log('[confirm] Received:', { itineraryId, suggestionId, isSuggestAlternative, userId: req.userId });
     if (!itineraryId || !suggestionId) return res.status(400).json({ error: 'itineraryId and suggestionId required.' });
 
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
@@ -430,19 +470,56 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
 
     const updates = {
       [statusField]: 'accepted',
-      selected_suggestion_id: suggestionId,
     };
 
-    // Attendee counter-proposing a different card: reset organizer to 'sent' so
-    // they know to re-evaluate, and prevent auto-lock on a card they didn't pick.
     if (isSuggestAlternative && isAttendee) {
+      // Attendee counter-proposing: store their pick as a JSONB flag on the suggestion
+      // rather than overwriting selected_suggestion_id (which tracks the organizer's pick).
+      const updatedSuggestions = (itin.suggestions || []).map(s => ({
+        ...s,
+        attendeeSelected: s.id === suggestionId,
+      }));
+      updates.suggestions = updatedSuggestions;
       updates.organizer_status = 'sent';
-    } else if (otherStatus === 'accepted' && itin.selected_suggestion_id === suggestionId) {
-      // Both sides accepted the same suggestion — lock it
-      updates.locked_at = new Date().toISOString();
+    } else {
+      // Regular accept — record the picked suggestion ID
+      updates.selected_suggestion_id = suggestionId;
+
+      // Auto-lock when both sides have accepted the same card.
+      // If the other side already accepted but chose a different card, the picker is
+      // counter-proposing: reset the other side to pending and clear attendeeSelected flags
+      // so the back-and-forth loop can continue.
+      if (otherStatus === 'accepted') {
+        const otherPicksThisCard = isOrganizer
+          ? (itin.suggestions || []).some(s => s.id === suggestionId && s.attendeeSelected)
+          : itin.selected_suggestion_id === suggestionId;
+        if (otherPicksThisCard) {
+          updates.locked_at = new Date().toISOString();
+        } else if (isOrganizer) {
+          // Organizer counter-proposing back after attendee suggested an alternative.
+          // Reset attendee to pending and clear all attendeeSelected flags so the attendee
+          // sees the organizer's new pick with fresh Accept/Decline/Suggest controls.
+          updates.attendee_status = 'pending';
+          updates.suggestions = (itin.suggestions || []).map(s => ({ ...s, attendeeSelected: false }));
+        } else {
+          // Attendee picking a different card than the organizer's current pick.
+          // Treat the same as isSuggestAlternative — mark the flag and reset organizer.
+          const updatedSuggestions = (itin.suggestions || []).map(s => ({
+            ...s,
+            attendeeSelected: s.id === suggestionId,
+          }));
+          updates.suggestions = updatedSuggestions;
+          updates.organizer_status = 'sent';
+          delete updates.selected_suggestion_id; // don't overwrite organizer's pick
+        }
+      }
     }
 
-    const { data: updated } = await supabase.from('itineraries').update(updates).eq('id', itineraryId).select().single();
+    const { data: updated, error: updateErr } = await supabase.from('itineraries').update(updates).eq('id', itineraryId).select().single();
+    if (updateErr || !updated) {
+      console.error('confirm update failed:', updateErr?.message);
+      return res.status(500).json({ error: 'Could not save confirmation.' });
+    }
 
     // Notify the other person
     const confirmerName = await getProfileName(req.userId, supabase);
@@ -553,7 +630,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     if (itin.locked_at) return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
     if ((itin.reroll_count || 0) >= 10) return res.status(400).json({ error: 'Max rerolls reached.' });
 
-    const { contextPrompt, feedback, replaceSuggestionId, rerollType = 'both' } = req.body;
+    const { contextPrompt, feedback, replaceSuggestionId, rerollType = 'both', appendMode = false } = req.body;
     if (contextPrompt && typeof contextPrompt === 'string' && contextPrompt.length > MAX_CONTEXT) {
       return res.status(400).json({ error: `contextPrompt must be ${MAX_CONTEXT} characters or fewer.` });
     }
@@ -569,7 +646,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const userA = profileARes.data || {};
     const userB = profileBRes.data || {};
 
-    // Single-card reroll: ask Claude for 1 replacement; full reroll: ask for 3
+    // Single-card reroll: ask Claude for 1 replacement; full reroll or append: ask for 3
     const isSingleCard = !!replaceSuggestionId;
     const targetSuggestion = isSingleCard
       ? (itin.suggestions || []).find(s => s.id === replaceSuggestionId)
@@ -585,13 +662,18 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const singleCardNote = isSingleCard
       ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item.`
       : '';
+    // appendMode: generate 3 new suggestions distinct from everything already shown
+    const appendNote = appendMode && !isSingleCard
+      ? `Generate 3 brand-new suggestions completely different from these already-shown options: ${existingTitles.join(', ')}. Do not repeat any of these.`
+      : '';
 
     // Rebuild free windows from the original date range so reroll respects bounds.
     // Also clamp start to today — no point generating windows in the past.
     const todayStr   = new Date().toISOString().split('T')[0];
     const rawStart   = itin.date_range_start || todayStr;
     const rerollStart = rawStart < todayStr ? todayStr : rawStart;
-    const rerollEnd   = itin.date_range_end   || (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().split('T')[0]; })();
+    const futureEnd   = (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().split('T')[0]; })();
+    const rerollEnd   = (!itin.date_range_end || itin.date_range_end < todayStr) ? futureEnd : itin.date_range_end;
     const rerollStartISO = new Date(rerollStart + 'T00:00:00').toISOString();
     const rerollEndISO   = new Date(rerollEnd   + 'T23:59:59').toISOString();
     const [rerollBusyA, rerollBusyB] = await Promise.all([
@@ -604,7 +686,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: rerollWindows,
-      contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote].filter(Boolean).join('. '),
+      contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote, appendNote].filter(Boolean).join('. '),
       maxTravelMinutes: itin.max_travel_minutes || null,
     });
 
@@ -621,13 +703,25 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
 
-    // Single-card: swap only the targeted card, preserve the rest
+    // Single-card: swap only the targeted card, preserve the rest.
+    // appendMode: tag new suggestions with fresh IDs and append to existing list.
+    // Full reroll: replace all suggestions.
     let suggestions;
     if (isSingleCard && newSuggestions.length > 0) {
-      const replacement = { ...newSuggestions[0], id: replaceSuggestionId };
+      const replacement = { ...newSuggestions[0], id: replaceSuggestionId, attendeeSelected: false };
       suggestions = (itin.suggestions || []).map(s =>
-        s.id === replaceSuggestionId ? replacement : s
+        s.id === replaceSuggestionId ? replacement : { ...s, attendeeSelected: false }
       );
+    } else if (isSingleCard) {
+      return res.status(500).json({ error: 'Could not generate a replacement. Please try again.' });
+    } else if (appendMode) {
+      // Give each appended suggestion a unique ID so they don't collide with existing IDs
+      const appended = newSuggestions.map((s, i) => ({
+        ...s,
+        id: `appended_${Date.now()}_${i}`,
+        attendeeSelected: false,
+      }));
+      suggestions = [...(itin.suggestions || []), ...appended];
     } else {
       suggestions = newSuggestions;
     }
@@ -635,24 +729,47 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     const isOrganizer = itin.organizer_id === req.userId;
     const otherUserId = isOrganizer ? itin.attendee_id : itin.organizer_id;
 
-    const [{ data: updated }, rollerName] = await Promise.all([
+    // When the attendee swaps out a card that is NOT the organizer's pick, preserve the
+    // organizer's pick and status so the attendee still sees Accept/Decline on the original
+    // pick card — and accepting it will still auto-lock (otherStatus stays 'accepted').
+    // Any other reroll (organizer rerolling, or attendee replacing the organizer's pick card)
+    // clears the pick and resets statuses.
+    // appendMode never changes statuses or the organizer's pick — it just adds options.
+    const preserveOrgPick = appendMode || (isSingleCard && !isOrganizer
+      && replaceSuggestionId !== itin.selected_suggestion_id);
+
+    // Build the update payload, omitting selected_suggestion_id entirely when
+    // preserveOrgPick is true. Omitting a key means Supabase leaves the stored value
+    // unchanged, which is safer than echoing it back: Claude generates suggestion IDs
+    // like "s1"/"s2" (not UUIDs), and writing a non-UUID back to a UUID-typed column
+    // would fail. Only include selected_suggestion_id when we explicitly want to null it.
+    const rerollData = {
+      suggestions,
+      reroll_count: (itin.reroll_count || 0) + 1,
+      // appendMode: preserve all statuses — we're only adding options, not resetting negotiation
+      organizer_status: preserveOrgPick
+        ? itin.organizer_status
+        : isOrganizer ? 'pending' : (itin.organizer_status === 'accepted' ? 'sent' : itin.organizer_status),
+      attendee_status: appendMode ? itin.attendee_status : 'pending',
+    };
+    // Clear the org's pick reference only when we're NOT preserving it.
+    if (!preserveOrgPick) {
+      rerollData.selected_suggestion_id = null;
+    }
+
+    const [rerollResult, rollerName] = await Promise.all([
       supabase.from('itineraries')
-        .update({
-          suggestions,
-          reroll_count: (itin.reroll_count || 0) + 1,
-          // Preserve organizer_status so attendee keeps Accept/Decline buttons after reroll.
-          // Only reset to 'pending' if the organizer themselves rerolled (they need to re-pick).
-          // If organizer rerolled: reset to 'pending' (needs to re-pick)
-          // If attendee rerolled: set to 'sent' (organizer already chose, ball back in their court)
-          // 'accepted' must NOT be preserved — it would cause auto-lock on attendee's next confirm
-          organizer_status: isOrganizer ? 'pending' : (itin.organizer_status === 'accepted' ? 'sent' : itin.organizer_status),
-          attendee_status: 'pending',
-          selected_suggestion_id: null,
-        })
+        .update(rerollData)
         .eq('id', itineraryId)
         .select().single(),
       getProfileName(req.userId, supabase),
     ]);
+
+    if (rerollResult.error || !rerollResult.data) {
+      console.error('reroll update failed:', rerollResult.error?.message);
+      return res.status(500).json({ error: 'Could not save reroll.' });
+    }
+    const updated = rerollResult.data;
 
     // Notify the other person
     await supabase.from('notifications').insert({
@@ -699,4 +816,21 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, userSession
     await supabase.from('itineraries').update({ changelog }).eq('id', req.params.id);
     res.json({ ok: true, entry });
   });
+  /* ── DELETE /schedule/itinerary/:id ─────────────────────── */
+  // Only the organizer can delete a draft (organizer_status = 'pending', not locked)
+  app.delete('/schedule/itinerary/:id', requireAuth, async (req, res) => {
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, locked_at')
+      .eq('id', req.params.id)
+      .single();
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can delete.' });
+    if (itin.locked_at) return res.status(400).json({ error: 'Cannot delete a confirmed plan.' });
+
+    const { error } = await supabase.from('itineraries').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: 'Could not delete itinerary.' });
+    res.json({ ok: true });
+  });
+
 };

@@ -1,4 +1,8 @@
-// NewEvent.js
+// NewEvent.js — form for creating a new scheduling event.
+// Collects friend, date window, time-of-day preference, travel cap,
+// optional title and free-text context, then calls the AI suggestion engine.
+// Once generation starts, the form is replaced with a spinner overlay until the AI responds.
+
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import NavBar from '../components/NavBar';
@@ -6,6 +10,8 @@ import { getSuggestions } from '../utils/api';
 import client from '../utils/client';
 
 /* ── Constants ──────────────────────────────────────────────── */
+
+// Half-hour increments for the custom time picker.
 const APPROX_TIMES = [
   '12:00 AM','12:30 AM','1:00 AM','1:30 AM','2:00 AM','2:30 AM',
   '3:00 AM','3:30 AM','4:00 AM','4:30 AM','5:00 AM','5:30 AM',
@@ -17,66 +23,77 @@ const APPROX_TIMES = [
   '9:00 PM','9:30 PM','10:00 PM','10:30 PM','11:00 PM','11:30 PM',
 ];
 
+// Flexibility window around the custom time the user picks.
 const WINDOW_OPTIONS = [
-  { value: '15',  label: '± 15 min' },
-  { value: '30',  label: '± 30 min' },
-  { value: '60',  label: '± 1 hour' },
+  { value: '15', label: '± 15 min' },
+  { value: '30', label: '± 30 min' },
+  { value: '60', label: '± 1 hour' },
   { value: '120', label: '± 2 hours' },
 ];
 
+// Preset time-of-day buckets shown as radio cards.
 const TIME_OPTIONS = [
-  { value: 'morning',   label: '🌅 Morning',   sub: '8am – 12pm' },
-  { value: 'afternoon', label: '☀️ Afternoon',  sub: '12pm – 5pm' },
-  { value: 'evening',   label: '🌆 Evening',    sub: '5pm – 10pm' },
-  { value: 'any',       label: '🕐 Any time',   sub: '' },
+  { value: 'morning',   label: '🌅 Morning',    sub: '8am – 12pm' },
+  { value: 'afternoon', label: '☀️ Afternoon',   sub: '12pm – 5pm' },
+  { value: 'evening',   label: '🌆 Evening',     sub: '5pm – 10pm' },
+  { value: 'any',       label: '🕐 Any time',    sub: '' },
   { value: 'custom',    label: '🎯 Custom time', sub: '' },
 ];
 
+// Max-travel time cap options sent to the suggestion engine.
 const TRAVEL_OPTIONS = [
-  { value: '15',  label: '15 min' },
-  { value: '30',  label: '30 min' },
-  { value: '45',  label: '45 min' },
-  { value: '60',  label: '1 hour' },
-  { value: '',    label: 'No limit' },
+  { value: '15', label: '15 min' },
+  { value: '30', label: '30 min' },
+  { value: '45', label: '45 min' },
+  { value: '60', label: '1 hour' },
+  { value: '',   label: 'No limit' },
 ];
 
+/* ── Helpers ─────────────────────────────────────────────────── */
+
+/**
+ * Returns today's date as a YYYY-MM-DD string in the user's LOCAL timezone.
+ * toISOString() returns UTC, which can be off by a day for users in UTC- or UTC+
+ * timezones — e.g. 11 PM EST = next-day UTC, making the default start date tomorrow.
+ */
 function today() {
-  return new Date().toISOString().split('T')[0];
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
+/**
+ * How many days from today until endDate (inclusive)?
+ * Clamped to a minimum of 1 so the engine always has at least one day to search.
+ */
 function daysFromToday(endDate) {
   const ms = new Date(endDate) - new Date(today());
   return Math.max(1, Math.ceil(ms / (1000 * 60 * 60 * 24)));
 }
 
+/** Produces two-letter uppercase initials from a full name string. */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
 /* ── Component ──────────────────────────────────────────────── */
+
 export default function NewEvent() {
   const navigate        = useNavigate();
   const [searchParams]  = useSearchParams();
+  // If navigated from a friend's profile, pre-select that friend automatically.
   const prefillFriendId = searchParams.get('friendId');
 
-  const [allFriends,      setAllFriends]      = useState([]);
-  const [friendQuery,     setFriendQuery]     = useState('');
-  const [friendResults,   setFriendResults]   = useState([]);
-  const [selectedFriend,  setSelectedFriend]  = useState(null);
+  // Friend picker state
+  const [allFriends,     setAllFriends]     = useState([]);
+  const [friendQuery,    setFriendQuery]    = useState('');
+  const [friendResults,  setFriendResults]  = useState([]);
+  const [selectedFriend, setSelectedFriend] = useState(null);
+  // Ref for click-outside detection on the friend dropdown.
   const friendDropRef = useRef(null);
 
-  // Close friend dropdown on outside click
-  useEffect(() => {
-    if (!friendResults.length) return;
-    function handleClickOutside(e) {
-      if (friendDropRef.current && !friendDropRef.current.contains(e.target)) {
-        setFriendResults([]);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [friendResults.length]);
-
+  // Form field state
   const [startDate,    setStartDate]    = useState(today());
   const [endDate,      setEndDate]      = useState('');
   const [timeOfDay,    setTimeOfDay]    = useState('any');
@@ -85,14 +102,29 @@ export default function NewEvent() {
   const [maxTravel,    setMaxTravel]    = useState('30');
   const [context,      setContext]      = useState('');
   const [eventTitle,   setEventTitle]   = useState('');
+
+  // UI state
   const [generating,   setGenerating]   = useState(false);
   const [error,        setError]        = useState('');
 
-  // Load friends list for dropdown on mount
+  /* ── Effects ── */
+
+  // Close the friend dropdown when the user clicks elsewhere on the page.
+  useEffect(() => {
+    if (!friendResults.length) return;
+    function handleClickOutside(e) {
+      if (friendDropRef.current && !friendDropRef.current.contains(e.target)) setFriendResults([]);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [friendResults.length]);
+
+  // Load all friends once so we can populate the dropdown on focus.
   useEffect(() => {
     client.get('/friends').then(res => setAllFriends(res.data?.friends ?? [])).catch(() => {});
   }, []);
 
+  // If a friendId was passed via query param, fetch and pre-select that friend.
   useEffect(() => {
     if (!prefillFriendId) return;
     client.get(`/friends/${prefillFriendId}/profile`)
@@ -100,35 +132,38 @@ export default function NewEvent() {
       .catch(() => {});
   }, [prefillFriendId]);
 
-  // Filter loaded friends by query
+  // Filter the friend list whenever the search query changes.
   useEffect(() => {
     const q = friendQuery.trim().toLowerCase();
-    if (!q) {
-      setFriendResults(allFriends);
-      return;
-    }
-    setFriendResults(
-      allFriends.filter(f =>
-        f.name?.toLowerCase().includes(q) ||
-        f.username?.toLowerCase().includes(q)
-      )
-    );
+    if (!q) { setFriendResults(allFriends); return; }
+    setFriendResults(allFriends.filter(f =>
+      f.name?.toLowerCase().includes(q) || f.username?.toLowerCase().includes(q)
+    ));
   }, [friendQuery, allFriends]);
 
+  /* ── Handlers ── */
+
+  /** Lock in a friend selection and close the dropdown. */
   function selectFriend(f) {
-    setSelectedFriend(f);
-    setFriendQuery('');
-    setFriendResults([]);
+    setSelectedFriend(f); setFriendQuery(''); setFriendResults([]);
   }
 
+  /** Client-side validation before submitting. Returns an error string or ''. */
   function validate() {
-    if (!selectedFriend)       return 'Select a friend to schedule with.';
-    if (!startDate)            return 'Choose a start of scheduling window.';
-    if (!endDate)              return 'Choose an end of scheduling window.';
-    if (endDate < startDate)   return 'End date must be on or after the start date.';
+    if (!selectedFriend)     return 'Select a friend to schedule with.';
+    if (!startDate)          return 'Choose a start of scheduling window.';
+    if (!endDate)            return 'Choose an end of scheduling window.';
+    if (endDate < startDate) return 'End date must be on or after the start date.';
     return '';
   }
 
+  /**
+   * Submits the form to the AI suggestion engine.
+   * Navigates to the new itinerary on success.
+   * Once generating, the user sees a spinner overlay with a "Back to Home" button
+   * rather than the form — this prevents them from going back, tweaking dates,
+   * and re-submitting, which would create a duplicate itinerary.
+   */
   async function handleSubmit(e) {
     e.preventDefault();
     const err = validate();
@@ -142,9 +177,7 @@ export default function NewEvent() {
         : { type: timeOfDay };
       const data = await getSuggestions({
         targetUserId: selectedFriend.id,
-        daysAhead,
-        startDate,
-        endDate,
+        daysAhead, startDate, endDate,
         timeOfDay: timePayload,
         maxTravelMinutes: maxTravel || null,
         contextPrompt: context,
@@ -159,6 +192,9 @@ export default function NewEvent() {
     }
   }
 
+  /* ── Generating overlay ── */
+
+  // Show a full-page spinner while the AI is working.
   if (generating) {
     return (
       <>
@@ -169,19 +205,14 @@ export default function NewEvent() {
               <div className="spinner spinner--lg" />
               <div className="generating-overlay__text">Finding the best options for you both…</div>
               <div className="generating-overlay__sub">Checking calendars, travel times, and preferences.</div>
-              <button
-                className="btn btn--ghost btn--sm"
-                style={{ marginTop: 24 }}
-                onClick={() => setGenerating(false)}
-              >
-                ← Edit details
-              </button>
             </div>
           </div>
         </main>
       </>
     );
   }
+
+  /* ── Form ── */
 
   return (
     <>
@@ -193,7 +224,8 @@ export default function NewEvent() {
           {error && <div className="alert alert--error">{error}</div>}
           <form onSubmit={handleSubmit} noValidate>
 
-            {/* ── Friend selector ───────────────────────── */}
+            {/* Friend selector — shows a search input with live dropdown, or a
+                confirmation card once a friend is selected. */}
             <div className="form-group">
               <label className="form-label">Who are you meeting?</label>
               {selectedFriend ? (
@@ -215,6 +247,8 @@ export default function NewEvent() {
                   {friendResults.length > 0 && (
                     <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, marginTop: 4, maxHeight: 240, overflowY: 'auto' }}>
                       {friendResults.map((f) => (
+                        // onMouseDown fires before onBlur so the selection registers
+                        // before the input loses focus and closes the dropdown.
                         <button key={f.id} type="button" onMouseDown={() => selectFriend(f)}
                           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
                           <div className="avatar avatar--sm">{getInitials(f.name)}</div>
@@ -228,7 +262,7 @@ export default function NewEvent() {
               )}
             </div>
 
-            {/* ── Scheduling window ─────────────────────── */}
+            {/* Scheduling window — the date range the AI will search for free slots. */}
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label" htmlFor="start-date">Start of scheduling window</label>
@@ -242,7 +276,7 @@ export default function NewEvent() {
               </div>
             </div>
 
-            {/* ── Time of day ───────────────────────────── */}
+            {/* Time-of-day preference — maps to hour ranges in findFreeWindows. */}
             <div className="form-group">
               <label className="form-label">Time of day</label>
               <div className="radio-group">
@@ -257,22 +291,19 @@ export default function NewEvent() {
                   </label>
                 ))}
               </div>
-
-              {/* Custom time picker — revealed when Custom Time is selected */}
+              {/* Custom time panel — only shown when "Custom time" is selected. */}
               {timeOfDay === 'custom' && (
                 <div className="custom-time-panel">
                   <div className="form-row" style={{ marginTop: 0 }}>
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label" htmlFor="custom-time">Approximate time</label>
-                      <select id="custom-time" className="form-control" value={customTime}
-                        onChange={(e) => setCustomTime(e.target.value)}>
+                      <select id="custom-time" className="form-control" value={customTime} onChange={(e) => setCustomTime(e.target.value)}>
                         {APPROX_TIMES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label" htmlFor="custom-window">Flexibility</label>
-                      <select id="custom-window" className="form-control" value={customWindow}
-                        onChange={(e) => setCustomWindow(e.target.value)}>
+                      <select id="custom-window" className="form-control" value={customWindow} onChange={(e) => setCustomWindow(e.target.value)}>
                         {WINDOW_OPTIONS.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
                       </select>
                     </div>
@@ -284,7 +315,7 @@ export default function NewEvent() {
               )}
             </div>
 
-            {/* ── Max travel time ───────────────────────── */}
+            {/* Max travel time — passed to the AI to filter out venues too far away. */}
             <div className="form-group">
               <label className="form-label" htmlFor="max-travel">Max travel time</label>
               <select id="max-travel" className="form-control" value={maxTravel} onChange={(e) => setMaxTravel(e.target.value)}>
@@ -292,24 +323,19 @@ export default function NewEvent() {
               </select>
             </div>
 
-            {/* ── Event title ──────────────────────────── */}
+            {/* Event title — optional label that appears in the plans list. */}
             <div className="form-group">
               <label className="form-label" htmlFor="event-title">
                 Event title <span className="optional">optional</span>
               </label>
-              <input
-                id="event-title"
-                type="text"
-                className="form-control"
-                value={eventTitle}
+              <input id="event-title" type="text" className="form-control" value={eventTitle}
                 onChange={(e) => setEventTitle(e.target.value)}
                 placeholder={selectedFriend ? `e.g. "Golf with ${selectedFriend.name.split(' ')[0]}", "Morgan's birthday dinner"` : 'Give this event a name…'}
-                maxLength={80}
-              />
+                maxLength={80} />
               <p className="form-hint">Shows up in your plans list so you can tell them apart at a glance.</p>
             </div>
 
-            {/* ── Context prompt ────────────────────────── */}
+            {/* Context prompt — free-text signal the AI uses to shape suggestions. */}
             <div className="form-group">
               <label className="form-label" htmlFor="context">
                 What do you want to do? <span className="optional">optional</span>
