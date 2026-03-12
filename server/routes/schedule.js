@@ -55,25 +55,27 @@ function createOAuth2Client(tokens) {
   return c;
 }
 
-/** Fetch busy slots for a user. Uses real Google Calendar if tokens exist,
- *  otherwise falls back to mock_busy_slots from the profile row (test users). */
+/**
+ * Fetch busy slots for a user. Uses real Google Calendar if tokens exist,
+ * otherwise falls back to mock_busy_slots from the profile row (test users).
+ *
+ * Throws if we have tokens but the Google API call fails — so the caller
+ * can surface an error rather than treating a calendar failure as "no busy slots"
+ * and generating suggestions against incorrect availability data.
+ */
 async function fetchBusy(session, startISO, endISO, supabase, userId) {
   // Real calendar path
   if (session?.tokens?.access_token) {
-    try {
-      const auth = createOAuth2Client(session.tokens);
-      const calendar = google.calendar({ version: 'v3', auth });
-      const res = await calendar.freebusy.query({
-        requestBody: {
-          timeMin: startISO,
-          timeMax: endISO,
-          items: [{ id: 'primary' }],
-        },
-      });
-      return res.data.calendars?.primary?.busy || [];
-    } catch (e) {
-      console.warn('fetchBusy (Google) failed:', e.message);
-    }
+    const auth = createOAuth2Client(session.tokens);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const res = await calendar.freebusy.query({
+      requestBody: {
+        timeMin: startISO,
+        timeMax: endISO,
+        items: [{ id: 'primary' }],
+      },
+    });
+    return res.data.calendars?.primary?.busy || [];
   }
   // Mock fallback for test users (no OAuth tokens)
   if (userId && supabase) {
@@ -387,14 +389,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const endISO   = new Date(end   + 'T23:59:59').toISOString();
 
     // Look up the friend's session to access their Google Calendar tokens.
-    // Uses the Supabase sessions table via sessionStore (replaces old in-memory Map lookup).
-    // Returns null if the friend has no active session — fetchBusy falls back to mock slots.
+    // getSessionBySupabaseId intentionally ignores session expiry — we only need the
+    // OAuth tokens, which googleapis will auto-refresh via the stored refresh_token.
+    // Returns null if the friend has never connected their calendar.
     const friendSession = await sessionStore.getSessionBySupabaseId(targetUserId);
 
-    const [busyA, busyB] = await Promise.all([
-      fetchBusy(req.userSession,  startISO, endISO, supabase, req.userId),
-      fetchBusy(friendSession,    startISO, endISO, supabase, targetUserId),
-    ]);
+    let busyA, busyB;
+    try {
+      [busyA, busyB] = await Promise.all([
+        fetchBusy(req.userSession,  startISO, endISO, supabase, req.userId),
+        fetchBusy(friendSession,    startISO, endISO, supabase, targetUserId),
+      ]);
+    } catch (e) {
+      console.error('fetchBusy failed:', e.message);
+      return res.status(502).json({
+        error: 'Could not read calendar availability. Make sure both users have connected Google Calendar.',
+      });
+    }
 
     const freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay);
 
@@ -772,10 +783,22 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const rerollEnd   = (!itin.date_range_end || itin.date_range_end < todayStr) ? futureEnd : itin.date_range_end;
     const rerollStartISO = new Date(rerollStart + 'T00:00:00').toISOString();
     const rerollEndISO   = new Date(rerollEnd   + 'T23:59:59').toISOString();
-    const [rerollBusyA, rerollBusyB] = await Promise.all([
-      fetchBusy(null, rerollStartISO, rerollEndISO, supabase, itin.organizer_id),
-      fetchBusy(null, rerollStartISO, rerollEndISO, supabase, itin.attendee_id),
+    const [rerollOrgSession, rerollAttSession] = await Promise.all([
+      sessionStore.getSessionBySupabaseId(itin.organizer_id),
+      sessionStore.getSessionBySupabaseId(itin.attendee_id),
     ]);
+    let rerollBusyA, rerollBusyB;
+    try {
+      [rerollBusyA, rerollBusyB] = await Promise.all([
+        fetchBusy(rerollOrgSession, rerollStartISO, rerollEndISO, supabase, itin.organizer_id),
+        fetchBusy(rerollAttSession, rerollStartISO, rerollEndISO, supabase, itin.attendee_id),
+      ]);
+    } catch (e) {
+      console.error('fetchBusy (reroll) failed:', e.message);
+      return res.status(502).json({
+        error: 'Could not read calendar availability. Make sure both users have connected Google Calendar.',
+      });
+    }
     const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' });
 
     if (rerollWindows.length === 0) {

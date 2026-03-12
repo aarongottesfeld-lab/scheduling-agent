@@ -165,9 +165,14 @@ async function getSession(sessionToken) {
 }
 
 /**
- * Looks up the most recently active non-expired session for a given Supabase user ID.
+ * Looks up the most recently stored session for a given Supabase user ID.
  * Used by the schedule router to access Google Calendar tokens for calendar lookups
  * and event creation on behalf of the organizer or attendee.
+ *
+ * Intentionally does NOT filter on expires_at: this function is used for
+ * calendar access, not session authentication. The googleapis OAuth2 client
+ * will auto-refresh an expired access_token using the stored refresh_token,
+ * so we want to return tokens even if the Rendezvous session has expired.
  *
  * @param {string} supabaseId - Supabase UUID to look up
  * @returns {object|null} session-like object { tokens, email, name, picture, supabaseId }
@@ -177,7 +182,6 @@ async function getSessionBySupabaseId(supabaseId) {
     .from('sessions')
     .select('tokens, email, name, picture, supabase_id')
     .eq('supabase_id', supabaseId)
-    .gt('expires_at', new Date().toISOString())
     .order('last_seen_at', { ascending: false })
     .limit(1)
     .maybeSingle();
