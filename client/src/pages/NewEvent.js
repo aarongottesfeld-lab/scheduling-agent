@@ -192,26 +192,6 @@ export default function NewEvent() {
     }
   }
 
-  /* ── Generating overlay ── */
-
-  // Show a full-page spinner while the AI is working.
-  if (generating) {
-    return (
-      <>
-        <NavBar />
-        <main className="page">
-          <div className="container container--sm">
-            <div className="generating-overlay">
-              <div className="spinner spinner--lg" />
-              <div className="generating-overlay__text">Finding the best options for you both…</div>
-              <div className="generating-overlay__sub">Checking calendars, travel times, and preferences.</div>
-            </div>
-          </div>
-        </main>
-      </>
-    );
-  }
-
   /* ── Form ── */
 
   return (
@@ -222,6 +202,12 @@ export default function NewEvent() {
           <h1 className="page-title">New Event</h1>
           <p className="page-subtitle">Plan something great together.</p>
           {error && <div className="alert alert--error">{error}</div>}
+          {generating && (
+            <div className="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)' }}>
+              <div className="spinner spinner--sm" />
+              <span>Checking calendars and generating suggestions…</span>
+            </div>
+          )}
           <form onSubmit={handleSubmit} noValidate>
 
             {/* Friend selector — shows a search input with live dropdown, or a
@@ -347,7 +333,9 @@ export default function NewEvent() {
               <p className="form-hint">Free text — our AI reads between the lines.</p>
             </div>
 
-            <button type="submit" className="btn btn--primary btn--lg btn--full">Generate Suggestions</button>
+            <button type="submit" className="btn btn--primary btn--lg btn--full" disabled={generating}>
+              {generating ? 'Generating…' : 'Generate Suggestions'}
+            </button>
           </form>
         </div>
       </main>

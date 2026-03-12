@@ -211,11 +211,17 @@ async function updateSessionTokens(sessionToken, tokens) {
 }
 
 /**
- * Deletes a session row by token (called on logout).
+ * Invalidates a session on logout by nulling out the session_token.
+ * The row is intentionally kept so that the OAuth tokens (access_token,
+ * refresh_token) remain available for calendar lookups on behalf of this
+ * user when other users schedule with them. getSession queries by
+ * session_token, so a null token can never be used to authenticate;
+ * getSessionBySupabaseId queries by supabase_id and is used only for
+ * calendar access, not auth.
  * @param {string} sessionToken
  */
 async function deleteSession(sessionToken) {
-  await supabase.from('sessions').delete().eq('session_token', sessionToken);
+  await supabase.from('sessions').update({ session_token: null }).eq('session_token', sessionToken);
 }
 
 // ---------------------------------------------------------------------------
