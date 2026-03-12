@@ -234,7 +234,6 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
     return `- ${fmtWindowDate(s)} – ${eh}:${String(em2).padStart(2,'0')} ${eampm}`;
   }).join('\n');
 
-  const durationHint = durationMinutes || 120;
   return `You are Rendezvous, a NYC activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
 
@@ -254,7 +253,7 @@ AVAILABLE TIME WINDOWS (use one per suggestion):
 ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
-TARGET EVENT DURATION: ${durationHint} minutes — use this as durationMinutes for all suggestions
+EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
 
 ${contextPrompt ? `ADDITIONAL CONTEXT FROM USER: ${contextPrompt}` : ''}
 
@@ -266,7 +265,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "title": "Short catchy title",
       "date": "YYYY-MM-DD",
       "time": "7:00 PM",
-      "durationMinutes": ${durationHint},
+      "durationMinutes": 120,
       "neighborhood": "West Village",
       "venues": [
         { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, New York, NY" }
