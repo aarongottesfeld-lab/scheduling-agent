@@ -6,6 +6,10 @@
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
+// Emails exempt from all rate limits — useful for testing in production.
+// SECURITY-REVIEW: Keep this list minimal; audit before any public/multi-tenant expansion.
+const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
+
 /**
  * Sanitize before interpolating into a PostgREST .or() filter string.
  * Commas split conditions; parens break grouping; % adds unintended wildcards.
@@ -126,7 +130,7 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     if (requestCountErr) {
       // Non-fatal: a count failure shouldn't lock users out of sending requests
       console.warn('friend-request rate-limit count failed:', requestCountErr.message);
-    } else if (requestCount >= 50) {
+    } else if (requestCount >= 50 && !RATE_LIMIT_EXEMPT.has(req.userSession?.email)) {
       return res.status(429).json({ error: 'Too many friend requests today. Try again tomorrow.' });
     }
     // ─────────────────────────────────────────────────────────────────────────

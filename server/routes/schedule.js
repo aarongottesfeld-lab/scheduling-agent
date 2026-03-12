@@ -32,6 +32,9 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL
 // they reach Supabase.  The same pattern is used in friends.js and users.js;
 // keep the regex identical so behaviour is consistent across all routers.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Emails exempt from all rate limits — useful for testing in production.
+const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
 /** Returns true only if s is a well-formed UUID v4 string. */
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
@@ -358,7 +361,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       // Log but don't block on a count failure — fail open so a DB hiccup
       // doesn't permanently lock users out of suggesting.
       console.warn('suggest rate-limit count failed:', countErr.message);
-    } else if (suggestCount >= 10) {
+    } else if (suggestCount >= 10 && !RATE_LIMIT_EXEMPT.has(req.userSession?.email)) {
+      // SECURITY-REVIEW: RATE_LIMIT_EXEMPT bypasses per-user rate limiting for listed emails.
+      // Ensure this list stays minimal and does not become a broad backdoor. Audit before any
+      // public/multi-tenant expansion.
       return res.status(429).json({ error: 'Daily suggestion limit reached. Try again tomorrow.' });
     }
     // ─────────────────────────────────────────────────────────────────────────
