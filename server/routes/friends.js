@@ -182,7 +182,12 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     // Issue 4: run the two friendship writes and the acceptor profile fetch in parallel —
     // all three are independent (they touch different rows / different tables).
     const [, , acceptorProfileRes] = await Promise.all([
-      supabase.from('friendships').update({ status: 'accepted' }).eq('id', id),
+      // Privacy fix: scope the write to rows where the current user is the recipient.
+      // The select above already verified friend_id = req.userId, but the update must
+      // re-assert that constraint so the write itself is authorized — not just the
+      // preceding read. Without this, a race condition or logic error could let a user
+      // accept a request they don't own by knowing its UUID.
+      supabase.from('friendships').update({ status: 'accepted' }).eq('id', id).eq('friend_id', req.userId),
       supabase.from('friendships').upsert(
         { user_id: req.userId, friend_id: request.user_id, status: 'accepted' },
         { onConflict: 'user_id,friend_id' }

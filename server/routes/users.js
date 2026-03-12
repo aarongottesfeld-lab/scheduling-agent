@@ -24,6 +24,15 @@ const MAX = {
   timezone:  80,
 };
 
+// In-memory rate limit store for /users/search — keyed by userId.
+// Each entry tracks how many searches were made and when the 1-minute window started.
+// Using an in-memory Map (not the DB) because search is a read-only endpoint with
+// nothing to count in Supabase. The Map is module-scoped so it persists across requests
+// within the same server process.
+const searchRateLimit = new Map(); // userId → { count: number, windowStart: number }
+const SEARCH_MAX     = 20;         // max searches per window
+const SEARCH_WINDOW  = 60 * 1000;  // 1 minute in ms
+
 module.exports = function usersRouter(app, supabase, requireAuth) {
 
   // GET /users/me — current user's profile
@@ -86,6 +95,25 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
 
   // GET /users/search?q= — search by username, email, or name
   app.get('/users/search', requireAuth, async (req, res) => {
+    // ── Rate limit: max 20 searches per minute per session ──────────────────
+    // Search is a read-only endpoint so there is nothing to count in Supabase.
+    // Instead, track call counts in an in-memory Map keyed by userId.
+    // Each entry holds a count and the timestamp when the current window started;
+    // the window resets once SEARCH_WINDOW ms have elapsed since the first call.
+    const now = Date.now();
+    const rl  = searchRateLimit.get(req.userId) || { count: 0, windowStart: now };
+    if (now - rl.windowStart > SEARCH_WINDOW) {
+      // Window has expired — reset the counter for a fresh minute.
+      rl.count = 0;
+      rl.windowStart = now;
+    }
+    rl.count += 1;
+    searchRateLimit.set(req.userId, rl);
+    if (rl.count > SEARCH_MAX) {
+      return res.status(429).json({ error: 'Too many searches. Please wait a moment and try again.' });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const raw = (req.query.q || req.query.email || '').trim().toLowerCase();
 
     // Issue 5: minimum length check
@@ -180,7 +208,7 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
       const r = await fetch(url);
       const json = await r.json();
-      console.log('[geocode] status=%s results=%d', json.status, json.results?.length);
+      console.log('[geocode] status=%s results=%d error_message=%s', json.status, json.results?.length, json.error_message || 'none');
 
       // Walk address_components of the first result to find the most specific place name.
       // Preference order: neighborhood > sublocality > locality (city) > admin_area_level_2.

@@ -33,6 +33,24 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL
 // keep the regex identical so behaviour is consistent across all routers.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Prompt injection patterns — phrases that attempt to override or escape the system prompt.
+// This is not exhaustive, but catches the most common attack vectors. The sanitizer is
+// applied to any user-supplied free-text that is interpolated into the Claude prompt
+// (contextPrompt, feedback). Matched segments are replaced with [removed].
+const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gi;
+
+/**
+ * Sanitize a user-supplied string before injecting it into the Claude prompt.
+ * Strips common prompt-injection patterns and truncates to maxLen characters.
+ * @param {string} text    - raw user input
+ * @param {number} maxLen  - hard character cap (defaults to MAX_CONTEXT)
+ */
+function sanitizePromptInput(text, maxLen = MAX_CONTEXT) {
+  if (!text || typeof text !== 'string') return '';
+  // Replace injection patterns first, then trim whitespace artifacts, then truncate.
+  return text.replace(INJECTION_RE, '[removed]').trim().slice(0, maxLen);
+}
+
 // Emails exempt from all rate limits — useful for testing in production.
 const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
 /** Returns true only if s is a well-formed UUID v4 string. */
@@ -514,8 +532,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       freeWindows = attendeeWindows;
     }
 
+    // Sanitize user-supplied free-text before injecting into the Claude prompt.
+    // Strips prompt-injection patterns and enforces the 500-char hard cap.
+    const safeContext = sanitizePromptInput(contextPrompt);
+
     // Call Claude
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -939,7 +961,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: rerollWindows,
-      contextPrompt: [contextPrompt, feedback ? `Feedback: ${feedback}` : '', singleCardNote, appendNote].filter(Boolean).join('. '),
+      // Sanitize both user-supplied fields before concatenating into the prompt.
+      // singleCardNote / appendNote are server-generated strings — no sanitization needed.
+      contextPrompt: [
+        sanitizePromptInput(contextPrompt),
+        feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
+        singleCardNote,
+        appendNote,
+      ].filter(Boolean).join('. '),
       maxTravelMinutes: itin.max_travel_minutes || null,
       eventTitle: itin.event_title || null,
       durationMinutes: rerollDuration,
@@ -1091,6 +1120,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: 'message is required.' });
+    // Cap changelog entries at 500 chars — mirrors MAX_CONTEXT used for contextPrompt/feedback.
+    // Prevents oversized payloads from bloating the JSONB column on every itinerary load.
+    if (message.trim().length > 500) return res.status(400).json({ error: 'Message must be 500 characters or fewer.' });
 
     const { data: itin } = await supabase.from('itineraries').select('organizer_id,attendee_id,changelog').eq('id', req.params.id).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
