@@ -269,6 +269,23 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
 // ---------------------------------------------------------------------------
+// /api path-strip middleware (Vercel production only)
+// ---------------------------------------------------------------------------
+// Must be registered BEFORE any route handlers so that every route sees the
+// stripped path from the very first evaluation.
+// In production on Vercel, all API calls are prefixed with /api so vercel.json
+// can route them to this function. This middleware strips that prefix so the
+// route handlers below use their plain paths (/auth/me, /friends, etc.).
+// In local dev REACT_APP_SERVER_URL points to localhost:3001 with no prefix,
+// so this middleware is a no-op there.
+app.use((req, _res, next) => {
+  if (req.url.startsWith('/api/')) {
+    req.url = req.url.slice(4); // '/api/auth/me' → '/auth/me'
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
 
@@ -582,25 +599,6 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
     if (status === 403) return res.status(403).json({ error: 'Insufficient calendar permissions.' });
     res.status(500).json({ error: 'Failed to fetch calendar data' });
   }
-});
-
-// ---------------------------------------------------------------------------
-// /api path-strip middleware (Vercel production only)
-// ---------------------------------------------------------------------------
-// In production, Vercel routes /api/* requests to this function with the
-// full path intact (e.g. GET /api/auth/me).  All route handlers below are
-// registered without the /api prefix (e.g. app.get('/auth/me', ...)).
-// This middleware rewrites req.url so the handlers never need to change:
-//   /api/auth/me      → /auth/me
-//   /api/friends      → /friends
-// In local dev the client hits localhost:3001 directly with no /api prefix,
-// so this middleware is a no-op (startsWith check is false).
-app.use((req, _res, next) => {
-  if (req.url.startsWith('/api/')) {
-    // Strip the /api prefix — slice from index 4 to keep the leading slash
-    req.url = req.url.slice(4); // '/api/auth/me' → '/auth/me'
-  }
-  next();
 });
 
 // ---------------------------------------------------------------------------
