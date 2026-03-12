@@ -3,7 +3,6 @@
   "buildCommand": "cd server && npm install && cd ../client && npm install && npm run build",
   "outputDirectory": "client/build",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
