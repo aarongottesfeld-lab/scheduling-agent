@@ -28,6 +28,15 @@
 - [ ] Reroll in group context: any participant can propose reroll on non-winning card; vote mode resets votes; unanimous mode resets all statuses on that card
 - [ ] Notifications: batched responses (don't ping organizer once per person), deadline reminders to non-responders only, unresolved flag on deadline pass
 
+### Suggestion Refinement
+> The user's freeform context prompt should be the highest-weighted input — currently suggestions appear to disregard it.
+- [ ] Audit `buildSuggestPrompt` in `schedule.js` — move `contextPrompt` earlier in the prompt, add explicit instruction that it overrides preference defaults
+- [ ] Add emphasis framing: "MOST IMPORTANT — treat this as the primary constraint, above activity preferences and neighborhood defaults: {contextPrompt}"
+- [ ] Reroll: same fix — `singleCardNote` and `contextPrompt` are joined as a flat string; ensure reroll prompt treats original context as highest-priority carry-forward
+- [ ] Haiku vs Sonnet: test whether prompt-following improves in prod (Sonnet) vs dev (Haiku) — poor instruction-following may be a model capability gap, not just a prompting issue
+- [ ] Consider adding a short-circuit: if contextPrompt is present and specific (e.g. "golf"), validate returned suggestions against it before saving — reject and retry once if none match
+- [ ] Add telemetry: log `context_prompt` hit rate — how often returned suggestions actually reflect the prompt (manual QA for now, structured eval later)
+
 ### Turn-based Iteration + Mutual Planning
 - [ ] Add `current_turn` field (organizer | attendee) to itineraries
 - [ ] Attendee reroll flips turn back to organizer
@@ -105,15 +114,47 @@
 
 ## 🧪 Testing Needed (current pass)
 
+### Auth & Session
+- [ ] Log out and back in → supabaseId now populates in sessionStorage (required after today's fix)
+- [ ] Dev switcher users (jamiec etc.) → pick/reroll buttons appear correctly as organizer
+
+### Itinerary — Organizer flow
 - [ ] Event title set at creation → shows in itinerary header (not "Plans with [Name]")
-- [ ] Home screen pills show `Morgan · Golf weekend` format
 - [ ] Inline title edit: click pencil → edit → save → persists on refresh
-- [ ] Attendee suggest-alternative: only organizer's pick shows Accept/Decline; other cards show "↩ Suggest this instead"
-- [ ] Suggest-alternative does NOT auto-lock; organizer must re-pick
-- [ ] friendshipStatus fix: Schedule button shows on confirmed friends' profiles
-- [ ] Add friend button appears on profiles with no relationship
-- [ ] NewEvent back button: "← Edit details" returns to form with state preserved
-- [ ] Reroll date bounds regression: new time stays within original window
+- [x] Pick this one → sends to attendee, organizer sees "waiting on them" badge (post-send UX done)
+- [x] New time / New vibe buttons → single card rerolls with correct constraint (timing vs activity)
+- [x] After submitting New Event, edit button removed, Return Home shown — duplicate prevention done
+
+### Itinerary — Attendee flow
+- [x] Attendee receives sent itinerary → Accept / Decline / Reroll visible on organizer's picked card
+- [x] Non-picked cards show "↩ Suggest this instead"
+- [x] Reroll button opens modal, Generate fires request, new suggestions load — stuck state fixed
+- [x] Suggest this instead → sets attendee's pick, shows "Suggestion sent" badge, organizer sees re-evaluate state
+- [x] Suggest-alternative does NOT auto-lock — organizer must re-pick
+- [x] Accept → locks when organizer already accepted same card (calendar invite created)
+- [x] Full ping-pong negotiation state machine rewritten — DB constraint bug resolved, attendeeSelected JSONB flag approach
+
+### Home screen
+- [ ] Pills show `Morgan · Golf weekend` format (or just `Morgan` if no title)
+- [ ] Correct tab bucketing: Waiting / In Progress / Upcoming
+- [x] Load more — visibleCount progressive disclosure (+3 per click) per tab
+
+### Generate More
+- [x] "+ Generate More Options" button in ItineraryView — appends 3 new suggestions via appendMode: true reroll, no negotiation state reset
+
+### Calendar invites
+- [x] Wrong year bug fixed — year: 'numeric' added to toLocaleDateString in buildSuggestPrompt
+
+### Friends
+- [ ] Schedule button visible on confirmed friends' profiles
+- [ ] Add friend button appears on profiles with no existing relationship
+
+### Reroll bounds
+- [ ] Rerolled suggestions stay within original date window (no past dates)
+
+### Duplicate title safety
+- [ ] Multiple itineraries/events with the same title must never conflict — verify all lookups, comparisons, and calendar event creation use itinerary UUID (not title) as the identifier throughout client and server
+- [ ] Google Calendar event creation should include the itinerary UUID in the event description as a reference anchor so external calendar events can always be traced back to the correct itinerary row
 
 ---
 
@@ -139,6 +180,9 @@
 - [x] Add friend button on FriendProfile when no relationship exists
 - [x] NewEvent back button from generating spinner
 - [x] Attendee suggest-alternative flow + server isSuggestAlternative logic
+- [x] supabaseId fix: OAuth redirect now passes supabaseId; auth.js stores + exposes it; ItineraryView uses it for organizer_id comparison — fixes pick/reroll/suggest buttons for real OAuth users
+- [x] ItineraryView title uses friend's first name only
+- [x] Calendar footer hidden on non-locked cards; action buttons raised with border
 - [x] Free/public venue prompt + variety + cost range mix
 - [x] Narrative tone: direct, no marketing language
 - [x] Home.js: single API call, client-side split into waiting/in-progress/upcoming

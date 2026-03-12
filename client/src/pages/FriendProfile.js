@@ -226,7 +226,7 @@ export default function FriendProfile() {
                       onClick={sendFriendRequest}
                       disabled={requesting}
                     >
-                      {requesting ? 'Sending…' : `+ Add ${profile.name.split(' ')[0]}`}
+                      {requesting ? 'Sending…' : `+ Add ${profile.name.split(' ')[0]} as a friend`}
                     </button>
                   )}
                 </div>

@@ -50,7 +50,7 @@ export default function App() {
         <Route path="/profile" element={
           <ProtectedRoute><MyProfile /></ProtectedRoute>
         } />
-        <Route path="/schedule/:itineraryId" element={
+        <Route path="/schedule/:id" element={
           <ProtectedRoute><ItineraryView /></ProtectedRoute>
         } />
         <Route path="/notifications" element={

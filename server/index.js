@@ -247,7 +247,7 @@ app.get('/auth/google/callback', async (req, res) => {
     const pictureParam = profile.picture ? `&picture=${encodeURIComponent(profile.picture)}` : '';
     const newParam     = isNew ? '&new=1' : '';
     res.redirect(
-      `${CLIENT_URL}?userId=${sessionKey}&name=${encodeURIComponent(profile.name || '')}${pictureParam}${newParam}`
+      `${CLIENT_URL}?userId=${sessionKey}&supabaseId=${supabaseId}&name=${encodeURIComponent(profile.name || '')}${pictureParam}${newParam}`
     );
   } catch (err) {
     console.error('OAuth callback error:', err.message);
