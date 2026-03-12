@@ -768,6 +768,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     ]);
     const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' });
 
+    if (rerollWindows.length === 0) {
+      return res.status(422).json({
+        error: 'No availability found in the remaining window. Try editing the event with a different date or time.',
+      });
+    }
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
