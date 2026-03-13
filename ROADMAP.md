@@ -483,7 +483,8 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - [ ] Add a collapsible "Voting settings" section to NewGroupEvent:
   - Quorum: "Simple majority (default)" vs custom threshold
   - Tie behavior: "Schedule on tie (default)" vs "Decline on tie"
-- [ ] Note: only meaningful for groups with 3+ members — can hide or default-lock for 2-person groups
+- [ ] Note: only meaningful for groups with 3+ members — hide or default-lock for 2-person groups
+- [ ] Confirmed: voting rules are absent even with 3+ person groups, not a group size issue
 
 **Ad-hoc attendee addition in group planning screen**
 - [ ] NewGroupEvent currently pre-fills members from the saved group but has no way to
@@ -491,6 +492,13 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - [ ] Add a "Add someone else" search input below the attendee list — same friend search
   pattern, appends to attendee_user_ids without modifying the saved group membership
 - [ ] Make clear in the UI that adding someone here doesn't add them to the group permanently
+
+**Username change behavior (minor, informational)**
+- [ ] Username changes are safe — all core data uses UUIDs as primary identifiers
+- [ ] Known minor nuisance: notifications already stored in DB will show old username text
+  (cosmetic only, not a data integrity issue)
+- [ ] Username is the primary find-me mechanism in search — users who change usernames
+  should be aware friends will need to re-search for them
 
 ### Maps API Key Split (pre-maps-feature)
 > Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
