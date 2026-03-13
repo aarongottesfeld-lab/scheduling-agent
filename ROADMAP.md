@@ -391,6 +391,59 @@ event schema we're building is compatible.
 - [ ] iCloud CalDAV fallback for web (app-specific passwords — evaluate UX tradeoff)
 - [ ] Outlook / Microsoft 365 Calendar (Graph API — similar OAuth flow to Google)
 
+### Google OAuth Verification (before opening to public beyond 100 test users)
+
+Google requires app verification before removing the 100-user test limit on OAuth consent.
+This is free but takes 1–4 weeks. Apps requesting sensitive scopes (Calendar read/write)
+require a CASA Tier 2 third-party security assessment (~$75–150 one-time cost).
+
+**Prerequisites — complete all before submitting:**
+
+1. **Privacy policy** — must be a publicly accessible URL. Minimum required content:
+   - What data you collect (Google account info, calendar availability, profile preferences)
+   - Why you collect it (scheduling suggestions, calendar event creation)
+   - How it's used (AI suggestion generation, not sold or shared with third parties)
+   - How users can request deletion (email address or in-app mechanism)
+   - Disclose PostHog analytics usage
+   - Disclose that dietary/mobility data may be sent to an AI model (Anthropic)
+   Host at rendezvous-gamma.vercel.app/privacy or a custom domain page.
+
+2. **Terms of service** — recommended, sometimes required. Can be minimal for early stage.
+
+3. **OAuth consent screen accuracy** — verify the consent screen in Google Cloud Console
+   accurately lists only the scopes you actually use:
+   - openid, email, profile (basic OAuth)
+   - https://www.googleapis.com/auth/calendar.events (create events on lock)
+   - https://www.googleapis.com/auth/calendar.readonly (read freebusy for availability)
+   Remove any scopes listed that the app no longer uses.
+
+4. **App must be live and testable** — Google will attempt to use the app during review.
+   Ensure the production URL works end-to-end including Google Calendar connection.
+
+5. **Walkthrough video** — Google frequently requests a short screen recording showing
+   exactly how Calendar data is used. Prepare a 2–3 minute video showing:
+   - Sign in with Google
+   - Calendar permission request
+   - How availability is read to find free windows
+   - How an event is created on the calendar after a plan is locked
+
+6. **CASA Tier 2 assessment** — required for apps with Calendar scope. Register at
+   appdefensealliance.dev, select CASA Tier 2, complete the self-assessment, and submit
+   for third-party review. Allow 1–2 weeks for turnaround. Cost: ~$75–150.
+
+7. **Branding requirements** — app name, logo, and homepage URL must be consistent
+   across the OAuth consent screen, privacy policy, and the live app.
+
+**Submission process:**
+- Google Cloud Console → APIs & Services → OAuth consent screen → Submit for verification
+- Have all prerequisite URLs ready before clicking submit — you cannot pause mid-review
+- Respond promptly to any Google follow-up requests (delays extend the timeline)
+
+**Timeline expectation:** 1–4 weeks from submission to approval, assuming no back-and-forth.
+CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessment first.
+
+---
+
 ### Maps API Key Split (pre-maps-feature)
 > Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
 - [ ] Create a second Google Maps API key in Google Cloud Console — restrict to Maps JavaScript API only
