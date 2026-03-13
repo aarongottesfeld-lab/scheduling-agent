@@ -451,8 +451,8 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
       .eq('id', itin.group_id)
       .maybeSingle();
     if (grp) {
-      groupName              = grp.name || 'Group';
-      groupDescription       = grp.description || '';
+      groupName              = sanitizePromptInput(grp.name || 'Group', 100);
+      groupDescription       = sanitizePromptInput(grp.description || '', 300);
       // Group's default activities — used as AI fallback context when no event-specific
       // prompt is provided. Only applied when context_prompt is absent.
       groupDefaultActivities = Array.isArray(grp.default_activities) ? grp.default_activities : [];
@@ -462,7 +462,9 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
   // Use the event-specific context prompt if set; fall back to the group's default
   // activities as a soft signal so Claude has something to anchor on.
   const effectiveContext = safeContext ||
-    (groupDefaultActivities.length ? groupDefaultActivities.join(', ') : '');
+    (groupDefaultActivities.length
+      ? groupDefaultActivities.map(a => sanitizePromptInput(a, 100)).join(', ')
+      : '');
 
   const prompt = buildGroupSuggestPrompt({
     groupName,

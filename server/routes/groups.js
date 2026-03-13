@@ -471,6 +471,28 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
       return res.status(500).json({ error: 'Could not remove member.' });
     }
 
+    // Remove the member's vote from any active group itineraries to prevent ghost votes.
+    // Best-effort: a failure here does not block the member removal response.
+    try {
+      const { data: activeItins } = await supabase
+        .from('group_itineraries')
+        .select('id, attendee_statuses')
+        .eq('group_id', req.params.id)
+        .eq('itinerary_status', 'awaiting_responses');
+      if (activeItins?.length) {
+        for (const itin of activeItins) {
+          const updated = { ...itin.attendee_statuses };
+          delete updated[req.params.userId];
+          await supabase
+            .from('group_itineraries')
+            .update({ attendee_statuses: updated })
+            .eq('id', itin.id);
+        }
+      }
+    } catch (ghostErr) {
+      console.warn('[groups] ghost-vote cleanup failed:', ghostErr.message);
+    }
+
     res.json({ message: 'Member removed.' });
   });
 
