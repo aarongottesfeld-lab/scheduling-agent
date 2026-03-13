@@ -42,6 +42,11 @@
 /* ── Reset ────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 
+html {
+  width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto',
     'Helvetica Neue', sans-serif;
@@ -51,6 +56,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
   line-height: 1.5;
   min-height: 100vh;
+  width: 100%;
+  overflow-x: hidden;
 }
 
 a        { color: inherit; text-decoration: none; }
@@ -62,7 +69,8 @@ input    { font-family: inherit; }
 
 /* ── Layout ───────────────────────────────────────────────── */
 .page {
-  padding: calc(var(--nav-h) + 24px) var(--page-pad) 56px;
+  /* Horizontal padding lives on .container so the page background bleeds edge-to-edge */
+  padding: calc(var(--nav-h) + 24px) 0 56px;
   min-height: 100vh;
 }
 
@@ -74,8 +82,22 @@ input    { font-family: inherit; }
   padding: var(--page-pad);
 }
 
-.container    { max-width: var(--max-w);    margin: 0 auto; width: 100%; }
-.container--sm { max-width: var(--max-w-sm); margin: 0 auto; width: 100%; }
+.container {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  width: 100%;
+  padding-left: var(--page-pad);
+  padding-right: var(--page-pad);
+  box-sizing: border-box;
+}
+.container--sm {
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+  padding-left: var(--page-pad);
+  padding-right: var(--page-pad);
+  box-sizing: border-box;
+}
 
 .section        { margin-bottom: 28px; }
 .divider        { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
@@ -109,6 +131,8 @@ input    { font-family: inherit; }
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
 }
 .card-pad { padding: 20px; }
 
@@ -499,6 +523,29 @@ textarea.form-control { resize: vertical; min-height: 88px; }
 .navbar__logout-btn       { background: none; border: none; color: var(--text-4); font-size: 0.8rem; cursor: pointer; padding: 4px 8px; border-radius: var(--r-sm); transition: all var(--t); }
 .navbar__logout-btn:hover { color: var(--error); background: var(--error-bg); }
 
+/* ── Bottom tab bar (mobile only) ─────────────────────────── */
+.bottom-tab-bar {
+  display: none; /* hidden on desktop; shown via media query */
+}
+
+.tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex: 1;
+  padding: 6px 4px;
+  color: var(--text-3);
+  text-decoration: none;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: .2px;
+  transition: color var(--t);
+}
+.tab-item span { line-height: 1; }
+.tab-item--active { color: var(--brand); }
+
 /* ── Friend card ──────────────────────────────────────────── */
 .friend-card {
   display: flex;
@@ -786,11 +833,30 @@ textarea.form-control { resize: vertical; min-height: 88px; }
 .home-greeting__sub  { font-size: 1rem; color: var(--text-3); margin-bottom: 24px; }
 
 /* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Show bottom tab bar, hide desktop nav links + user text */
+  .bottom-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 56px;
+    background: rgba(255,255,255,.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    z-index: 100;
+  }
+  .navbar__links      { display: none; }
+  .navbar__name       { display: none; }
+  .navbar__logout-btn { display: none; }
+  /* Push page content above bottom tab bar */
+  .page { padding-bottom: 80px; }
+}
+
 @media (max-width: 640px) {
   :root { --page-pad: 16px; }
   .page { padding-top: calc(var(--nav-h) + 16px); }
   .form-row { flex-direction: column; gap: 0; }
-  .navbar__name { display: none; }
   .login-box { padding: 36px 24px; }
   .modal-backdrop { align-items: flex-end; padding: 0; }
   .modal { border-bottom-left-radius: 0; border-bottom-right-radius: 0; max-width: 100%; }

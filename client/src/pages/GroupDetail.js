@@ -283,7 +283,7 @@ export default function GroupDetail() {
           )}
 
           {/* Group header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <h1 className="page-title" style={{ margin: 0 }}>{group.name}</h1>
               {group.description && (
@@ -296,7 +296,7 @@ export default function GroupDetail() {
                 {pendingMembers.length > 0 && `, ${pendingMembers.length} pending`}
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0, marginLeft: 12 }}>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
               {/* Edit button — admin only */}
               {myRole === 'admin' && myStatus === 'active' && (
                 <button
