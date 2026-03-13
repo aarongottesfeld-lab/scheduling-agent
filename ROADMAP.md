@@ -124,8 +124,8 @@ Revised sequence:
      - tags field: unused by client — remove from Claude schema or wire to UI filtering
      - Promise.all: parallelize freebusy + friend_annotations + past history fetches (~200–400ms savings)
      - schedule.js: 2000+ lines — split into promptBuilder.js, availability.js, calendarSync.js before adding more features
-  10. New-user onboarding flow → must be done before sharing with anyone
-  11. Share with real users
+  10. ✅ New-user onboarding flow ← DONE (March 14) — 3-step flow (profile, location, notifications)
+  11. Share with real users ← YOU ARE HERE
   11. React Native / App Store → after feature set is proven on live users
 
 ### Step 7 — PostHog setup (do before Audit 3, not after)
