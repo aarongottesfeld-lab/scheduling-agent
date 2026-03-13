@@ -1,5 +1,5 @@
 # Group Mode — Proposed Database Schema
-Last updated: March 14, 2026
+Last updated: March 14, 2026 (post-Claude Code review — all 13 fixes applied)
 
 This document defines the full database schema for group mode. It is a PROPOSAL — Claude Code
 should evaluate it against the existing codebase before writing any migrations. See the
@@ -66,15 +66,15 @@ CREATE TABLE group_itineraries (
   context_prompt            text,
 
   -- AI output
-  suggestions               jsonb NOT NULL DEFAULT '[]',
-  selected_suggestion_index int,
-  calendar_event_id         text,
+  suggestions                jsonb NOT NULL DEFAULT '[]',
+  selected_suggestion_id     text,        -- matches itineraries convention ('s1','s2','s3')
+  event_title                text,        -- required for Claude prompt injection + UI display
+  calendar_event_id          text,
 
   -- history / audit
-  changelog                 jsonb NOT NULL DEFAULT '[]',
-  reroll_count              int NOT NULL DEFAULT 0,
-  edit_history              jsonb NOT NULL DEFAULT '[]',
-  suggestion_telemetry      jsonb,
+  changelog                  jsonb NOT NULL DEFAULT '[]',  -- only changelog, no edit_history (mirrors itineraries)
+  reroll_count               int NOT NULL DEFAULT 0,
+  suggestion_telemetry       jsonb,
 
   -- travel mode (mirrors itineraries table)
   travel_mode               text NOT NULL DEFAULT 'local',
@@ -93,7 +93,11 @@ CREATE TABLE group_itineraries (
 
   CONSTRAINT group_itineraries_tie_behavior_check CHECK (tie_behavior IN ('schedule', 'decline')),
   CONSTRAINT group_itineraries_status_check       CHECK (itinerary_status IN ('organizer_draft', 'awaiting_responses', 'locked', 'cancelled')),
-  CONSTRAINT group_itineraries_quorum_check       CHECK (quorum_threshold >= 1)
+  CONSTRAINT group_itineraries_quorum_check       CHECK (quorum_threshold >= 1),
+  CONSTRAINT group_itineraries_travel_mode_check  CHECK (travel_mode IN ('local', 'travel')),
+  CONSTRAINT group_itineraries_location_pref_check CHECK (location_preference IN ('closer_to_organizer', 'closer_to_attendee', 'system_choice', 'destination'))
+  -- NOTE: quorum_threshold has NO DEFAULT intentionally — server must always supply it on INSERT.
+  -- Every INSERT must calculate this from group size at creation time. Silent failure if omitted.
 );
 ```
 
@@ -102,9 +106,9 @@ CREATE TABLE group_itineraries (
 CREATE TABLE group_comments (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   itinerary_id     uuid NOT NULL REFERENCES group_itineraries(id) ON DELETE CASCADE,
-  suggestion_index int NOT NULL,
+  suggestion_id    text NOT NULL,  -- matches selected_suggestion_id convention ('s1','s2','s3')
   user_id          uuid NOT NULL REFERENCES profiles(id),
-  body             text NOT NULL,
+  body             text NOT NULL CHECK (char_length(body) <= 2000),
   created_at       timestamptz DEFAULT now()
 );
 ```
@@ -136,10 +140,14 @@ ALTER TABLE itineraries
 ### nudges — wire to both itinerary types
 ```sql
 ALTER TABLE nudges
-  ADD COLUMN IF NOT EXISTS itinerary_id       uuid REFERENCES itineraries(id),
-  ADD COLUMN IF NOT EXISTS group_itinerary_id uuid REFERENCES group_itineraries(id);
--- Exactly one of itinerary_id or group_itinerary_id should be set per row (not both).
--- Consider adding a CHECK constraint to enforce this after review.
+  ADD COLUMN IF NOT EXISTS itinerary_id       uuid REFERENCES itineraries(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS group_itinerary_id uuid REFERENCES group_itineraries(id) ON DELETE SET NULL,
+  ADD CONSTRAINT nudges_single_itinerary_type CHECK (
+    NOT (itinerary_id IS NOT NULL AND group_itinerary_id IS NOT NULL)
+  );
+-- ON DELETE SET NULL: required because itinerary cleanup job hard-deletes unlocked past events.
+-- Without it, FK violations occur at deletion time.
+-- Mutual-exclusion CHECK: exactly one FK should be set per row (both NULL allowed for legacy rows).
 ```
 
 ### notifications — additive migration (preserve existing columns for backward compat)
@@ -173,23 +181,47 @@ Auto-update `updated_at` on groups. Same pattern as existing `profiles_updated_a
 Auto-update `updated_at` on group_itineraries.
 
 ### group_itineraries_lock_check
-When `attendee_statuses` is updated:
-- Count entries where value = 'accepted'
-- If count >= quorum_threshold → set locked_at, set itinerary_status = 'locked'
-- For exact 50/50 splits on even-numbered groups: check tie_behavior
-  - 'schedule' → lock
-  - 'decline'  → do not lock
+When `attendee_statuses` is updated AND `itinerary_status = 'awaiting_responses'` (guard required
+— do NOT fire on organizer_draft state):
+- Count entries where value = 'accepted' → accepted_count
+- Count entries where value = 'declined' → declined_count
+- Total members = jsonb object key count
+- If accepted_count >= quorum_threshold:
+  - Check for exact 50/50 tie (accepted_count = declined_count, both = total_members / 2):
+    - tie_behavior = 'schedule' → lock: set locked_at = now(), itinerary_status = 'locked'
+    - tie_behavior = 'decline'  → do not lock, set itinerary_status = 'cancelled'
+  - Otherwise (clear quorum met) → lock: set locked_at = now(), itinerary_status = 'locked'
+- If remaining pending_count = 0 AND accepted_count < quorum_threshold:
+  → quorum cannot be reached, set itinerary_status = 'cancelled'
 
 ### notifications_read_sync
 When `read_at` is set on a notifications row → auto-set `read = true`.
 Keeps the existing `read` boolean in sync without requiring code changes.
+Existing index on (user_id, read) remains valid — continue querying via `read` boolean.
+
+---
+
+## Indexes required
+
+```sql
+-- GIN index on attendee_statuses for efficient membership lookups.
+-- Required for queries like "all group itineraries this user participated in"
+-- which need to scan attendee_statuses JSONB keys. Without this, full table seq scan
+-- as group itinerary volume grows.
+CREATE INDEX idx_group_itineraries_attendee_statuses
+  ON group_itineraries USING GIN (attendee_statuses);
+```
 
 ---
 
 ## RLS policies required (all new tables)
 
 ### groups
-- SELECT: user is a member of the group (exists in group_members with status = 'active')
+- SELECT: user is a member of the group (exists in group_members with status IN ('active', 'pending'))
+  -- NOTE: pending members need to read group name/description to decide whether to accept invite.
+  -- KNOWN ISSUE: circular dependency exists between groups SELECT and group_members SELECT policies
+  -- if evaluated client-side. In practice all writes go through service role (bypasses RLS).
+  -- Document for any future direct-client architecture.
 - INSERT: any authenticated user
 - UPDATE: created_by = auth user only
 - DELETE: created_by = auth user only
@@ -204,6 +236,9 @@ Keeps the existing `read` boolean in sync without requiring code changes.
 - SELECT: organizer_id = auth user OR auth user's UUID appears as a key in attendee_statuses
 - INSERT: organizer_id = auth user
 - UPDATE: organizer_id = auth user AND locked_at IS NULL (no edits after lock)
+  -- NOTE: Members also need to update attendee_statuses to record votes. In practice all writes
+  -- go through service role. Application-layer enforcement ensures members can only update
+  -- their own key. Document this intent for future direct-client architecture.
 - DELETE: organizer_id = auth user AND locked_at IS NULL
 
 ### group_comments
@@ -230,6 +265,19 @@ Keeps the existing `read` boolean in sync without requiring code changes.
 | notifications columns | Additive (keep read boolean) | Avoids breaking existing unread count / bell logic |
 | Event data retention | Soft archive (archived_at) | Preserves fetchAcceptedPairHistory signal for AI |
 | Group size cap | 15 members | Bounds freebusy call budget and notification volume |
+| selected_suggestion_id | text (not int index) | Matches itineraries convention; int index is fragile across rerolls |
+| group_comments.suggestion_id | text (not int index) | Same reason — stable string ID, not mutable array position |
+| edit_history | Removed; changelog only | Mirrors itineraries table — one audit trail column, not two |
+| event_title | Added to group_itineraries | Required for Claude prompt injection and UI display |
+| nudges FK | ON DELETE SET NULL | Cleanup job hard-deletes unlocked past itineraries; prevents FK violations |
+| nudges mutual-exclusion CHECK | Added | Enforces exactly one itinerary type per nudge row |
+| CHECK constraints | travel_mode + location_preference | Matches existing itineraries constraints; prevents silent bad values |
+| GIN index on attendee_statuses | Added | Required for efficient membership lookups as group volume grows |
+| Lock trigger guard | itinerary_status = 'awaiting_responses' | Prevents premature lock on draft itineraries |
+| Lock trigger decline path | Sets itinerary_status = 'cancelled' | Prevents stuck state when quorum cannot be reached |
+| groups SELECT RLS | status IN ('active','pending') | Pending invitees need to read group details to accept |
+| quorum_threshold DEFAULT | None — intentional | Cannot be computed at DDL time; server must always supply on INSERT |
+| group_members role | 'admin' \| 'member' | admin = group manager (not event organizer); distinct concepts |
 
 ---
 

@@ -430,7 +430,9 @@ New tables:
 - id, name, description (the default prompt), created_by, avatar_url, created_at
 
 **group_members**
-- id, group_id, user_id, role (organizer / member), joined_at, status (active / left)
+- id, group_id, user_id, role (admin / member), joined_at, status (active / left)
+  -- NOTE: role = 'admin' is the group manager (creator or promoted member), not the event organizer.
+  -- Event organizer is tracked via group_itineraries.organizer_id. These are distinct concepts.
 - RLS: members can view their own groups; organizer can add/remove members
 
 **group_itineraries** (or extend itineraries table)
