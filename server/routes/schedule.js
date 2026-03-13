@@ -1581,12 +1581,15 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
 
     // Activity/hobby venue discovery — same pattern as the suggest route.
-    // Uses the effective reroll context: fresh user input first, stored original as fallback.
+    // IMPORTANT: always prefer itin.context_prompt for activity detection — it carries
+    // the organizer's original intent (e.g. "watch the Knicks at a sports bar").
+    // A reroll modifier like "make it more casual" must not override the detected
+    // activity type; the venue discovery should still fetch sports bars, not bars in general.
     let rerollActivityVenuesBlock = '';
     let rerollDetectedActivityType = null;
     let rerollActivityVenueCount = 0;
     try {
-      const rerollContextForActivity = sanitizePromptInput(contextPrompt) || itin.context_prompt || '';
+      const rerollContextForActivity = itin.context_prompt || sanitizePromptInput(contextPrompt) || '';
       rerollDetectedActivityType = extractActivityType(rerollContextForActivity);
       if (rerollDetectedActivityType) {
         const cityContext    = extractCityFromGeoContext(rerollGeoContext);
@@ -1602,35 +1605,59 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const rerollOrgFirst = (userA.full_name || '').split(' ')[0] || '';
     const rerollAttFirst = (userB.full_name || '').split(' ')[0] || '';
 
-    // Single-card rerolls with a specific contextPrompt or singleCardNote should be
-    // treated as near-literal instructions, not preference hints. The user said exactly
-    // what they want ("go to Russ & Daughters", "watch a movie", "just hang out") —
-    // Claude should match the intent as literally as possible, not substitute something
-    // thematically similar. We prepend a hard EXACT MATCH block before anything else
-    // so it takes precedence over profile preferences and general rules.
+    // REROLL CONTEXT PRIORITY:
+    // 1. original context_prompt (fetched from DB) — primary intent, never overridden
+    // 2. singleCardNote — modifier only (new time = timing change, new vibe = style change within same activity)
+    // 3. activity type detected from context_prompt — re-injected on every reroll
+    //
+    // safeOriginalContext is the sanitized DB context_prompt. It must appear in the prompt
+    // on every reroll so Claude never loses the organizer's original intent. Without it, a
+    // "New vibe" click on "watch the Knicks at a sports bar" would reach Claude with only
+    // "fresh alternative — different activity" as the guide, allowing it to return comedy
+    // at a bocce bar instead of a different sports bar.
+    const safeOriginalContext = sanitizePromptInput(itin.context_prompt || '');
+
+    // safeRerollContext is any new text the user typed in the reroll UI.
+    // It supplements (not replaces) the original intent.
     const safeRerollContext = sanitizePromptInput(contextPrompt);
-    const exactMatchBlock = isSingleCard && (safeRerollContext || singleCardNote)
-      ? `EXACT MATCH REQUIRED: The user has given a specific instruction for this suggestion: "${safeRerollContext || singleCardNote}". Generate a suggestion that matches this as closely as possible. If it names a specific venue, activity type, or location, use that directly. If it describes an activity at home (e.g. "just hang out", "watch a movie", "come over"), generate a home-based agenda. Do not substitute a thematically similar but different activity — match the intent as literally as possible.`
+
+    // Combined context: original intent first, then any reroll-specific override.
+    // This is used as the intent source for exactMatchBlock and retry instructions.
+    // Original is always first so Claude treats it as the dominant constraint.
+    const combinedContext = [safeOriginalContext, safeRerollContext].filter(Boolean).join('. ');
+
+    // exactMatchBlock: for single-card rerolls, tell Claude exactly what the intent is.
+    // Built from combinedContext (original + modifier) — NOT from singleCardNote alone,
+    // which only describes the reroll operation (timing/vibe) without any activity anchor.
+    // Without safeOriginalContext here, a "New vibe" reroll would lose all activity signal
+    // and return a completely unrelated suggestion.
+    const exactMatchBlock = isSingleCard && (combinedContext || singleCardNote)
+      ? `EXACT MATCH REQUIRED: The user wants: "${combinedContext || singleCardNote}". Generate a suggestion that matches this intent as closely as possible. If it names a specific venue, activity type, or location, use that directly. If it describes an activity at home (e.g. "just hang out", "watch a movie", "come over"), generate a home-based agenda. Do not substitute a thematically similar but different activity — match the intent as literally as possible.`
       : '';
 
-    // If the context prompt names a specific venue, also inject the substitution rule
-    // so Claude handles venue unavailability gracefully rather than silently ignoring it.
-    const rerollVenueName  = extractVenueName(contextPrompt);
+    // Venue substitution: check original context_prompt first (primary intent source),
+    // then fall back to the reroll-specific override if the user named a different venue.
+    const rerollVenueName  = extractVenueName(contextPrompt || itin.context_prompt || '');
     const rerollVenueBlock = rerollVenueName ? buildVenueSubstitutionBlock(rerollVenueName) : '';
 
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: rerollWindows,
-      // exactMatchBlock and venueBlock go first so they override everything else.
-      // singleCardNote / appendNote are server-generated strings — no sanitization needed.
-      // safeRerollContext is already sanitized above; feedback is sanitized inline.
+      // REROLL CONTEXT PRIORITY:
+      // 1. original context_prompt (fetched from DB) — primary intent, never overridden
+      // 2. singleCardNote — modifier only (new time = timing change, new vibe = style change within same activity)
+      // 3. activity type detected from context_prompt — re-injected on every reroll
+      //
+      // safeOriginalContext is always included first so Claude cannot lose the original intent.
+      // singleCardNote supplements it as an operation modifier — it does not replace it.
       contextPrompt: [
         exactMatchBlock,
         rerollVenueBlock,
-        safeRerollContext,
-        feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
-        singleCardNote,
+        safeOriginalContext,                                          // ① original intent — always present, always first
+        safeRerollContext,                                            // ② user's reroll-specific input — supplemental
+        feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '', // ③ additional guidance from the reroll UI
+        singleCardNote,                                               // ④ operation modifier (new time / new vibe)
         appendNote,
       ].filter(Boolean).join('. '),
       maxTravelMinutes: itin.max_travel_minutes || null,
@@ -1642,7 +1669,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       pastHistory:          rerollPastHistory,
       localEvents:          rerollLocalEvents,
       activityVenuesBlock:  rerollActivityVenuesBlock,
-      // Always read location_preference from the stored itinerary row — never from the
+      // location_preference is always read from the stored itinerary row — never from the
       // request body. This prevents the client from overriding a preference that was
       // set at creation time. Falls back to 'system_choice' for pre-migration rows.
       locationPreference:   itin.location_preference || 'system_choice',
@@ -1669,7 +1696,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     let retryAttempted = false;
     let retrySucceeded = false;
     {
-      const rerollContextForMatch = contextPrompt || itin.context_prompt || '';
+      // Use combinedContext (original intent + any reroll override) as the theme-match source.
+      // Previously this used `contextPrompt || itin.context_prompt` which put the reroll
+      // override first — meaning an empty reroll override fell back to the original, but a
+      // non-empty override would shadow it. The combined form is always more complete.
+      const rerollContextForMatch = combinedContext || '';
       const needsRerollRetry =
         rerollContextForMatch &&
         classifyIntent(rerollContextForMatch) === 'activity_specific' &&
@@ -1679,19 +1710,24 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         // ── RETRY POINT ──────────────────────────────────────────────────────
         retryAttempted = true;
         console.error('[reroll] retry_attempted: true — no suggestions matched context:', rerollContextForMatch);
+        // Retry instruction anchors on combinedContext so it references the full original
+        // intent, not just whatever modifier the user typed on this reroll.
         const rerollRetryInstruction =
-          `RETRY — the previous attempt did not return any suggestions matching "${safeRerollContext || rerollContextForMatch}". ` +
-          `This is mandatory: at least one suggestion MUST directly feature "${safeRerollContext || rerollContextForMatch}" ` +
+          `RETRY — the previous attempt did not return any suggestions matching "${combinedContext || rerollContextForMatch}". ` +
+          `This is mandatory: at least one suggestion MUST directly feature "${combinedContext || rerollContextForMatch}" ` +
           `as the primary activity. Do not substitute a thematically adjacent activity.`;
         const retryRerollPrompt = buildSuggestPrompt({
           userA: { ...userA, name: userA.full_name || 'User A' },
           userB: { ...userB, name: userB.full_name || 'User B' },
           freeWindows: rerollWindows,
+          // Same context priority as the primary prompt — safeOriginalContext must appear
+          // in the retry too so the activity anchor is never lost across attempts.
           contextPrompt: [
             rerollRetryInstruction,
             exactMatchBlock,
             rerollVenueBlock,
-            safeRerollContext,
+            safeOriginalContext,   // ① original intent — always first, always present
+            safeRerollContext,     // ② supplemental reroll input
             feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
             singleCardNote,
             appendNote,
@@ -1705,6 +1741,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           pastHistory:          rerollPastHistory,
           localEvents:          rerollLocalEvents,
           activityVenuesBlock:  rerollActivityVenuesBlock,
+          // location_preference read from DB row, same as the primary prompt — never from request body.
           locationPreference:   itin.location_preference || 'system_choice',
         });
         try {
