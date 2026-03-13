@@ -280,7 +280,10 @@ event schema we're building is compatible.
 - [ ] Add `travel_mode` column to `itineraries` — enum: `local | travel`, default `local`
 - [ ] Add `destination` column — text, nullable
 - [ ] Add `trip_duration_days` column — int, default 1
-- [ ] NewEvent: add Local | Travel toggle; Travel mode shows same 3-button selector + duration picker (1 day / Weekend / Longer)
+- [ ] NewEvent: add Local | Travel toggle; Travel mode shows same 3-button selector + duration picker
+      KNOWN GAP: duration picker currently shows "1 day / Weekend / Longer" as static options.
+      Needs to allow user to specify an exact number of days or a day range (e.g. 3 days, 4–5 days).
+      Options: numeric stepper (1–14), or a range picker (min days / max days). Resolve UX before building.
 - [ ] "Closer to me / Closer to them" in travel mode: anchor Places API to organizer's or attendee's city
 - [ ] "Somewhere new": 2-step generation flow — first prompt asks Claude to suggest 3 destination options with rationale; organizer picks one; second prompt generates full itinerary for that destination
 - [ ] Update suggestions JSONB to support day grouping for multi-day trips: `{ days: [{ day, label, stops: [...] }] }` — single-day trips use one-entry array for schema consistency
