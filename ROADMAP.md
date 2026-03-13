@@ -634,6 +634,29 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [ ] **[AUTO]** Reroll reads travel fields from DB, not req.body: inspect reroll route handler and assert travel_mode, destination, trip_duration_days sourced from DB fetch, not request body.
 - [ ] **[AUTO]** Geographic containment rule in prompt: call buildSuggestPrompt with travel_mode='travel', assert GEOGRAPHIC CONTAINMENT RULE block present in returned prompt string.
 
+### Notification settings page
+> Users need a way to control what they get notified about. Required before sharing
+> with real users who don't want to be spammed.
+
+- [ ] Build client/src/pages/NotificationSettings.js
+- [ ] Toggles per notification type: friend requests, group invites, itinerary invites,
+  itinerary locked, nudges — each independently on/off
+- [ ] Store preferences in a new notification_preferences column (jsonb) on profiles table
+  or a separate notification_preferences table
+- [ ] Server: read preferences before sending notifications — skip if user has disabled that type
+- [ ] Link to notification settings from the notification bell / profile menu
+- [ ] Default all to ON for new users
+
+### Web push notification QA
+- [ ] Verify the push permission prompt fires correctly in step 3 of onboarding
+  — tested on mobile browser (Safari iOS and Chrome Android) and desktop Chrome
+- [ ] Verify Notification.requestPermission() is called and the result is handled correctly
+  (granted = success state, denied = "enable later" message, no block on progression)
+- [ ] Verify onboarding_completed is still called and navigation to /home works regardless
+  of permission outcome
+- [ ] Note: push_subscriptions table and actual web push delivery are a separate sprint —
+  the onboarding step only captures permission intent for now
+
 ### Bug report button
 - [ ] Floating button (bottom corner, all pages, logged-in users only) opens a modal with category picker + freeform text field
   - Categories: "Something broke" / "Wrong info in itinerary" / "Bad suggestion quality" / "Other"
