@@ -149,6 +149,32 @@ function timeOfDayHours(tod) {
  * check is a straight UTC-vs-UTC comparison.
  */
 /**
+ * Classify the organizer's intent based on the context prompt.
+ * Used to decide how many home-based vs. venue-based itineraries Claude should generate.
+ *
+ * Returns one of:
+ *   'home_likely'      — contextPrompt is absent or implies staying in
+ *                        (e.g. "hang out", "chill", "come over", "game night")
+ *   'activity_specific'— contextPrompt implies a specific out-of-home activity
+ *                        (e.g. "dinner", "concert", "golf", "drinks", "museum")
+ *   'ambiguous'        — doesn't clearly fit either category
+ */
+function classifyIntent(contextPrompt) {
+  // No prompt at all → most likely a casual hang at home
+  if (!contextPrompt || !contextPrompt.trim()) return 'home_likely';
+  const text = contextPrompt.toLowerCase();
+  // Keywords that strongly imply going out to a venue
+  if (/\b(dinner|lunch|brunch|restaurant|bar|bars|drinks|cocktails|concert|show|museum|gallery|golf|bowling|movie theater|cinema|club|lounge|arcade|escape room|spa|class|workout|gym|hike|beach|park outing|sporting event|game night out|rooftop)\b/.test(text)) {
+    return 'activity_specific';
+  }
+  // Keywords that suggest staying in / home-based hangout
+  if (/\b(hang(ing)? out|chill|come over|at (my|your|the) place|home|house|apartment|cook(ing)?|bake|movie night|watch|netflix|jam(ming)?|game night|board games?|video games?|play(ing)? games?|night in|stay in|order in|take(out|away))\b/.test(text)) {
+    return 'home_likely';
+  }
+  return 'ambiguous';
+}
+
+/**
  * Infer event duration in minutes from the event title and optional context.
  * Used to size free-window slots and as a hint to Claude for durationMinutes.
  * Errs toward the typical activity length; defaults to 2 hours.
@@ -261,8 +287,10 @@ function deriveGeoContext(userA, userB) {
  * Build the Claude prompt for generating itinerary suggestions.
  *
  * Parameter additions vs. original:
- *   sharedInterests {string[]} — interests tagged on this friendship (from friend_annotations);
- *                               injected explicitly so Claude can weight them highly.
+ *   sharedInterests    {string[]} — interests tagged on this friendship (from friend_annotations);
+ *                                  injected explicitly so Claude can weight them highly.
+ *   organizerFirstName {string}  — first name of the organizer, used in home-based agenda copy.
+ *   attendeeFirstName  {string}  — first name of the attendee, used in home-based agenda copy.
  *
  * Structural changes:
  *   1. contextPrompt moved to top with "MOST IMPORTANT" framing so Claude treats it as
@@ -271,8 +299,11 @@ function deriveGeoContext(userA, userB) {
  *   3. Dietary and mobility restrictions promoted from soft suggestions to hard NEVER constraints.
  *   4. NYC / Manhattan / New York hardcoding removed; geographic context derived from user
  *      profile locations instead. If locations are absent, city anchoring is omitted.
+ *   5. classifyIntent() drives a home vs. venue instruction block so home-based suggestions
+ *      are generated when the intent is casual/vague, and venue-focused when specific.
+ *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -285,6 +316,17 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
   // Geographic context derived from user profiles — no hardcoded city.
   // If neither user has a location, this is empty and the geo line is omitted.
   const geoContext = deriveGeoContext(userA, userB);
+
+  // Classify the organizer's intent so Claude knows how many home vs. venue plans to generate.
+  // The first names are interpolated into the instruction so Claude can say "at Aaron's place".
+  const intent = classifyIntent(contextPrompt);
+  const orgFirst = organizerFirstName || userA.name?.split(' ')[0] || 'the organizer';
+  const attFirst = attendeeFirstName  || userB.name?.split(' ')[0] || 'the attendee';
+  const intentBlock = intent === 'home_likely'
+    ? `HOME VS. VENUE SPLIT: Generate 2 of the 3 itineraries as home-based plans — one at ${orgFirst}'s place and one at ${attFirst}'s place. Include what they'd do (cook together, watch a game, jam, play games, etc.) based on their shared interests. The 3rd itinerary should be a venue-based option as an alternative. Do not suggest restaurants or bars as the primary activity for home-based agendas. Set location_type to "home" for home plans and "venue" for the venue option.`
+    : intent === 'ambiguous'
+    ? `HOME VS. VENUE SPLIT: Generate at least 1 of the 3 itineraries as a home-based plan. The others may be venue-based. Set location_type accordingly.`
+    : `HOME VS. VENUE SPLIT: All 3 itineraries should be venue-based. Focus on the specific activity requested. Set location_type to "venue" for all.`;
 
   // Dietary restrictions as hard NEVER constraints, one per person.
   // Filtered to non-empty, non-"none" values so we only emit real restrictions.
@@ -333,6 +375,8 @@ ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
 EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
+
+${intentBlock}
 ${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}
 Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 {
@@ -343,9 +387,10 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "date": "YYYY-MM-DD",
       "time": "7:00 PM",
       "durationMinutes": 120,
+      "location_type": "home|venue|mixed",
       "neighborhood": "Neighborhood name",
       "venues": [
-        { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, City, State" }
+        { "name": "Venue Name or Person's Home", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State (omit for home)" }
       ],
       "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
       "estimatedTravelA": "15 min",
@@ -605,7 +650,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const sharedInterests = annotationData?.shared_interests || [];
 
     // Call Claude
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests });
+    // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
+    const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
+    const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1035,6 +1083,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       .maybeSingle();
     const rerollSharedInterests = rerollAnnotation?.shared_interests || [];
 
+    // Extract first names for home-based agenda copy, same as in the suggest route.
+    const rerollOrgFirst = (userA.full_name || '').split(' ')[0] || '';
+    const rerollAttFirst = (userB.full_name || '').split(' ')[0] || '';
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
@@ -1051,6 +1103,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       eventTitle: itin.event_title || null,
       durationMinutes: rerollDuration,
       sharedInterests: rerollSharedInterests,
+      organizerFirstName: rerollOrgFirst,
+      attendeeFirstName:  rerollAttFirst,
     });
 
     let newSuggestions;

@@ -181,11 +181,20 @@ function SuggestionCard({
               <div className="suggestion-card__neighborhood">📍 {suggestion.neighborhood}</div>
             )}
           </div>
-          {suggestion.activityType && (
-            <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff' }}>
-              {suggestion.activityType}
-            </span>
-          )}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {/* Home badge — shown when Claude flagged this suggestion as home-based.
+                Helps users scan the options without expanding each card. */}
+            {suggestion.location_type === 'home' && (
+              <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>
+                🏠 At home
+              </span>
+            )}
+            {suggestion.activityType && (
+              <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff' }}>
+                {suggestion.activityType}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Status badges inside the header */}
