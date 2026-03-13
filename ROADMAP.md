@@ -1,5 +1,5 @@
 # Rendezvous — Product Roadmap
-Last updated: March 13, 2026
+Last updated: March 14, 2026
 
 Full product roadmap: audit schedule, release gating, and the complete feature backlog
 in priority order. For detailed design specs on each sprint (architecture, data model,
@@ -113,8 +113,9 @@ Revised sequence:
   3. ✅ Vercel deploy → DONE (March 12)
   4. ✅ Output quality → DONE (March 13)
   5. ✅ Location & Travel Mode → DONE (March 13)
-  6. Group planning ← YOU ARE HERE (architecture scoping complete — schema next)
-  7. PostHog setup → instrument all onboarding flows and key events before real users arrive
+  6. ✅ Group planning backend ← DONE (March 14) — migrations applied, routes complete
+  7. Group planning frontend ← YOU ARE HERE (Groups tab, voting UI, draft→send flow)
+  8. PostHog setup → instrument all onboarding flows and key events before real users arrive
   8. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
   9. New-user onboarding flow → must be done before sharing with anyone
   10. Share with real users

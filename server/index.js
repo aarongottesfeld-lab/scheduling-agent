@@ -645,6 +645,8 @@ require('./routes/nudges')(app, supabase, requireAuth);
 // for other users (friend's calendar, organizer/attendee event creation).
 require('./routes/schedule')(app, supabase, requireAuth, { getSessionBySupabaseId });
 require('./routes/notifications')(app, supabase, requireAuth);
+require('./routes/groups')(app, supabase, requireAuth);
+require('./routes/group-itineraries')(app, supabase, requireAuth, { getSessionBySupabaseId });
 
 // ---------------------------------------------------------------------------
 // Dev-only: user switcher — impersonate any test user without OAuth
