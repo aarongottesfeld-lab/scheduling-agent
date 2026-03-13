@@ -266,6 +266,17 @@ event schema we're building is compatible.
 **Re-roll experience**
 - [ ] Use `edit_history` rejection signals to improve the next prompt, not just retry blindly
 - [ ] After 2+ rerolls, proactively surface a prompt asking for more context
+- [ ] **Micro-adjustment reroll support** — when a user's reroll prompt contains relative
+  modifiers ("same vibe but 30 minutes later", "a bit more casual", "closer to us",
+  "slightly earlier"), the current prompt treats these as full replacements of context.
+  Instead, detect relative modifier language and inject a MICRO-ADJUSTMENT instruction
+  block that explicitly tells Claude to keep the existing itinerary structure and only
+  modify the specified dimension. Examples:
+  - "same vibe, 30 min later" → preserve venues/activity, shift time only
+  - "a bit more casual" → preserve structure, soften venue tier/vibe
+  - "somewhere closer" → preserve activity type, re-anchor location
+  Detection: keyword list in classifyRerollIntent() (new helper alongside classifyIntent)
+  returning 'micro_adjust' | 'full_replace' | 'ambiguous'
 
 ### Location Awareness & Travel Mode
 > Full spec in SPRINT_SPECS.md. Core design principle: intent over distance sensing. 8 miles means different things in NYC vs Buffalo. The organizer declares the mode — the system never tries to infer it from coordinates.
