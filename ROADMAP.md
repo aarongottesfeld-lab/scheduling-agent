@@ -462,6 +462,36 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 
 ---
 
+### Group mode — UX gaps (post-beta, pre-wider-rollout)
+
+**Friend search dropdown in GroupDetail invite flow**
+- [ ] The invite input currently filters statically — it should show a live dropdown as
+  the admin types, previewing matching friends before selection
+- [ ] Same typeahead pattern as the NewEvent friend picker — reuse that component or extract
+  a shared FriendSearch component used by both
+
+**Group invite notification**
+- [ ] When a user is invited to a group, they should receive a notification pill/badge
+  identical in behavior to a friend request (Tier 1 — action required)
+- [ ] Notification center should show the group name and an Accept/Decline inline action
+- [ ] The notification insert already exists in the invite route — this is primarily a
+  frontend rendering gap (notification center doesn't surface group_invite type yet)
+
+**Voting rules visible in group event planning screen**
+- [ ] Quorum threshold and tie_behavior are set server-side but never surfaced to the
+  organizer in the NewGroupEvent UI
+- [ ] Add a collapsible "Voting settings" section to NewGroupEvent:
+  - Quorum: "Simple majority (default)" vs custom threshold
+  - Tie behavior: "Schedule on tie (default)" vs "Decline on tie"
+- [ ] Note: only meaningful for groups with 3+ members — can hide or default-lock for 2-person groups
+
+**Ad-hoc attendee addition in group planning screen**
+- [ ] NewGroupEvent currently pre-fills members from the saved group but has no way to
+  add users who aren't in the group for a one-off event
+- [ ] Add a "Add someone else" search input below the attendee list — same friend search
+  pattern, appends to attendee_user_ids without modifying the saved group membership
+- [ ] Make clear in the UI that adding someone here doesn't add them to the group permanently
+
 ### Maps API Key Split (pre-maps-feature)
 > Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
 - [ ] Create a second Google Maps API key in Google Cloud Console — restrict to Maps JavaScript API only
