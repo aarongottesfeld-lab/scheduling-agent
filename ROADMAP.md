@@ -117,7 +117,13 @@ Revised sequence:
   7. ✅ Group planning frontend ← DONE (March 14) — Groups tab, voting UI, draft→send flow, deployed
   7a. ✅ Automated QA pass ← DONE (March 14) — 14/14 tests passing, classifyIntent bug fixed
   8. ✅ PostHog setup ← DONE (March 14) — SDK wired, identify() on auth, 4 core events instrumented
-  9. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
+  9. ✅ Audit 3 ← DONE (March 14) — 2 HIGH fixed (prompt injection), 1 WARN fixed (ghost votes)
+     Remaining WARN items (non-blocking, address post-launch):
+     - RATE_LIMIT_EXEMPT email: move to env var (RATE_LIMIT_EXEMPT_EMAILS) so it's not hardcoded in source
+     - INJECTION_RE: add multiline flag + newline-based injection pattern coverage
+     - tags field: unused by client — remove from Claude schema or wire to UI filtering
+     - Promise.all: parallelize freebusy + friend_annotations + past history fetches (~200–400ms savings)
+     - schedule.js: 2000+ lines — split into promptBuilder.js, availability.js, calendarSync.js before adding more features
   10. New-user onboarding flow → must be done before sharing with anyone
   11. Share with real users
   11. React Native / App Store → after feature set is proven on live users
