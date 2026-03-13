@@ -48,6 +48,19 @@ const LOCATION_OPTIONS = [
   { value: 'closer_to_attendee',   label: '📍 Closer to them' },
 ];
 
+// Travel mode — Local stays in your city area; Travel is for overnight/destination trips.
+const TRAVEL_MODE_OPTIONS = [
+  { value: 'local',   label: 'Local' },
+  { value: 'travel',  label: 'Travel' },
+];
+
+// Duration options for travel mode (1 day / weekend / longer → 1 / 2 / 5 days).
+const TRIP_DURATION_OPTIONS = [
+  { value: 1,  label: '1 day' },
+  { value: 2,  label: 'Weekend' },
+  { value: 5,  label: 'Longer' },
+];
+
 // Max-travel time cap options sent to the suggestion engine.
 const TRAVEL_OPTIONS = [
   { value: '15', label: '15 min' },
@@ -113,6 +126,12 @@ export default function NewEvent() {
   // location_preference — where to anchor venue suggestions. Defaults to system_choice
   // so the form works without any extra interaction (same behavior as before this feature).
   const [locationPreference,  setLocationPreference]  = useState('system_choice');
+  // travel_mode — 'local' (same city) or 'travel' (overnight/destination trip).
+  const [travelMode,          setTravelMode]          = useState('local');
+  // trip_duration_days — only active when travelMode='travel'. 1 / 2 / 5 days.
+  const [tripDurationDays,    setTripDurationDays]    = useState(1);
+  // destination — free text; only active when travelMode='travel' and locationPreference='destination'.
+  const [destination,         setDestination]         = useState('');
   // Organizer's first name — fetched once for the helper text below the location selector.
   // Falls back to 'you' if the fetch fails or the name is missing.
   const [organizerFirstName,  setOrganizerFirstName]  = useState('');
@@ -207,6 +226,11 @@ export default function NewEvent() {
         timezoneOffsetMinutes: new Date().getTimezoneOffset(),
         confirmedOrganizerConflict,
         locationPreference,
+        travel_mode: travelMode,
+        trip_duration_days: tripDurationDays,
+        destination: (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
+          ? destination.trim()
+          : null,
       });
       // Server found a conflict on the organizer's calendar — ask before generating.
       if (data?.needsConfirmation) {
@@ -352,6 +376,54 @@ export default function NewEvent() {
               )}
             </div>
 
+            {/* Local / Travel toggle — determines whether this is a same-city hangout or an
+                overnight/destination trip. Travel mode unlocks the duration picker and
+                destination input. Inserted before location preference per the sprint spec. */}
+            <div className="form-group">
+              <label className="form-label">Mode</label>
+              <div className="radio-group">
+                {TRAVEL_MODE_OPTIONS.map((opt) => (
+                  <label key={opt.value} className={`radio-item${travelMode === opt.value ? ' radio-item--checked' : ''}`}>
+                    <input type="radio" name="travelMode" value={opt.value}
+                      checked={travelMode === opt.value}
+                      onChange={() => {
+                        setTravelMode(opt.value);
+                        // Reset destination and duration when switching back to local.
+                        // Also reset locationPreference if it was 'destination' — that option
+                        // is only available in travel mode and is meaningless in local mode.
+                        if (opt.value === 'local') {
+                          setDestination('');
+                          setTripDurationDays(1);
+                          setLocationPreference(prev => prev === 'destination' ? 'system_choice' : prev);
+                        }
+                      }} />
+                    <span>{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="form-hint" style={{ marginTop: 8 }}>
+                {travelMode === 'local'  && "Suggestions in your city area."}
+                {travelMode === 'travel' && "Multi-day trip — suggestions at a destination."}
+              </p>
+            </div>
+
+            {/* Trip duration — only shown when Travel is selected. */}
+            {travelMode === 'travel' && (
+              <div className="form-group">
+                <label className="form-label">Trip length</label>
+                <div className="radio-group">
+                  {TRIP_DURATION_OPTIONS.map((opt) => (
+                    <label key={opt.value} className={`radio-item${tripDurationDays === opt.value ? ' radio-item--checked' : ''}`}>
+                      <input type="radio" name="tripDurationDays" value={opt.value}
+                        checked={tripDurationDays === opt.value}
+                        onChange={() => setTripDurationDays(opt.value)} />
+                      <span>{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Where to meet — controls which user's location Claude anchors suggestions to.
                 Defaults to 'system_choice' (equidistant / best fit) so the form works
                 without any extra interaction. Styled to match the time-of-day selector. */}
@@ -366,6 +438,15 @@ export default function NewEvent() {
                     <span>{opt.label}</span>
                   </label>
                 ))}
+                {/* Destination option — only shown when Travel mode is selected. */}
+                {travelMode === 'travel' && (
+                  <label className={`radio-item${locationPreference === 'destination' ? ' radio-item--checked' : ''}`}>
+                    <input type="radio" name="locationPreference" value="destination"
+                      checked={locationPreference === 'destination'}
+                      onChange={() => setLocationPreference('destination')} />
+                    <span>📍 Somewhere specific</span>
+                  </label>
+                )}
               </div>
               {/* Helper text — updates based on selection to explain what Claude will do. */}
               <p className="form-hint" style={{ marginTop: 8 }}>
@@ -375,8 +456,24 @@ export default function NewEvent() {
                   `We'll suggest venues near ${selectedFriend ? `${selectedFriend.name.split(' ')[0]}'s` : "your friend's"} location.`}
                 {locationPreference === 'system_choice' &&
                   "We'll find the best spot between you both."}
+                {locationPreference === 'destination' &&
+                  "Tell us where you're headed."}
               </p>
             </div>
+
+            {/* Destination input — only shown when Travel + destination preference. */}
+            {travelMode === 'travel' && locationPreference === 'destination' && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="destination">
+                  Destination <span className="optional">optional</span>
+                </label>
+                <input id="destination" type="text" className="form-control" value={destination}
+                  onChange={(e) => setDestination(e.target.value)}
+                  placeholder="e.g. Nashville, Catskills, Philadelphia"
+                  maxLength={100} />
+                <p className="form-hint">City or region — we'll suggest everything there.</p>
+              </div>
+            )}
 
             {/* Max travel time — passed to the AI to filter out venues too far away. */}
             <div className="form-group">

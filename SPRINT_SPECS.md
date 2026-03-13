@@ -313,6 +313,42 @@ Single-day itineraries use a one-entry days array — consistent schema regardle
 - Travel / somewhere_new: two-step — first prompt asks Claude for 3 destination options with
   rationale; organizer picks one; second prompt generates full multi-day itinerary
 
+### Geographic containment rule (critical for multi-day itineraries)
+
+Without an explicit constraint, Claude will treat each day as an opportunity to suggest
+a new area — producing itineraries that bounce between cities. "Day 1: Buffalo, Day 2:
+drive down to NYC" is geographically coherent to Claude but logistically absurd for a
+weekend trip. This must be prevented at the prompt level.
+
+**Rule: all stops across all days must stay within a single coherent geographic region.**
+
+The region is determined once at generation time and locked in. Claude must not change
+cities or metro areas between days.
+
+- 1-day / weekend trips: all stops within one city and its immediate surroundings (~30 miles)
+- "Longer" trips: one home base city with optional day trips that return to base — never
+  treat a day trip destination as a new home base for subsequent days
+- Day 1 (arrival) and last day (departure): realistic logistics — no full-day activity
+  schedules on travel days unless the destination is driveable
+
+**Prompt injection for all travel mode itineraries:**
+```
+GEOGRAPHIC CONSTRAINT (strictly enforced):
+All stops across all days must remain within a single city or metro region.
+Do NOT suggest travel between different cities on different days.
+Home base for this trip: [destination ?? organizer city ?? attendee city].
+Day trips must return to the home base — never treat a day trip as a pivot
+to a new region for subsequent days.
+A "Weekend" trip means 2 days in one place, not a multi-city tour.
+```
+
+**Null destination fallback:**
+If travel_mode is 'travel' but destination is null, fall back to the organizer's profile
+location as the geographic anchor. This prevents Claude from choosing its own arbitrary
+anchor, which is the root cause of city-hopping itineraries. The "Somewhere new" 2-step
+flow (step 6b, deferred) is the proper long-term fix — it forces explicit destination
+selection before generation begins, eliminating this case entirely.
+
 ### What changes in the UI
 
 NewEvent flow gets a new step after date/time:
@@ -437,6 +473,156 @@ When generating for a group:
 
 ---
 
+## Cultural moment scheduling
+Added: March 2026
+
+### Core idea
+
+When a user's context prompt references a specific cultural event — a game, a TV premiere,
+the Oscars, a concert, a movie opening — the itinerary should be anchored to when that
+event actually happens. "Watch the Knicks" shouldn't suggest a random Tuesday. It should
+find the next Knicks home game in the user's date window and build the plan around tip-off.
+
+This applies across all cultural event types, not just sports:
+
+| Signal in context prompt | Event type | Anchor logic |
+|---|---|---|
+| "watch the Knicks / Yankees / Mets" | Sports game | Game date + time; anchor itinerary start 2 hrs before |
+| "watch the game" + sport inferred from profile | Sports game | Same, infer team from preferences |
+| "Oscars / Emmys / Grammys" | Award show | Broadcast date/time (annual, predictable) |
+| "new episode of [show]" / "season premiere" | TV | Air date + network from TV API |
+| "the new [movie] is out" | Film | Release date from movie API |
+| "see [artist] in concert" | Live music | Ticketmaster / SeatGeek show date (already partially covered by events.js) |
+| "Mets opening day" / "Super Bowl" / "playoffs" | Major sports event | Specific date from sports schedule API |
+
+### Why this matters
+
+This is a meaningful product differentiator. The scenario "we both want to watch the Knicks
+game" is extremely common, and right now the itinerary engine ignores the actual game schedule
+entirely. Anchoring suggestions to real event dates makes the product feel genuinely
+intelligent rather than just well-prompted.
+
+The "Live" badge is the visible signal to users that this isn't a generic suggestion —
+it's been matched to a real event. That increases trust in the recommendation.
+
+### Detection layer
+
+New helper: `extractCulturalSignal(contextPrompt, activityPreferences)`
+
+Returns: `{ type: 'sports' | 'tv' | 'film' | 'awards' | 'concert' | null, entity: string | null }`
+
+Examples:
+- "watch the Knicks game" → `{ type: 'sports', entity: 'knicks' }`
+- "the new Severance episode drops" → `{ type: 'tv', entity: 'Severance' }`
+- "go see Mission Impossible" → `{ type: 'film', entity: 'Mission Impossible' }`
+- "Oscars watch party" → `{ type: 'awards', entity: 'Oscars' }`
+- Falls back to null if no signal detected — no behavior change
+
+This runs alongside the existing `classifyIntent()` and `extractActivityType()` — not a
+replacement, an additional layer.
+
+### Data sources by event type
+
+**Sports schedules**
+- Primary: ESPN unofficial API (no key required, well-documented, returns JSON schedules)
+- Secondary: the-sports-db.com (free tier, clean schema)
+- Ticketmaster Discovery API already wired in events.js — also returns sports events
+  with specific game dates. Use as a third signal for cross-validation.
+- Coverage: NBA, MLB, NFL, NHL, MLS — all major US leagues
+- New utility function: `fetchSportsSchedule(team, dateRangeStart, dateRangeEnd)`
+  Returns: array of `{ date, time, opponent, venue, home_or_away }` sorted by date
+
+**TV premiere dates**
+- The Movie Database (TMDB) — free API, covers premiere dates, episode air dates,
+  season information. Register at themoviedb.org/settings/api.
+- Store as `TMDB_API_KEY` in server/.env
+- New function: `fetchTVAirDate(showName, dateRangeStart, dateRangeEnd)`
+  Returns: `{ episode_title, air_date, season, episode_number, network }` or null
+
+**Film release dates**
+- TMDB covers movies too — same API key
+- New function: `fetchMovieRelease(movieTitle)` → `{ release_date, title, confirmed }`
+- Wide releases are reliable; limited releases less so — flag confidence level
+
+**Award shows**
+- Known annual dates — can be hardcoded with yearly update rather than API-dependent:
+  Oscars (March), Grammys (February), Emmys (September), Golden Globes (January)
+- Simple lookup table in a constants file, updated annually
+- No API needed for MVP
+
+**Concerts**
+- Already covered by Ticketmaster Discovery API in events.js
+- `extractCulturalSignal` detects artist names and routes to existing events.js logic
+
+### Scheduling anchor logic
+
+When a cultural signal is detected and a matching event is found within the date range:
+
+1. **Hard preference, not hard gate** — prioritize dates with the event, but do not fail
+   if no event falls in the date window. Fall back to normal generation silently.
+2. **Tip-off / air time anchoring** — for sports and TV, start the itinerary 1.5–2 hours
+   before the event. Enough time for pre-game food + drinks. For films, anchor to showtime.
+3. **Inject into Claude prompt as a PRIORITY EVENT block** — higher priority than the
+   general events block already in `buildSuggestPrompt`:
+
+```
+PRIORITY EVENT (anchor this itinerary to this specific date and time):
+- Knicks vs. Celtics @ Madison Square Garden — Saturday March 15, 7:30 PM tip-off
+  Suggested start: 5:30–6 PM (bar or restaurant near MSG before the game)
+  This event was detected from the context prompt. At least one suggestion should
+  be structured around attending or watching this game.
+```
+
+4. **Soft mode for "watching" vs "attending"** — "watch the Knicks" could mean going to
+   MSG or watching at a bar. Default: suggest both if tickets aren't confirmed. Claude
+   determines venue type from context. If the user said "go to the Knicks game" vs
+   "watch the Knicks" — treat differently.
+
+### "Live" badge
+
+Any suggestion anchored to a real cultural event gets a 🔴 **Live** badge in ItineraryView.
+
+Badge format: `🔴 Live · Knicks tip-off 7:30 PM` or `🔴 Live · Oscars start 8 PM ET`
+
+Same rendering pattern as the existing 🎟 Ticketmaster badge and 🎾 activity badge.
+`event_source` JSONB field extended to include: `sports_schedule | tv_premiere | film_release |
+awards | concert` (concert already covered by ticketmaster).
+
+### Privacy
+
+- Only team names, show titles, and movie names sent to external APIs — no user data
+- API keys (TMDB, ESPN if needed) in server/.env only
+- Same best-effort / graceful-fail pattern as events.js — never blocks suggestion generation
+
+### Telemetry additions
+
+Extend `suggestion_telemetry` JSONB on itineraries:
+- `cultural_signal_detected` (string | null) — e.g. `'knicks'`, `'Severance'`, `'Oscars'`
+- `cultural_signal_type` (string | null) — e.g. `'sports'`, `'tv'`, `'film'`, `'awards'`
+- `cultural_event_found` (bool) — whether an event was found in the date window
+- `cultural_anchor_used` (bool) — whether a suggestion was actually anchored to it
+
+### Implementation sequencing
+
+1. Build `extractCulturalSignal()` helper — detection only, no API calls yet
+2. Add sports schedule fetch (`fetchSportsSchedule`) using ESPN unofficial API — covers the
+   highest-frequency use case (NBA, MLB, NFL) with no API key requirement
+3. Wire into `buildSuggestPrompt` — PRIORITY EVENT block injection
+4. Add 🔴 Live badge to ItineraryView (same pattern as existing badges)
+5. Add telemetry fields
+6. Add TMDB integration for TV + film — requires API key registration
+7. Add awards show constants file (Oscars, Grammys, Emmys, Golden Globes dates)
+
+Steps 1–5 are the high-value MVP. Steps 6–7 are additive.
+
+### What this is NOT
+
+- Not a real-time odds, score, or standings system — only schedule data
+- Not automatic — requires the user's context prompt to reference an event
+- Not a gate — never blocks generation if no event is found
+
+---
+
 ## Timezone localization
 Added: March 12, 2026
 
@@ -479,3 +665,728 @@ event must be created with the correct local time for each user.
 3. Update Claude prompt to include both users' timezone-aware windows
 4. Update calendar event creation to use per-user `timeZone` field
 5. Update UI to show times in viewer's local timezone with "their time" annotation
+
+---
+
+## Group mode — availability badges on itinerary tiles
+Added: March 14, 2026
+
+### What it is
+
+Each itinerary suggestion tile shows per-member availability during the suggested time slot.
+Each group member gets a small indicator: checkmark if free, X if conflicted. This gives the
+organizer and attendees a quick read on who can make a given option work without anyone having
+to manually cross-reference calendars.
+
+### Data shape
+
+At suggestion generation time, the suggest route already fires freebusy calls per member to
+find mutual windows. The availability result for each suggestion's time slot should be stored
+directly on the suggestion object inside the `suggestions` JSONB column, alongside venue data.
+
+Proposed shape per suggestion:
+```json
+{
+  "venues": [...],
+  "days": [...],
+  "time_slot": { "start": "...", "end": "..." },
+  "member_availability": [
+    { "user_id": "uuid", "display_name": "Aaron", "available": true },
+    { "user_id": "uuid", "display_name": "Jacob", "available": true },
+    { "user_id": "uuid", "display_name": "Harrison", "available": false },
+    { "user_id": "uuid", "display_name": "George", "available": false }
+  ],
+  "availability_checked_at": "2026-03-14T18:00:00Z"
+}
+```
+
+This is a snapshot — no live sync. The `availability_checked_at` timestamp drives the
+"as of" note in the UI.
+
+### Refresh button
+
+A "Refresh availability" button appears on each suggestion tile (not the whole itinerary view).
+Clicking it re-fires freebusy calls for that suggestion's time slot only — no reroll, no
+Claude call, no venue changes. Result updates `member_availability` and `availability_checked_at`
+on that suggestion in the DB.
+
+**Rate limit:** Once per hour per itinerary. Enforced server-side. Store `availability_last_refreshed_at`
+on the itinerary row (or per-suggestion in JSONB — confirm during implementation).
+
+**Post-lock behavior:** Refresh button is hidden once `locked_at` is set. Availability is
+irrelevant after both parties have accepted and the event is locked.
+
+### "As of" note
+
+Each tile shows: "Availability as of [relative time, e.g. '2 hours ago']" — derived from
+`availability_checked_at`. Updates in real time as the timestamp ages without a page reload.
+
+### On reroll
+
+When a single card is rerolled, the new suggestion's time slot differs from the old one.
+Availability badges must be re-fetched for the new time slot as part of the reroll response —
+not lazily loaded after. The reroll route fires freebusy for the new slot before returning.
+
+### UI placement
+
+Badges render as a compact horizontal row of avatar initials + icon below the venue list on
+each tile. Keep it minimal — not a table, just a quick glance indicator.
+
+### Implementation sequencing
+
+1. Update `buildSuggestPrompt` response schema and suggest route to compute + store
+   `member_availability` per suggestion at generation time
+2. Add `availability_last_refreshed_at` to itineraries table (migration)
+3. Add `/itineraries/:id/refresh-availability` POST route — rate-limited to 1/hr
+4. Update ItineraryView to render availability badges per tile
+5. Wire refresh button with rate limit feedback (disabled state + "Refresh available in Xm")
+6. Update reroll route to re-fetch availability for the new suggestion's time slot
+7. Hide refresh button when `locked_at` is set
+
+---
+
+## Group mode — tie-breaking rule
+Added: March 14, 2026
+
+### The problem
+
+Even-numbered groups (4, 6, 8 members) can hit a tie when votes on a suggestion are split
+50/50. With threshold-based quorum, this is a real edge case that needs a defined resolution
+— not a silent failure or an ambiguous locked state.
+
+### Organizer toggle at event creation
+
+During group event setup, the organizer selects a tie-breaking rule. Two options:
+
+- **Schedule on tie** (default): If votes are tied and quorum is otherwise met, the event
+  locks in favor of scheduling. Optimizes for the group actually doing something.
+- **Decline on tie**: If votes are tied, the suggestion is not locked. Falls back to
+  awaiting more responses or triggering a reroll prompt to the organizer.
+
+The selected rule is stored on the itinerary row (`tie_behavior`: `schedule` | `decline`).
+The lock trigger reads `tie_behavior` when evaluating whether a tied vote count meets the
+quorum threshold.
+
+### Cost/overhead
+
+One extra column, minor trigger logic change. No external API implications. This is purely
+DB and state machine logic.
+
+### Default recommendation
+
+Default to "schedule on tie" — the worst outcome for a social scheduling app is paralysis,
+not a slightly suboptimal plan. Users can override if their group dynamic calls for it.
+
+---
+
+## Group mode — per-tile comment threads
+Added: March 14, 2026
+
+### What it is
+
+Each itinerary suggestion tile has a comment sidebar. Any group member can leave a note on
+a specific tile — "I've been to this place, the food is great", "the timing doesn't work for
+me", or a reroll request directed at the organizer. All members can read all comments.
+
+This replaces the need for out-of-band texting about itinerary options, which is the actual
+UX problem: group members currently have no structured way to give feedback without forcing
+a full reroll.
+
+### Data shape
+
+Comments are stored in a `group_comments` table (not embedded in the JSONB). This keeps
+the itineraries JSONB from growing unbounded and makes comment queries efficient.
+
+Proposed schema:
+```
+group_comments
+  id              uuid primary key
+  itinerary_id    uuid references group_itineraries(id)
+  suggestion_index int  -- which tile (0, 1, 2...)
+  user_id         uuid references profiles(id)
+  body            text
+  created_at      timestamptz default now()
+```
+
+RLS: users can read comments on itineraries they are a member of. Users can insert their
+own comments. Users cannot delete or edit others' comments (read-only after submit).
+
+### Refresh and persistence
+
+Comments persist in the DB for the lifetime of the itinerary. The comment sidebar polls
+or fetches on open — no real-time websocket needed for v1. A simple "load comments" fetch
+on sidebar open is sufficient.
+
+**Soft cap:** If a suggestion tile accumulates more than 50 comments, collapse older ones
+behind a "show older comments" toggle rather than loading all at once. This prevents UI
+bloat for active groups.
+
+### Privacy and data retention
+
+Comments are not fed into user preference signals or behavioral data. They are not used
+for AI training, itinerary improvement, or cross-user analytics. They exist solely to
+facilitate coordination within a specific event.
+
+When an itinerary is deleted or expires, associated comments are hard-deleted via cascade.
+No archival. This is the privacy-correct default — don't retain coordination data longer
+than the event it belongs to.
+
+**Do not log comment content in telemetry.** Log only: comment_added (itinerary_id,
+suggestion_index, user_id) — enough to know the feature is used, nothing about what was said.
+
+### Bloat mitigation
+
+- 50 comment soft cap per tile with pagination
+- No threading or replies in v1 — flat list only
+- No rich text, attachments, or reactions in v1
+- Hard-delete on itinerary expiry/deletion
+
+### Cost/overhead
+
+One additional table. Comment fetches are lightweight reads — no Claude calls, no Maps
+calls. At scale, this is among the cheapest features in the app. The main cost risk is
+if comments are naively loaded on every page render rather than only when the sidebar is
+opened — make sure fetch is lazy.
+
+### Implementation sequencing
+
+1. Create `group_comments` table with RLS (migration)
+2. Add GET `/itineraries/:id/suggestions/:index/comments` route
+3. Add POST `/itineraries/:id/suggestions/:index/comments` route
+4. Build comment sidebar UI component — lazy load on open
+5. Add 50-comment soft cap with "show older" pagination
+6. Wire telemetry: `comment_added` event (no body content)
+7. Add cascade delete on itinerary deletion
+
+---
+
+## Group mode — group formation
+Added: March 14, 2026
+
+### Core question
+
+Do users create a named group first and then create an event from it? Or do they assemble
+members inline during event creation? The answer shapes the DB schema, the nav structure,
+and the re-use story.
+
+### Two entry points, same underlying data model
+
+Users can create a group in either of two ways — both produce the same `groups` +
+`group_members` records and both support the same re-use story.
+
+**Path A: Standalone group creation (Groups tab / section)**
+- User navigates to a dedicated Groups section in the app nav
+- Taps "New Group", gives it a name, searches for friends to add (same username search
+  as existing friend flow)
+- Group is saved immediately with no event attached
+- From the group detail view, the user can tap "Plan an event" to jump into New Event
+  with the member list pre-filled
+
+**Path B: Inline creation during event setup (New Event screen)**
+- During new event setup, the organizer searches for friends and adds them one at a time
+- After confirming the member list, the organizer sees a toggle: **"Save this group for
+  later"** with an optional name field (e.g., "Tennis crew", "Book club")
+- If saved, a `groups` record is created and linked. If not, the event proceeds with an
+  ephemeral member list and no `groups` record is created.
+
+Both paths converge on the same schema — there is no "group event without a groups record"
+distinction in the DB. Path B without saving is just an itinerary with a populated
+`attendee_statuses` JSONB and no linked `group_id`.
+
+### Group re-use
+
+Saved groups appear in a "Groups" section on the New Event screen (or a dedicated Groups
+tab). Selecting a saved group pre-fills the member list. The organizer can add or remove
+members before confirming — the saved group is a template, not a locked list.
+
+### Mid-planning membership changes
+
+**Before lock:** The organizer can add or remove members at any time before the itinerary
+is locked. Adding a new member resets their `attendee_statuses` entry to `pending`. Removing
+a member removes their entry and re-evaluates quorum. This should re-run quorum check
+immediately and notify all remaining members of the change.
+
+**After lock:** No membership changes. The event is locked and the calendar invite is set.
+Any post-lock changes are a changelog entry and a manual coordination problem.
+
+### Leaving a group (saved groups)
+
+Any member can leave a saved group at any time from the group's settings. Leaving a saved
+group does not affect in-progress events that group was used to create — those events have
+their own independent member lists. The group record is soft-deleted (hidden from the
+leaving user) not hard-deleted, since other members still have it in their group lists.
+
+### Knowing which groups you're in
+
+A "Groups" view shows all saved groups the user is a member of, with member avatars and
+the last event created from the group. This is a passive discovery surface — users don't
+need to check it, but it's there. Notification when added to a group: "Aaron added you to
+Tennis crew."
+
+### DB shape
+
+```
+groups
+  id           uuid primary key
+  name         text
+  created_by   uuid references profiles(id)
+  created_at   timestamptz default now()
+
+group_members
+  group_id     uuid references groups(id)
+  user_id      uuid references profiles(id)
+  joined_at    timestamptz default now()
+  left_at      timestamptz  -- null if still active
+  primary key (group_id, user_id)
+```
+
+RLS: users can see groups they are members of (left_at is null). Users can see group_members
+rows for their own groups. The creating user (created_by) can add/remove members.
+
+### Cost/overhead
+
+Two small tables. Group fetches are simple lookups — no external API calls. The main cost
+consideration is notification volume when members are added: one push notification per
+added member, which is negligible. No ongoing cost implications.
+
+### What's NOT in v1
+
+- Group admins or co-organizers (organizer is always the event creator)
+- Group-level chat (separate from per-tile comments)
+- Group invite links
+- Public or discoverable groups
+
+### Implementation sequencing
+
+1. Create `groups` and `group_members` tables with RLS (migration)
+2. Update NewEvent UI to support multi-member selection with inline search
+3. Add "Save this group" toggle at confirmation step
+4. Add Groups view / section to surface saved groups
+5. Wire group selection to pre-fill member list in NewEvent
+6. Add mid-planning member add/remove (pre-lock only)
+7. Add leave group flow from group settings
+8. Notification: "X added you to [group name]"
+
+---
+
+## Notifications system
+Added: March 14, 2026
+
+### Two tiers of notifications
+
+**Tier 1 — Action required (web push + in-product notification center)**
+These are notifications that require the user to do something. They are the highest-priority
+and warrant interrupting the user outside the app via web push. Examples:
+- Friend request received
+- Group invitation received
+- Event invite: "You've been invited to a plan — waiting on you"
+- Plan locked: "This plan is locked in — add it to your calendar"
+- Nudge: organizer-set or default reminder that a response is overdue
+
+**Tier 2 — Informational updates (in-product notification center only)**
+These are status updates that are useful but don't require action. They live in the
+in-product notification center and do not trigger web push. Examples:
+- "Harrison and George voted on Saturday Night Plan"
+- "Alex updated the group description for Tennis Crew"
+- "Morgan left the D&D Group"
+
+**Rationale:** Push fatigue is a real product risk. Blasting every group activity as
+a web push will cause users to disable notifications entirely, which breaks the action-required
+flow. Keeping Tier 2 in-app only preserves the signal value of push for things that matter.
+
+### Notification settings page
+
+Users can control their notification preferences from a dedicated settings page. Minimum
+controls for v1:
+- Web push: on/off toggle (with browser permission prompt on first enable)
+- Per-type overrides: allow users to opt out of specific Tier 1 categories if desired
+
+Email notifications are out of scope for v1. Flag as future state.
+
+### Delivery infrastructure
+
+Web push via the Web Push API (VAPID keys). `push_subscriptions` table stores subscriptions
+per user (already specced in onboarding flow). Server sends push via `web-push` npm package.
+
+In-product notification center: `notifications` table in Supabase. Fetched on app load and
+on relevant actions. No websocket required for v1 — polling on focus is sufficient.
+
+Proposed `notifications` table:
+```
+notifications
+  id           uuid primary key
+  user_id      uuid references profiles(id)
+  type         text  -- e.g. 'friend_request', 'event_invite', 'plan_locked', 'nudge', 'group_invite'
+  tier         int   -- 1 = action required, 2 = informational
+  title        text
+  body         text
+  data         jsonb -- payload (e.g. itinerary_id, group_id, friend_id)
+  read_at      timestamptz
+  created_at   timestamptz default now()
+```
+
+RLS: users can only read and update their own notifications. No cross-user visibility.
+
+### Cost/overhead
+
+Web push is free (VAPID). The `web-push` npm package handles signing. The main cost risk is
+volume — for a group of 15 with high activity, Tier 2 in-product notifications could accumulate
+fast. Add a retention policy: auto-delete read Tier 2 notifications after 30 days and unread
+ones after 90. This keeps the table lean.
+
+---
+
+## Nudges (updated for group mode)
+Added: March 14, 2026
+
+Nudges are action-required notifications triggered when an event has been sitting without a
+response for too long. They map to Tier 1 in the notifications system.
+
+### Organizer-configurable nudge window
+
+When creating an event, the organizer can set how long the event can sit before non-responding
+members are nudged. Default: 48 hours. Options: 24h / 48h (default) / 72h / 1 week.
+
+The nudge window is stored on the itinerary row (`nudge_after_hours`, default 48). The
+`nudges` table already exists in the schema with `expires_at` auto-set to `created_at + 7 days`.
+
+### Non-response behavior by group size
+
+**Small groups (≤3 members):** Non-response after the nudge window is treated as a decline.
+The event state reflects this — quorum is evaluated as if they declined.
+
+**Larger groups (4+ members):** Non-response after the nudge window is treated as an
+abstention. The member's slot in `attendee_statuses` is updated to `abstained` (new status
+value alongside pending/accepted/declined). Quorum is evaluated over responding members only
+— abstentions neither help nor hurt the count.
+
+This distinction matters: in a small group, one ghost can block everyone. In a larger group,
+one ghost shouldn't derail the whole event.
+
+### Event lifecycle and data retention
+
+**Events are soft-removed from the UI after their end date, not hard-deleted from the DB.**
+
+Rationale:
+- Past itineraries are a key input to `fetchAcceptedPairHistory` — the behavioral signal
+  that improves future suggestions for pairs who have planned together before
+- Hard-deleting removes this signal permanently
+- Users deserve access to past plans (activity history view is a future feature)
+
+Soft removal: add `archived_at` timestamptz to `group_itineraries` (and backfill on
+`itineraries`). Events where `date_range_end < now()` AND `archived_at IS NULL` are
+auto-archived by a scheduled job or trigger. Archived events are excluded from the active
+events UI but remain in the DB and queryable for history/signals.
+
+**Hard delete only on explicit user deletion (account deletion or manual event deletion).
+Cascade-delete all associated records (comments, nudges, notifications, changelog).**
+
+### Cost/overhead
+
+Nudge evaluation requires a background job or DB trigger to check `nudge_after_hours` vs
+elapsed time. In-memory timers won't survive server restarts. The right v1 approach is a
+lightweight cron job on Supabase (pg_cron, available on free tier) or a Vercel cron function
+that runs every hour and fires nudges for overdue itineraries. Vercel cron is free on the
+hobby plan and requires no additional infrastructure.
+
+---
+
+## Account deletion and data portability
+Added: March 14, 2026
+
+### Why this matters now
+
+GDPR Article 17 (right to erasure) and App Store requirements (both Apple and Google) require
+that apps provide users with a way to delete their account and all associated data. This must
+be in place before any public distribution — including TestFlight and Play Store open testing.
+
+This is not optional and should be scoped into Audit 3 / pre-real-users work.
+
+### What "delete my account" must do
+
+A single user-initiated action that:
+1. Revokes and deletes all Google OAuth tokens (`google_tokens` table)
+2. Deletes or anonymizes all user-generated content:
+   - Profile row (hard delete)
+   - Friend relationships in both directions (`friendships`)
+   - Friend annotations (`friend_annotations`)
+   - Group memberships (`group_members`) — sets `left_at` if group persists for others
+   - Comments (`group_comments`)
+   - Nudges sent/received
+   - Notifications
+   - Push subscriptions
+3. Itinerary handling: if the user is the organizer of an active (unlocked) itinerary,
+   cancel it and notify attendees. If they are an attendee, remove their status entry
+   and re-evaluate quorum. Locked itineraries: soft-delete the user's copy, retain the
+   record for the other party's history.
+4. PostHog: call `posthog.reset()` to disassociate the device. Do not make a deletion
+   API call to PostHog in v1 (event data is anonymous by supabaseId anyway).
+5. Revoke the active session token.
+6. Send a confirmation email (future state — note for when email is wired).
+
+### UI placement
+
+Account deletion lives in Settings → Account → "Delete my account". Require a confirmation
+step ("Type DELETE to confirm") before executing — this is irreversible.
+
+### Data portability (future state)
+
+GDPR also includes a right to data portability (Article 20). Not required for v1, but flag
+for v2: a "Download my data" export that returns a JSON file of the user's profile,
+preferences, and past itineraries. Note in ROADMAP.md.
+
+### Cost/overhead
+
+This is a single cascading delete operation triggered by the user. The main engineering cost
+is ensuring every table's cascade behavior is correctly defined in the schema — most are
+already covered by FK constraints. The delete route itself is low cost and fires rarely.
+The risk is an incomplete delete that leaves orphaned data — this must be audited in Audit 3.
+
+---
+
+## Groups tab and group onboarding
+Added: March 14, 2026
+
+### Navigation placement
+
+Groups gets a dedicated tab in the main app nav, alongside Home, Friends, and Events.
+The tab contains:
+- List of groups the user is a member of (avatar grid, group name, member count, last event)
+- "+ Create Group" button in the top right
+
+### Group creation flow (from Groups tab)
+
+1. Name the group (required)
+2. Add members via username search (same search as friend flow) — minimum 2 members
+3. Add a group description / prompt context (optional but surfaced prominently — this
+   is the primary AI signal for group itineraries)
+4. Confirm and create — all added members receive a group invitation notification (Tier 1)
+
+Members must accept the invitation before they appear as active group members. Pending
+invitations show as "Awaiting [name]" in the group member list.
+
+### First-time group creation onboarding
+
+On a user's first group creation, show a brief onboarding overlay (3 steps max):
+1. "Groups let you plan with your crew — add anyone you want to meet up with regularly"
+2. "The group description helps our AI suggest plans your whole group will love"
+3. "Everyone needs to accept before they're in — invites expire after 7 days"
+
+Dismiss and don't show again (store `group_onboarding_seen_at` on the profile row or in
+localStorage — confirm approach during implementation).
+
+### Admin model
+
+One admin per group: the creator. Admin can:
+- Edit group name, description, and prompt context
+- Add and remove members
+- Delete the group
+
+Non-admin members can:
+- View group details and member list
+- Leave the group
+- Initiate event planning from the group (any member can lead scheduling, even non-admins)
+- This last point is important: group membership grants scheduling rights, not just the admin
+
+### Future: multiple admins
+
+Flagged as v2. The schema supports it (add `role` to `group_members`), but for v1 keep it
+simple — one admin, clear ownership.
+
+### Group invitation flow
+
+Receiving a group invite surfaces as a Tier 1 notification: "Aaron invited you to Tennis Crew."
+The notification links to a group invite detail view showing the group name, description,
+current members, and Accept / Decline buttons. Invites expire after 7 days (consistent with
+the existing nudges `expires_at` pattern).
+
+### Cost/overhead
+
+The Groups tab is a straightforward read from `groups` + `group_members` — cheap queries.
+Group invitations add one notification row per invited member (covered by the notifications
+system above). No external API calls. The main complexity is the invitation state machine,
+which is a simple `status` column on `group_members` (pending / active / declined / left).
+
+
+### Group size cap
+
+Maximum 15 members per group. This cap applies to both saved groups and ad-hoc event
+member lists. Enforced server-side on group creation and member addition.
+
+Surface the cap in the UI with a note during group creation: "Groups support up to 15 members."
+Do not surface the cap as an error — prevent the add action from firing once the limit is hit.
+
+**Internal note (not user-facing):** The 15-member cap is a cost and complexity ceiling,
+not a hard technical limit. Increasing it is a candidate for a paid tier in future. See
+MONETIZATION.md. When/if a paid tier is introduced, this cap and the associated freebusy
+call budget should be re-evaluated together.
+
+---
+
+## Nudge behavior (updated)
+Added: March 14, 2026
+
+### Cadence
+
+Nudges fire daily — not once. A member who hasn't responded gets a daily Tier 1 nudge
+until they respond or the event expires. The daily cron job (Vercel cron, hourly run)
+checks for itineraries where:
+- `locked_at` IS NULL (not yet locked)
+- `date_range_end` > now() (event hasn't passed)
+- At least one member has `attendee_statuses[user_id] = 'pending'`
+- Last nudge for that user on that itinerary was sent > 24 hours ago
+
+**Critical: only nudge members who still need to act.** Members with `accepted`,
+`declined`, or `abstained` status must never receive nudges for that itinerary.
+This is not optional — nudging someone who already responded is a trust-destroying UX
+failure. Enforce this check in the nudge evaluation query, not application logic.
+
+### Nudge window (organizer-configurable)
+
+Organizer sets how long before nudges begin: 24h / 48h (default) / 72h / 1 week.
+Stored as `nudge_after_hours` on the itinerary row.
+
+First nudge fires when `created_at + nudge_after_hours` has elapsed and the member
+is still pending. Subsequent nudges fire daily after that.
+
+---
+
+## Onboarding telemetry
+Added: March 14, 2026
+
+Applies to ALL onboarding flows — new user onboarding, first group creation, and any
+future onboarding steps added to the product.
+
+### What to track
+
+For each onboarding flow, instrument the following PostHog events:
+- `onboarding_step_viewed` — fires when a step is rendered
+  - Properties: `flow` (e.g. 'new_user', 'first_group'), `step` (int), `step_name` (string)
+- `onboarding_step_completed` — fires when a step's primary action is taken
+  - Same properties as above
+- `onboarding_step_skipped` — fires when a skip link is used (only on skippable steps)
+  - Same properties as above
+- `onboarding_completed` — fires when the full flow finishes
+  - Properties: `flow`, `steps_skipped` (int), `total_steps` (int)
+- `onboarding_abandoned` — fires if the user navigates away mid-flow without completing
+  - Properties: `flow`, `last_step_seen` (int)
+
+### Privacy constraints
+
+Same rules as all PostHog instrumentation:
+- No PII in event properties — no email, name, location coordinates, dietary/mobility data
+- `user_id` sent as `supabaseId` (UUID) only
+- Step names should describe the UI step, not the user's input (e.g., `'location_permission'`
+  not `'user_location_NYC'`)
+
+### Why this matters
+
+Onboarding drop-off data is among the highest-leverage product signal available early on.
+Knowing which step loses users lets you reorder, simplify, or remove friction before
+it compounds. PostHog's funnel analysis view handles this natively once the events are
+instrumented correctly.
+
+Add to Audit 3 scope: verify all onboarding flows have complete step telemetry before
+real users are onboarded.
+
+---
+
+## Group mode — organizer draft review before sending
+Added: March 14, 2026
+
+### Behavior
+
+When an organizer creates a group event, they see the generated itinerary suggestions
+first — in draft state — before any group members are notified. This mirrors the existing
+1:1 flow where the organizer picks a suggestion and sends it to the attendee.
+
+**No member is notified until the organizer explicitly sends the itinerary.**
+
+The organizer can:
+- Review all suggestion tiles
+- Reroll individual cards
+- Edit the context prompt and regenerate
+- Select a suggestion to send to the group
+
+Once the organizer taps "Send to group", all members receive a Tier 1 notification:
+"[Organizer] wants to plan something — waiting on you."
+
+### State machine addition
+
+Add `organizer_draft` as a status on `group_itineraries`. This is the initial state
+when the itinerary is first created. Transition to `awaiting_responses` when the organizer
+sends it. The lock trigger only evaluates quorum when status is `awaiting_responses` or
+later — draft itineraries cannot accidentally lock.
+
+Proposed status sequence:
+`organizer_draft` → `awaiting_responses` → `locked` | `cancelled`
+
+The existing `itinerary_status` view logic will need to be extended to cover
+`group_itineraries` and include `organizer_draft` as a valid computed state.
+
+### UI
+
+Draft itineraries appear in the organizer's Events view with a "Draft — not sent yet" badge.
+They do not appear in any other member's Events view until the organizer sends them.
+
+### Cost/overhead
+
+No additional API calls — suggestion generation happens at creation time regardless.
+The only addition is the `organizer_draft` status and the "Send to group" action.
+This is a state machine change, not a new feature with external dependencies.
+
+---
+
+## Notifications table migration strategy
+Added: March 14, 2026
+
+The `notifications` table already exists in production with a slightly different shape than
+the group mode spec requires. This section defines how to evolve it safely.
+
+### Current state (live in Supabase)
+- `read` boolean (NOT NULL, default false) — used by existing unread count and bell logic
+- `ref_id` uuid (nullable) — single foreign key reference, not flexible enough for group payloads
+- Missing: `tier`, `data jsonb`, `read_at`
+
+### Migration approach: additive, not destructive
+
+Do NOT drop `read` or `ref_id`. Existing code reads them and removing either column requires
+a full audit and coordinated code change. Instead:
+
+1. Add `tier int NOT NULL DEFAULT 1` — all existing notifications are Tier 1 by default
+2. Add `data jsonb` — flexible payload for group context (itinerary_id, group_id, etc.)
+3. Add `read_at timestamptz` — new canonical read field
+
+4. Add a trigger: when `read_at` is set, auto-set `read = true`. This keeps both fields
+   in sync without touching any existing code that reads the `read` boolean.
+
+5. Future cleanup (after group mode ships): audit all references to `read`, migrate them
+   to `read_at IS NOT NULL`, then drop the `read` boolean and `ref_id` column in a
+   subsequent migration. Document this as a known cleanup item.
+
+### Why not migrate cleanly now
+
+Dropping `read` before auditing all references risks breaking the unread count badge,
+notification bell, and any polling logic that checks read state. The backward-compat
+approach carries zero risk and the cleanup can happen in a low-pressure window.
+
+---
+
+## Group formation — smart group save suggestion (future state)
+Added: March 14, 2026
+
+After a user creates an ad-hoc event (no saved group) with the same set of friends
+multiple times, the system can surface a gentle prompt: "It looks like you've scheduled
+with Alex and Harrison a few times — would you like to save them as a group?"
+
+This is a v2 feature. Implementation sketch for when it's ready:
+- Query `group_itineraries` for recurring organizer + attendee_statuses combinations
+  where no `group_id` is set
+- Threshold: 3+ events with the same member set, no saved group → trigger suggestion
+- Surface as a Tier 2 in-product notification (informational, not action-required)
+- Tapping it pre-fills the group creation flow with those members
+- Track `group_suggestion_dismissed` in PostHog so we can measure conversion
+
+Do not build this during the group mode sprint. Note it here so the data model supports
+it when ready — specifically, preserving `group_id` as nullable on `group_itineraries`
+is what makes this possible.

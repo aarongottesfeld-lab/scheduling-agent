@@ -5,6 +5,9 @@ Full product roadmap: audit schedule, release gating, and the complete feature b
 in priority order. For detailed design specs on each sprint (architecture, data model,
 prompt changes, UI), see SPRINT_SPECS.md.
 
+For monetization thinking (kept intentionally separate from the build), see MONETIZATION.md.
+For competitive positioning and long-term moat, see competitive/MOAT.md.
+
 ---
 
 ## Audit schedule
@@ -72,6 +75,19 @@ standard security/privacy/DR categories, Claude Code should evaluate:
     - If venue enrichment (Places API) is added, does it block the response or can it run
       async and be written to the DB in the background?
     - Are there any N+1 query patterns in the suggest or reroll routes?
+- Analytics instrumentation review: PostHog should be wired before real users arrive so
+  session data is captured from day one. Audit 3 should verify:
+    - PostHog SDK installed in client/ and initialized with project API key (env var, not
+      hardcoded — store as REACT_APP_POSTHOG_KEY)
+    - Key events captured: suggestion_generated, suggestion_accepted, reroll_triggered,
+      itinerary_locked, friend_added, onboarding_completed, notification_permission_granted
+    - User identity: posthog.identify() called after OAuth with supabaseId as the distinct_id
+      (no PII — no email or name sent to PostHog unless explicitly opted in)
+    - No sensitive data in event properties: dietary/mobility restrictions, location
+      coordinates, and calendar data must never appear in PostHog event payloads
+    - Privacy policy updated to disclose PostHog usage before first real user is onboarded
+    - Competitive analysis for alternative tools (Mixpanel, Amplitude, etc.) deferred to
+      post-launch — PostHog free tier is sufficient for early signal gathering
 
 **Audit 4 — Before App Store submission**
 Trigger: when React Native migration is complete and App Store submission is being
@@ -95,12 +111,41 @@ Revised sequence:
   1. ✅ Session persistence + OAuth fixes → DONE (March 12)
   2. ✅ Audit 2 security/privacy fixes → DONE (March 12)
   3. ✅ Vercel deploy → DONE (March 12)
-  4. Output quality → prompt engineering first (zero new infrastructure, highest ROI)  ← YOU ARE HERE
-  5. Location & Travel Mode
-  6. Group planning
-  7. Audit 3 → full pre-launch audit before real users
-  8. Share with real users
-  9. React Native / App Store → after feature set is proven on live users
+  4. ✅ Output quality → DONE (March 13)
+  5. ✅ Location & Travel Mode → DONE (March 13)
+  6. Group planning ← YOU ARE HERE (architecture scoping complete — schema next)
+  7. PostHog setup → instrument all onboarding flows and key events before real users arrive
+  8. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
+  9. New-user onboarding flow → must be done before sharing with anyone
+  10. Share with real users
+  11. React Native / App Store → after feature set is proven on live users
+
+### Step 7 — PostHog setup (do before Audit 3, not after)
+PostHog must be wired before real users arrive so session and funnel data is captured from
+day one. Setting it up after the fact means losing early signal that can't be reconstructed.
+
+**Tool decision: PostHog (confirmed)**
+PostHog cloud free tier covers all early-stage needs: event capture, funnels, session replay,
+feature flags. No sales cycle, self-serve setup, free up to 1M events/month. Amplitude
+(your current employer) is more powerful for advanced analysis but heavier to set up and
+overkill for this stage. Migration to Amplitude is straightforward later if needed — the
+event schema we're building is compatible.
+
+**Setup steps (a few hours, not a sprint):**
+1. Create PostHog account at posthog.com (cloud, no self-hosting needed)
+2. Add `REACT_APP_POSTHOG_KEY` and `REACT_APP_POSTHOG_HOST` to client/.env and Vercel env vars
+3. Install `posthog-js` in client/: `npm install posthog-js`
+4. Initialize in client/src/index.js — call `posthog.init()` on app load
+5. Call `posthog.identify(supabaseId)` after OAuth login completes — no PII, UUID only
+6. Wire the 5 core key events first: `suggestion_generated`, `itinerary_locked`,
+   `friend_added`, `onboarding_completed`, `reroll_triggered`
+7. Add onboarding step telemetry per the spec in SPRINT_SPECS.md
+8. Verify zero PII in event payloads before going live (Audit 3 will check this)
+
+**Privacy constraints (non-negotiable):**
+- `distinct_id` = supabaseId (UUID) only — never email or name
+- No dietary, mobility, location coordinates, or calendar data in any event property
+- Update privacy policy to disclose PostHog usage before first real user is onboarded
 
 ---
 
@@ -178,6 +223,26 @@ Revised sequence:
 - [ ] Add `event_source` field to suggestion JSONB: `ticketmaster | eventbrite | places | home`. Render 🎟 badge on event-anchored cards with deep link to purchase/info.
 - [ ] Privacy: event API keys in `server/.env` only. Only location + date range sent to event APIs — no user data.
 
+**Cultural moment scheduling (new sprint — do after live events)**
+> Full spec in SPRINT_SPECS.md. When a context prompt references a specific cultural event —
+> a sports game, TV premiere, award show, or movie release — itinerary dates should anchor
+> to when that event actually happens. "Watch the Knicks" should suggest plans around the
+> actual next game, not a random available slot.
+- [ ] Build `extractCulturalSignal(contextPrompt, activityPreferences)` helper — detection layer
+  returning `{ type, entity }` (sports / tv / film / awards / concert)
+- [ ] Add `fetchSportsSchedule(team, dateRangeStart, dateRangeEnd)` — ESPN unofficial API
+  (no key), covers NBA / MLB / NFL / NHL / MLS
+- [ ] Wire PRIORITY EVENT block into `buildSuggestPrompt` — higher priority than general events block
+- [ ] Add 🔴 Live badge to ItineraryView: `🔴 Live · Knicks tip-off 7:30 PM`
+  Same rendering pattern as 🎟 Ticketmaster and 🎾 activity badges
+- [ ] Extend `suggestion_telemetry` JSONB: cultural_signal_detected, cultural_signal_type,
+  cultural_event_found, cultural_anchor_used
+- [ ] TMDB API integration — TV premiere dates + film release dates (free tier, themoviedb.org)
+  Store as `TMDB_API_KEY`
+- [ ] Awards show constants file — Oscars / Grammys / Emmys / Golden Globes annual dates
+  (no API needed, simple lookup table updated annually)
+- [ ] Privacy: only team/show/movie names sent to external APIs — no user data ever
+
 **Route logic and sequencing**
 - [ ] Use Distance Matrix to validate venue sequence is geographically sensible (no zigzagging)
 - [ ] Build duration lookup table per venue type: coffee = 45 min, dinner = 90 min, bar = 60 min, show = 2.5 hrs
@@ -217,6 +282,43 @@ Revised sequence:
 **Cost estimates (paired with travel mode)**
 - [ ] Trip mode: detect when `travel_mode = 'travel'` — add flight/train/lodging cost estimates to suggestion output
 - [ ] See Cost Estimates section below for full spec
+
+### New-User Onboarding Flow
+> First-time users who skip profile setup produce worse itineraries and are more likely to churn. The onboarding flow gates the core experience on three things: profile customization, location, and notification permission. All three directly affect suggestion quality or engagement — this isn't vanity onboarding, it's functional.
+>
+> Build before sharing with real users. The flow should feel fast — 3 steps, no walls of text.
+
+**Step 1 — Profile setup**
+- [ ] Detect first login (no `bio`, `activity_preferences`, or `favorite_places` on profile row)
+- [ ] Redirect to `/onboarding` after OAuth if profile is incomplete
+- [ ] Step 1 UI: name (pre-filled from Google), activity preference pills (multi-select from a curated list), dietary restrictions (optional), bio (optional)
+- [ ] Persist to `profiles` table on continue — partial saves OK, user can skip optional fields
+
+**Step 2 — Location**
+- [ ] Request browser geolocation (`navigator.geolocation.getCurrentPosition`)
+- [ ] On grant: reverse-geocode via Geocoding API → populate `profiles.location` with neighborhood/city string
+- [ ] On deny: show manual text input fallback — "Where are you based? (e.g. Upper West Side, NYC)"
+- [ ] Location is required to proceed — without it, suggestions have no geographic anchor
+- [ ] Privacy note inline: "Used only to suggest nearby venues. Never shared with other users."
+
+**Step 3 — Notifications**
+- [ ] Request Web Push notification permission (`Notification.requestPermission()`)
+- [ ] On grant: register service worker push subscription, store endpoint in `push_subscriptions` table
+  - New table: `push_subscriptions` — id, user_id (FK → profiles), endpoint, keys (jsonb: p256dh + auth), created_at. RLS: users can only access their own subscriptions.
+- [ ] On deny: show non-blocking message — "You can enable notifications later in your browser settings"
+- [ ] Do not block progression on deny — notification permission is opt-in, not a gate
+- [ ] Privacy note inline: "Only used for itinerary updates and friend activity."
+
+**Completion + re-entry**
+- [ ] On completion: set `onboarding_completed_at` timestamp on profiles row (new column)
+- [ ] PostHog event: `onboarding_completed` with properties: `location_granted` (bool), `notification_granted` (bool), `preferences_count` (int)
+- [ ] If user navigates away mid-flow: resume from last completed step on next login
+- [ ] Skip link available on steps 1 and 3 (not step 2 — location is required)
+- [ ] Returning users who never completed onboarding: surface a non-intrusive banner on Home with "Finish setting up your profile →" link
+
+**DB changes**
+- [ ] Add `onboarding_completed_at` (timestamptz, nullable) to `profiles` table
+- [ ] Add `push_subscriptions` table with RLS (users can insert/select/delete their own rows only)
 
 ### Turn-based Iteration + Mutual Planning
 - [ ] Add `current_turn` field (organizer | attendee) to itineraries
@@ -395,6 +497,23 @@ Revisit after sharing with first users and collecting signal on what actually ma
 ### Duplicate title safety
 - [ ] Multiple itineraries/events with the same title must never conflict — verify all lookups, comparisons, and calendar event creation use itinerary UUID (not title) as the identifier throughout client and server
 - [ ] Google Calendar event creation should include the itinerary UUID in the event description as a reference anchor so external calendar events can always be traced back to the correct itinerary row
+
+### Location & Travel Mode — Steps 5–6
+- [ ] Create a local single-day event → render identical to before, no visible day header
+- [ ] Create a travel event with a destination set + multi-day → day headers appear in ItineraryView ("Day 1 — Arrival day" etc.)
+- [ ] Open an old itinerary (pre-migration) → renders correctly via backward-compat shim (flat stops array treated as days[0].stops)
+- [ ] Create a travel event with no destination → suggestions anchor to organizer's city, do not drift to a random location
+- [ ] Reroll a travel itinerary → confirm travel_mode, trip_duration_days, and destination all read from DB row (verify in Supabase, not echoed from client)
+- [ ] Multi-day itinerary → all stops stay within a single city/region across all days (no city-hopping between days)
+
+### Activity & hobby venue discovery
+- [ ] Create event with context prompt "let's play tennis" → 🎾 badge appears on at least one suggestion card
+- [ ] Create event with context prompt "pottery class" → 🏺 badge appears on at least one suggestion card
+- [ ] Create event with context prompt "escape room" → 🔐 badge appears on at least one suggestion card
+- [ ] Venue in activity-anchored card has "Reserve / Book →" link pointing to venue website
+- [ ] Activity-anchored suggestion anchors to a real named venue (not a generic Claude-hallucinated one)
+- [ ] Context prompt with no detectable activity type → no badge, normal suggestions generated
+- [ ] Telemetry: activity_type_detected and activity_venues_injected fields present on itinerary row
 
 ### Bug report button
 - [ ] Floating button (bottom corner, all pages, logged-in users only) opens a modal with category picker + freeform text field

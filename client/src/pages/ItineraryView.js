@@ -295,94 +295,118 @@ function SuggestionCard({
         {/* Expanded detail panel — CSS transition on maxHeight for smooth animation */}
         <div style={{ overflow: 'hidden', maxHeight: expanded ? '2000px' : '0', opacity: expanded ? 1 : 0, transition: 'max-height 0.3s ease, opacity 0.3s ease' }}>
           {narrative && <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>}
-          {suggestion.venues?.length > 0 && (() => {
-            // Find the first venue that was verified by Places API — the ⓘ explanation
-            // is shown only on that one venue to avoid clutter on cards with multiple stops.
-            const firstVerifiedIdx = suggestion.venues.findIndex(v => v.venue_verified === true);
+          {(() => {
+            // Step 5 backward-compat: new rows store venues in days[]; pre-migration rows use flat venues[].
+            // Use days[0].stops when present, fall back to suggestion.venues for pre-migration rows.
+            // Multi-day (days.length > 1): render each day with a header and its stops list.
+            // Single-day: render stops identically to the previous flat venues render (no header).
+            const isMultiDay = suggestion.days?.length > 1;
+            const allDays = isMultiDay
+              ? suggestion.days
+              : [{ day: 1, label: null, stops: suggestion.days?.[0]?.stops ?? suggestion.venues ?? [] }];
 
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
-                {suggestion.venues.map((v, i) => {
-                  // Prefer the Places-enriched address; fall back to Claude's address field.
-                  const displayAddress = v.formatted_address || v.address;
-                  // Only the first verified venue gets the ⓘ tooltip trigger.
-                  const isFirstVerified = i === firstVerifiedIdx;
+            // The ⓘ tooltip appears only on the globally first verified venue across all days.
+            // Flatten all stops to find that global first-verified index.
+            const allStops = allDays.flatMap(d => d.stops || []);
+            if (!allStops.length) return null;
+            const firstVerifiedStopRef = allStops.find(v => v.venue_verified === true);
 
-                  return (
-                    <div key={i}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <a
-                          href={`https://maps.google.com/?q=${encodeURIComponent(displayAddress || v.name)}`}
-                          target="_blank" rel="noopener noreferrer"
-                          style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}
-                        >{v.name}</a>
+            // Render a single stop (venue) — shared by both single-day and multi-day paths.
+            const renderStop = (v, i) => {
+              const displayAddress = v.formatted_address || v.address;
+              // The ⓘ trigger appears on the globally first verified venue per card.
+              const isFirstVerified = v === firstVerifiedStopRef;
+              return (
+                <div key={i}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <a
+                      href={`https://maps.google.com/?q=${encodeURIComponent(displayAddress || v.name)}`}
+                      target="_blank" rel="noopener noreferrer"
+                      style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}
+                    >{v.name}</a>
 
-                        {v.type && (
-                          <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>{v.type}</span>
+                    {v.type && (
+                      <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>{v.type}</span>
+                    )}
+
+                    {/* Verified badge — only shown when venue_verified is explicitly true.
+                        Venues without the field (pre-enrichment data) show nothing. */}
+                    {v.venue_verified === true && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.72rem', color: '#16a34a', fontWeight: 500 }}>
+                        ✓ Verified
+                        {/* ⓘ appears only on the globally first verified venue per card.
+                            Uses both onMouseEnter/Leave (desktop hover) and onClick (tap/click)
+                            so the tooltip is accessible on mobile without relying on CSS :hover. */}
+                        {isFirstVerified && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label="What does verified mean?"
+                            aria-expanded={tooltipOpen}
+                            style={{ cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1, marginLeft: 1 }}
+                            onMouseEnter={() => setTooltipOpen(true)}
+                            onMouseLeave={() => setTooltipOpen(false)}
+                            onClick={() => setTooltipOpen(o => !o)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTooltipOpen(o => !o); } }}
+                          >ⓘ</span>
                         )}
+                      </span>
+                    )}
 
-                        {/* Verified badge — only shown when venue_verified is explicitly true.
-                            Venues without the field (pre-enrichment data) show nothing. */}
-                        {v.venue_verified === true && (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.72rem', color: '#16a34a', fontWeight: 500 }}>
-                            ✓ Verified
-                            {/* ⓘ appears only on the first verified venue per card.
-                                Uses both onMouseEnter/Leave (desktop hover) and onClick (tap/click)
-                                so the tooltip is accessible on mobile without relying on CSS :hover. */}
-                            {isFirstVerified && (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                aria-label="What does verified mean?"
-                                aria-expanded={tooltipOpen}
-                                style={{ cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1, marginLeft: 1 }}
-                                onMouseEnter={() => setTooltipOpen(true)}
-                                onMouseLeave={() => setTooltipOpen(false)}
-                                onClick={() => setTooltipOpen(o => !o)}
-                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTooltipOpen(o => !o); } }}
-                              >ⓘ</span>
-                            )}
-                          </span>
-                        )}
+                    {/* Unverified note — shown when venue_verified is explicitly false
+                        AND the venue is not a home (home venues are intentionally skipped
+                        by the enrichment layer; showing "Unverified" there would be misleading). */}
+                    {v.venue_verified === false && v.type !== 'home' && (
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-3)', fontWeight: 400 }}>· unverified</span>
+                    )}
+                  </div>
 
-                        {/* Unverified note — shown when venue_verified is explicitly false
-                            AND the venue is not a home (home venues are intentionally skipped
-                            by the enrichment layer; showing "Unverified" there would be misleading). */}
-                        {v.venue_verified === false && v.type !== 'home' && (
-                          <span style={{ fontSize: '0.68rem', color: 'var(--text-3)', fontWeight: 400 }}>· unverified</span>
-                        )}
-                      </div>
-
-                      {/* Tooltip — rendered beneath the venue name row on the first verified venue.
-                          Exact copy is required: do not paraphrase the disclaimer. */}
-                      {isFirstVerified && tooltipOpen && (
-                        <div
-                          role="tooltip"
-                          style={{
-                            fontSize: '0.75rem',
-                            color: 'var(--text-2)',
-                            background: 'var(--surface-2)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 6,
-                            padding: '6px 10px',
-                            marginTop: 4,
-                            maxWidth: 300,
-                            lineHeight: 1.5,
-                          }}
-                        >
-                          <strong>"Venue verified"</strong> means we confirmed this location exists via Google Places. It does not guarantee current hours, availability, or quality.
-                        </div>
-                      )}
-
-                      {/* Address row — enriched address takes priority over Claude's address string */}
-                      {displayAddress && (
-                        <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>{displayAddress}</div>
-                      )}
+                  {/* Tooltip — rendered beneath the venue name row on the first verified venue.
+                      Exact copy is required: do not paraphrase the disclaimer. */}
+                  {isFirstVerified && tooltipOpen && (
+                    <div
+                      role="tooltip"
+                      style={{
+                        fontSize: '0.75rem',
+                        color: 'var(--text-2)',
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        padding: '6px 10px',
+                        marginTop: 4,
+                        maxWidth: 300,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <strong>"Venue verified"</strong> means we confirmed this location exists via Google Places. It does not guarantee current hours, availability, or quality.
                     </div>
-                  );
-                })}
-              </div>
-            );
+                  )}
+
+                  {/* Address row — enriched address takes priority over Claude's address string */}
+                  {displayAddress && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>{displayAddress}</div>
+                  )}
+                </div>
+              );
+            };
+
+            return allDays.map((day) => {
+              const stops = day.stops || [];
+              if (!stops.length) return null;
+              return (
+                <div key={day.day} style={{ marginTop: 12 }}>
+                  {/* Day header — only rendered for multi-day trips */}
+                  {isMultiDay && (
+                    <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-2)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      {day.label ? `Day ${day.day} — ${day.label}` : `Day ${day.day}`}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {stops.map((v, i) => renderStop(v, i))}
+                  </div>
+                </div>
+              );
+            });
           })()}
           {/* Ticket link — only shown for event-anchored suggestions with a URL */}
           {suggestion.event_url && (suggestion.event_source === 'ticketmaster' || suggestion.event_source === 'eventbrite') && (

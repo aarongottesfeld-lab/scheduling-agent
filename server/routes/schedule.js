@@ -453,7 +453,7 @@ function deriveGeoContext(userA, userB) {
  *      are generated when the intent is casual/vague, and venue-focused when specific.
  *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice' }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -526,6 +526,52 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Travel mode block (Step 6) ─────────────────────────────────────────────
+  // Injected after LOCATION ANCHORING. Local mode emits no block.
+  // Travel mode tells Claude this is a multi-day trip and enforces the geographic
+  // containment rule: all stops must stay within a single region across all days.
+  // Null destination falls back to organizer's profile location to prevent Claude
+  // from choosing an arbitrary anchor — the root cause of city-hopping itineraries.
+  let travelModeBlock = '';
+  if (travelMode === 'travel') {
+    const geoAnchor    = destination || orgLocation || attLocation || 'the destination';
+    const durationLabel = tripDurationDays === 1 ? '1-day'
+      : tripDurationDays === 2 ? 'weekend'
+      : `${tripDurationDays}-day`;
+    travelModeBlock =
+      `\nTRAVEL MODE: This is a ${durationLabel} trip. ` +
+      (destination
+        ? `The destination is: ${destination}. Generate all venue suggestions in or near ${destination}.`
+        : `No destination specified — anchor all venue suggestions near ${orgLocation || 'the organizer\'s location'}.`) +
+      `\nGEOGRAPHIC CONSTRAINT (strictly enforced): All stops across all days must remain within ` +
+      `a single city or metro region. Home base: ${geoAnchor}. ` +
+      `Do NOT suggest travel between different cities on different days. ` +
+      `Day trips must return to the home base — never treat a day trip as a pivot to a new region for subsequent days.` +
+      (tripDurationDays >= 2
+        ? ` A "Weekend" trip means 2 days in one place, not a multi-city tour. ` +
+          `Day 1 (arrival) and last day (departure): account for travel logistics — no full-day activity schedules on travel days unless the destination is driveable.`
+        : '');
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── Multi-day JSON schema (Step 5) ────────────────────────────────────────
+  // For multi-day trips (tripDurationDays > 1), Claude must return a days array
+  // per suggestion instead of a flat venues array. Single-day still uses venues
+  // (write side wraps to days structure before DB save; read side has backward-compat shim).
+  const isMultiDay = tripDurationDays > 1;
+  const venueSchema = isMultiDay
+    ? `"days": [
+        { "day": 1, "label": "Arrival day", "stops": [
+            { "name": "Venue Name", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State" }
+          ]
+        },
+        { "day": 2, "label": "Main day", "stops": [ ... ] }
+      ]`
+    : `"venues": [
+        { "name": "Venue Name or Person's Home", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State (omit for home)" }
+      ]`;
+  // ──────────────────────────────────────────────────────────────────────────
+
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
@@ -548,7 +594,7 @@ ${
   sharedInterests && sharedInterests.length > 0
     ? `\nInterests this pair has in common: ${sharedInterests.join(', ')}`
     : ''
-}${locationAnchorBlock}${
+}${locationAnchorBlock}${travelModeBlock}${
   // Past accepted plans for this pair — used as a taste signal so Claude can avoid
   // repeating plans they've already done and learn what kinds of things they enjoy.
   // Injected as context, not as a template: the instruction explicitly says not to repeat.
@@ -596,9 +642,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "durationMinutes": 120,
       "location_type": "home|venue|mixed",
       "neighborhood": "Neighborhood name",
-      "venues": [
-        { "name": "Venue Name or Person's Home", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State (omit for home)" }
-      ],
+      ${venueSchema},
       "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
       "estimatedTravelA": "15 min",
       "estimatedTravelB": "20 min",
@@ -689,7 +733,9 @@ async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit
       return [{
         title:        selected.title        || '',
         neighborhood: selected.neighborhood || '',
-        venues:       (selected.venues || []).map(v => v.name).filter(Boolean),
+        // Step 5 backward-compat: new rows store venues in days[0].stops; older rows use flat venues[].
+        // Use days[0].stops when present, fall back to venues for pre-migration rows.
+        venues:       (selected.days?.[0]?.stops ?? selected.venues ?? []).map(v => v.name).filter(Boolean),
         tags:         selected.tags         || [],
       }];
     });
@@ -814,13 +860,21 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference: rawLocationPreference } = req.body;
-    // Validate and default location_preference — only the three local-mode values are
-    // accepted here. 'destination' is reserved for the travel-mode sprint (steps 5–6).
-    const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice']);
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference: rawLocationPreference, travel_mode: rawTravelMode, trip_duration_days: rawTripDurationDays, destination: rawDestination } = req.body;
+    // Validate and default location_preference — all four values are valid now that
+    // travel mode (steps 5–6) ships. 'destination' is used when travel_mode='travel'.
+    const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice', 'destination']);
     const locationPreference = VALID_LOCATION_PREFS.has(rawLocationPreference)
       ? rawLocationPreference
       : 'system_choice';
+    // travel_mode: 'local' | 'travel'. Default 'local'.
+    const travelMode = rawTravelMode === 'travel' ? 'travel' : 'local';
+    // trip_duration_days: int 1–30. Default 1. Client sends 1 / 2 / 5 via the duration picker.
+    const tripDurationDays = Math.max(1, Math.min(30, parseInt(rawTripDurationDays) || 1));
+    // destination: free text. Only relevant when travel_mode='travel'. Sanitize and cap at 100 chars.
+    const destination = (travelMode === 'travel' && typeof rawDestination === 'string')
+      ? rawDestination.trim().slice(0, 100) || null
+      : null;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
@@ -1010,7 +1064,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1055,7 +1109,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           // Prepend the retry instruction before the normal context so Claude sees it first.
           contextPrompt: [retryInstruction, finalSuggestContext].filter(Boolean).join('\n'),
           maxTravelMinutes, eventTitle, durationMinutes,
-          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference,
+          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1125,6 +1179,17 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ── Step 5: wrap venues into days structure before DB save ────────────────
+    // Uniform schema: every suggestion has a days array regardless of trip length.
+    // Single-day (tripDurationDays === 1): Claude returned venues[], we wrap to days[0].
+    // Multi-day (tripDurationDays > 1): Claude returned days[] directly per the updated schema.
+    // Read side uses days[0].stops with flat-array fallback for pre-migration rows.
+    suggestions = suggestions.map(s => {
+      if (s.days && Array.isArray(s.days)) return s; // multi-day: Claude returned days[] directly
+      return { ...s, days: [{ day: 1, label: null, stops: s.venues || [] }] };
+    });
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Telemetry (suggest) ───────────────────────────────────────────────────
     // Stored as JSONB on the itinerary row so it can be queried in analytics
     // without touching the suggestions array. Fields are designed to be cheap
@@ -1177,6 +1242,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         context_prompt:      contextPrompt || null,
         event_title:         eventTitle?.trim() || null,
         location_preference: locationPreference,
+        travel_mode:         travelMode,
+        trip_duration_days:  tripDurationDays,
+        destination:         destination,
         suggestion_telemetry: telemetry,
       })
       .select('id')
@@ -1669,10 +1737,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       pastHistory:          rerollPastHistory,
       localEvents:          rerollLocalEvents,
       activityVenuesBlock:  rerollActivityVenuesBlock,
-      // location_preference is always read from the stored itinerary row — never from the
-      // request body. This prevents the client from overriding a preference that was
-      // set at creation time. Falls back to 'system_choice' for pre-migration rows.
-      locationPreference:   itin.location_preference || 'system_choice',
+      // location_preference, travel_mode, trip_duration_days, destination are always read
+      // from the stored itinerary row — never from the request body. This prevents the client
+      // from overriding preferences that were set at creation time. Falls back to safe defaults
+      // for pre-migration rows that lack these columns.
+      locationPreference:   itin.location_preference  || 'system_choice',
+      travelMode:           itin.travel_mode          || 'local',
+      tripDurationDays:     itin.trip_duration_days   || 1,
+      destination:          itin.destination          || null,
     });
 
     let newSuggestions;
@@ -1741,8 +1813,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           pastHistory:          rerollPastHistory,
           localEvents:          rerollLocalEvents,
           activityVenuesBlock:  rerollActivityVenuesBlock,
-          // location_preference read from DB row, same as the primary prompt — never from request body.
-          locationPreference:   itin.location_preference || 'system_choice',
+          // location_preference, travel_mode, trip_duration_days, destination — all read from DB row.
+          // Same source as the primary reroll prompt: never from request body.
+          locationPreference:   itin.location_preference  || 'system_choice',
+          travelMode:           itin.travel_mode          || 'local',
+          tripDurationDays:     itin.trip_duration_days   || 1,
+          destination:          itin.destination          || null,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1821,6 +1897,15 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     } catch (enrichErr) {
       console.error('[reroll] enrichVenues failed, continuing unenriched:', enrichErr.message);
     }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Step 5: wrap venues into days structure before DB save (reroll) ───────
+    // Same as the suggest route: normalize new suggestions to days[] schema.
+    // Preserves existing suggestions (pre-migration flat venues) unchanged.
+    newSuggestions = newSuggestions.map(s => {
+      if (s.days && Array.isArray(s.days)) return s;
+      return { ...s, days: [{ day: 1, label: null, stops: s.venues || [] }] };
+    });
     // ─────────────────────────────────────────────────────────────────────────
 
     // Single-card: swap only the targeted card, preserve the rest.
