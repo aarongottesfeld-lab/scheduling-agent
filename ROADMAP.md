@@ -116,7 +116,7 @@ Revised sequence:
   6. ✅ Group planning backend ← DONE (March 14) — migrations applied, routes complete
   7. ✅ Group planning frontend ← DONE (March 14) — Groups tab, voting UI, draft→send flow, deployed
   7a. ✅ Automated QA pass ← DONE (March 14) — 14/14 tests passing, classifyIntent bug fixed
-  8. PostHog setup → instrument all onboarding flows and key events before real users arrive
+  8. ✅ PostHog setup ← DONE (March 14) — SDK wired, identify() on auth, 4 core events instrumented
   9. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
   10. New-user onboarding flow → must be done before sharing with anyone
   11. Share with real users
