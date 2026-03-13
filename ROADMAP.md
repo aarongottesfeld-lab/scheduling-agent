@@ -114,11 +114,12 @@ Revised sequence:
   4. ✅ Output quality → DONE (March 13)
   5. ✅ Location & Travel Mode → DONE (March 13)
   6. ✅ Group planning backend ← DONE (March 14) — migrations applied, routes complete
-  7. Group planning frontend ← YOU ARE HERE (Groups tab, voting UI, draft→send flow)
+  7. ✅ Group planning frontend ← DONE (March 14) — Groups tab, voting UI, draft→send flow, deployed
+  7a. ✅ Automated QA pass ← DONE (March 14) — 14/14 tests passing, classifyIntent bug fixed
   8. PostHog setup → instrument all onboarding flows and key events before real users arrive
-  8. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
-  9. New-user onboarding flow → must be done before sharing with anyone
-  10. Share with real users
+  9. Audit 3 → full pre-launch audit before real users (includes PostHog instrumentation review)
+  10. New-user onboarding flow → must be done before sharing with anyone
+  11. Share with real users
   11. React Native / App Store → after feature set is proven on live users
 
 ### Step 7 — PostHog setup (do before Audit 3, not after)
