@@ -516,6 +516,49 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [ ] Context prompt with no detectable activity type → no badge, normal suggestions generated
 - [ ] Telemetry: activity_type_detected and activity_venues_injected fields present on itinerary row
 
+### Group mode backend — automated checks (Claude Code can run these without user input)
+
+- [ ] **[AUTO]** POST /groups with valid session → 201 with group id and name. Verify creator inserted into group_members with role='admin', status='active'. Claude Code seeds via service role and asserts.
+- [ ] **[AUTO]** POST /groups/:id/members beyond 15-member cap → 400. Claude Code seeds 15 active members and attempts a 16th invite, asserts error.
+- [ ] **[AUTO]** quorum_threshold is always present on group_itineraries INSERT — never NULL. Claude Code queries SELECT id FROM group_itineraries WHERE quorum_threshold IS NULL after seeding test rows.
+- [ ] **[AUTO]** Lock trigger fires: seed 'awaiting_responses' row with 3 attendees, quorum=2. Update 2 to 'accepted'. Assert itinerary_status='locked' and locked_at IS NOT NULL.
+- [ ] **[AUTO]** Lock trigger cancel path: all 3 decline. Assert itinerary_status='cancelled', locked_at IS NULL.
+- [ ] **[AUTO]** Lock trigger draft guard: seed 'organizer_draft' row. Update attendee_statuses. Assert status remains 'organizer_draft' — trigger must not fire.
+- [ ] **[AUTO]** nudges ON DELETE SET NULL: insert itinerary, insert nudge pointing to it, hard-delete itinerary. Assert nudge.itinerary_id is NULL (not deleted, no FK violation).
+- [ ] **[AUTO]** nudges mutual-exclusion CHECK: INSERT nudge with both itinerary_id and group_itinerary_id set. Assert Postgres rejects with CHECK violation.
+- [ ] **[AUTO]** notifications_read_sync trigger: INSERT notification with read=false. UPDATE read_at=now(). Assert read=true without explicitly setting it.
+- [ ] **[AUTO]** GIN index present: query pg_indexes and assert idx_group_itineraries_attendee_statuses exists.
+- [ ] **[AUTO]** PATCH /group-itineraries/:id/vote as non-member → 403.
+- [ ] **[AUTO]** POST /group-itineraries/:id/reroll as attendee (not organizer) → 403.
+- [ ] **[AUTO]** POST /group-itineraries/:id/send with empty suggestions array → 400.
+
+### Group mode backend — requires user input (test with dev switcher)
+
+- [ ] Full group creation: create group as jamiec → invite mrivera and tkim → switch to each, accept → verify 3 active members in group_members
+- [ ] Group event suggestion: as jamiec, create group itinerary → generate suggestions → verify suggestions array populated and event_title present in Supabase
+- [ ] Send and vote to lock: jamiec sends → mrivera accepts s1 → tkim accepts s1 → verify itinerary_status='locked', locked_at set
+- [ ] Tie-breaking schedule: 2-member group, tie_behavior='schedule', 1 accept / 1 decline (50/50) → locked
+- [ ] Decline path: all members decline → itinerary_status='cancelled'
+- [ ] Organizer reroll mid-voting: members have voted, organizer rerolls → attendee_statuses all reset to 'pending', new suggestions generated
+- [ ] Comment flow: mrivera adds comment on s1 → tkim sees it → 2000-char limit enforced in UI
+- [ ] 15-member cap enforced in UI: attempt 16th invite → 400 error surfaced to user
+- [ ] Ad-hoc group event (no saved group): create with attendee_user_ids but no group_id → group_id null in Supabase, itinerary works normally
+- [ ] Leave group: tkim leaves → status='left', tkim no longer receives notifications for that group
+
+### Venue enrichment + output quality — automated checks
+
+- [ ] **[AUTO]** enrichVenues() failure mode: mock Places API 500, assert suggestions returned unmodified with venue_verified=false, no crash.
+- [ ] **[AUTO]** No-duplicate-venues instruction present in prompt string: Claude Code calls buildSuggestPrompt and asserts the no-duplicate rule text is present.
+- [ ] **[AUTO]** deriveGeoContext() same-city users → single-city context. Claude Code calls directly with test profiles.
+- [ ] **[AUTO]** classifyIntent() edge cases: "watch the Knicks at my place" → home_likely. "watch the Knicks at MSG" → activity_specific. Empty string → ambiguous. Assert without API calls.
+- [ ] **[AUTO]** themeMatchesContextPrompt(): "golf weekend" context + suggestions with "golf" in title → true. No match → false.
+
+### Location & Travel mode — automated checks
+
+- [ ] **[AUTO]** Backward-compat shim: call ItineraryView render logic with flat stops array (pre-migration format). Assert no crash and output treated as days[0].stops.
+- [ ] **[AUTO]** Reroll reads travel fields from DB, not req.body: inspect reroll route handler and assert travel_mode, destination, trip_duration_days sourced from DB fetch, not request body.
+- [ ] **[AUTO]** Geographic containment rule in prompt: call buildSuggestPrompt with travel_mode='travel', assert GEOGRAPHIC CONTAINMENT RULE block present in returned prompt string.
+
 ### Bug report button
 - [ ] Floating button (bottom corner, all pages, logged-in users only) opens a modal with category picker + freeform text field
   - Categories: "Something broke" / "Wrong info in itinerary" / "Bad suggestion quality" / "Other"
