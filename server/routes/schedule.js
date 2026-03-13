@@ -22,6 +22,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
+const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -452,7 +453,7 @@ function deriveGeoContext(userA, userB) {
  *      are generated when the intent is casual/vague, and venue-focused when specific.
  *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [] }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -541,6 +542,11 @@ ${
       ).join('\n') +
       `\nIf you use an event as the anchor for a suggestion, set "event_source": "${localEvents[0]?.source || 'ticketmaster'}" (or "eventbrite" as appropriate) and include the ticket URL in a top-level "event_url" field on that suggestion object.`
     : ''
+}${
+  // Activity venues block — injected when the context prompt references a specific
+  // physical activity or hobby and real nearby venues were found via Places API.
+  // Claude should anchor at least one suggestion to these venues when present.
+  activityVenuesBlock || ''
 }
 AVAILABLE TIME WINDOWS (use one per suggestion):
 ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
@@ -577,7 +583,16 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "event_source": "ticketmaster|eventbrite|places|home",
       // Optional — deep link to the event's ticket/detail page. Only present when
       // event_source is 'ticketmaster' or 'eventbrite'. Rendered as "Get tickets →" in the UI.
-      "event_url": "https://..."
+      "event_url": "https://...",
+      // Optional — only set when this suggestion is anchored to a venue from the
+      // activity-specific Places API discovery pass. Omit for all other suggestions.
+      "activity_source": "places_activity",
+      // Optional — the detected activity type key (e.g. 'tennis', 'pottery', 'board_games').
+      // Only present alongside activity_source. Used for badge rendering in the UI.
+      "activity_type": "tennis",
+      // Optional — website URL for the activity venue, from the Places Details API.
+      // Rendered as "Reserve / Book →" in the UI. Omit if no website was found.
+      "venue_url": "https://..."
     }
   ]
 }
@@ -894,13 +909,17 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Best-effort: a failure returns [] and silently omits the history block.
     const pastHistory = await fetchAcceptedPairHistory(req.userId, targetUserId, supabase);
 
+    // Derive geo context once — reused by fetchLocalEvents, fetchActivityVenues,
+    // and the venue enrichment pass below. Avoids calling deriveGeoContext 3× per request.
+    const geoContext = deriveGeoContext(userA, userB);
+
     // Fetch live events for the requested city + date range from Ticketmaster and Eventbrite.
     // Interests are used only for local relevance scoring — never sent to external APIs.
     // Best-effort: a failure returns [] and silently omits the events block from the prompt.
     let localEvents = [];
     try {
       localEvents = await fetchLocalEvents(
-        deriveGeoContext(userA, userB),
+        geoContext,
         start,
         end,
         [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
@@ -909,11 +928,31 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('[suggest] fetchLocalEvents failed:', eventsErr.message);
     }
 
+    // Activity/hobby venue discovery — proactively fetch real nearby venues when
+    // the context prompt mentions a specific activity (tennis, pottery, escape room, etc.).
+    // Injects a verified venue list into the prompt so Claude anchors suggestions to
+    // real locations rather than hallucinating venue names.
+    // Best-effort: any failure leaves activityVenuesBlock as '' and generation continues.
+    let activityVenuesBlock = '';
+    let detectedActivityType = null;
+    let activityVenueCount = 0;
+    try {
+      detectedActivityType = extractActivityType(safeContext);
+      if (detectedActivityType) {
+        const cityContext    = extractCityFromGeoContext(geoContext);
+        const activityVenues = await fetchActivityVenues(detectedActivityType, cityContext);
+        activityVenueCount   = activityVenues.length;
+        activityVenuesBlock  = buildActivityVenuesBlock(detectedActivityType, activityVenues);
+      }
+    } catch (activityErr) {
+      console.error('[activityVenues] suggest route failed:', activityErr.message);
+    }
+
     // Call Claude
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -958,7 +997,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           // Prepend the retry instruction before the normal context so Claude sees it first.
           contextPrompt: [retryInstruction, finalSuggestContext].filter(Boolean).join('\n'),
           maxTravelMinutes, eventTitle, durationMinutes,
-          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory,
+          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1020,9 +1059,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // to each non-home venue. Best-effort — if enrichment throws or the API key
     // is missing, we log and continue with Claude's unenriched suggestions.
     try {
-      const geoCtx    = deriveGeoContext(userA, userB);
-      const cityCtx   = extractCityFromGeoContext(geoCtx);
-      suggestions = await enrichVenues(suggestions, cityCtx);
+      // geoContext was already computed above — reuse rather than calling deriveGeoContext again
+      const cityCtx = extractCityFromGeoContext(geoContext);
+      suggestions   = await enrichVenues(suggestions, cityCtx);
     } catch (enrichErr) {
       console.error('[suggest] enrichVenues failed, continuing unenriched:', enrichErr.message);
     }
@@ -1056,6 +1095,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       past_history_count: (pastHistory || []).length,
       // How many live events were injected into the prompt from Ticketmaster / Eventbrite.
       events_injected_count: localEvents.length,
+      // Which activity type was detected in the context prompt (null if none).
+      activity_type_detected: detectedActivityType || null,
+      // How many activity-specific venues were fetched and injected into the prompt.
+      activity_venues_injected: activityVenueCount,
     };
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1447,18 +1490,39 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Best-effort: a failure returns [] and silently omits the history block.
     const rerollPastHistory = await fetchAcceptedPairHistory(itin.organizer_id, itin.attendee_id, supabase);
 
+    // Derive geo context once — reused by fetchLocalEvents, fetchActivityVenues, and enrichment.
+    const rerollGeoContext = deriveGeoContext(userA, userB);
+
     // Fetch live events for the itinerary's original date range and city.
     // Best-effort: a failure returns [] and silently omits the events block.
     let rerollLocalEvents = [];
     try {
       rerollLocalEvents = await fetchLocalEvents(
-        deriveGeoContext(userA, userB),
+        rerollGeoContext,
         itin.date_range_start,
         itin.date_range_end,
         [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
       );
     } catch (eventsErr) {
       console.error('[reroll] fetchLocalEvents failed:', eventsErr.message);
+    }
+
+    // Activity/hobby venue discovery — same pattern as the suggest route.
+    // Uses the effective reroll context: fresh user input first, stored original as fallback.
+    let rerollActivityVenuesBlock = '';
+    let rerollDetectedActivityType = null;
+    let rerollActivityVenueCount = 0;
+    try {
+      const rerollContextForActivity = sanitizePromptInput(contextPrompt) || itin.context_prompt || '';
+      rerollDetectedActivityType = extractActivityType(rerollContextForActivity);
+      if (rerollDetectedActivityType) {
+        const cityContext    = extractCityFromGeoContext(rerollGeoContext);
+        const activityVenues = await fetchActivityVenues(rerollDetectedActivityType, cityContext);
+        rerollActivityVenueCount  = activityVenues.length;
+        rerollActivityVenuesBlock = buildActivityVenuesBlock(rerollDetectedActivityType, activityVenues);
+      }
+    } catch (activityErr) {
+      console.error('[activityVenues] reroll route failed:', activityErr.message);
     }
 
     // Extract first names for home-based agenda copy, same as in the suggest route.
@@ -1500,10 +1564,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       eventTitle: itin.event_title || null,
       durationMinutes: rerollDuration,
       sharedInterests: rerollSharedInterests,
-      organizerFirstName: rerollOrgFirst,
-      attendeeFirstName:  rerollAttFirst,
-      pastHistory: rerollPastHistory,
-      localEvents: rerollLocalEvents,
+      organizerFirstName:   rerollOrgFirst,
+      attendeeFirstName:    rerollAttFirst,
+      pastHistory:          rerollPastHistory,
+      localEvents:          rerollLocalEvents,
+      activityVenuesBlock:  rerollActivityVenuesBlock,
     });
 
     let newSuggestions;
@@ -1558,10 +1623,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           eventTitle: itin.event_title || null,
           durationMinutes: rerollDuration,
           sharedInterests: rerollSharedInterests,
-          organizerFirstName: rerollOrgFirst,
-          attendeeFirstName:  rerollAttFirst,
-          pastHistory: rerollPastHistory,
-          localEvents: rerollLocalEvents,
+          organizerFirstName:   rerollOrgFirst,
+          attendeeFirstName:    rerollAttFirst,
+          pastHistory:          rerollPastHistory,
+          localEvents:          rerollLocalEvents,
+          activityVenuesBlock:  rerollActivityVenuesBlock,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1617,8 +1683,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Enrich only the new suggestions Claude generated — existing preserved cards
     // were enriched (or skipped) when they were first created.
     try {
-      const rerollGeoCtx  = deriveGeoContext(userA, userB);
-      const rerollCityCtx = extractCityFromGeoContext(rerollGeoCtx);
+      // rerollGeoContext was already computed above — reuse rather than calling deriveGeoContext again
+      const rerollCityCtx = extractCityFromGeoContext(rerollGeoContext);
       newSuggestions = await enrichVenues(newSuggestions, rerollCityCtx);
     } catch (enrichErr) {
       console.error('[reroll] enrichVenues failed, continuing unenriched:', enrichErr.message);
@@ -1672,6 +1738,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       past_history_count: (rerollPastHistory || []).length,
       // How many live events were injected into the prompt from Ticketmaster / Eventbrite.
       events_injected_count: rerollLocalEvents.length,
+      // Which activity type was detected in the reroll context prompt (null if none).
+      activity_type_detected: rerollDetectedActivityType || null,
+      // How many activity-specific venues were fetched and injected into the prompt.
+      activity_venues_injected: rerollActivityVenueCount,
       // Which reroll number this was (1-indexed) — useful for analyzing
       // how quality changes with successive rerolls on the same itinerary.
       reroll_count: updatedRerollCount,

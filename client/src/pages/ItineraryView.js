@@ -110,6 +110,46 @@ function RerollModal({ initialContext, onClose, onSubmit, loading }) {
   );
 }
 
+// ── Activity emoji map ────────────────────────────────────────
+// Maps activity_type keys (from the server's ACTIVITY_CONFIG) to display emojis
+// for the activity badge and Reserve/Book link in SuggestionCard.
+// Falls back to 🏟 for any unrecognized activity type.
+const ACTIVITY_EMOJI = {
+  tennis:        '🎾',
+  golf:          '⛳',
+  pickleball:    '🏓',
+  bowling:       '🎳',
+  climbing:      '🧗',
+  ice_skating:   '⛸️',
+  mini_golf:     '⛳',
+  skiing:        '⛷️',
+  swimming:      '🏊',
+  basketball:    '🏀',
+  soccer:        '⚽',
+  baseball:      '⚾',
+  yoga:          '🧘',
+  cycling:       '🚴',
+  boxing:        '🥊',
+  pottery:       '🏺',
+  painting:      '🎨',
+  photography:   '📷',
+  drawing:       '✏️',
+  cooking:       '👨‍🍳',
+  dance:         '💃',
+  music_lessons: '🎵',
+  board_games:   '🎲',
+  escape_room:   '🔐',
+  karaoke:       '🎤',
+  arcade:        '🕹️',
+  axe_throwing:  '🪓',
+  trivia:        '🧠',
+  comedy:        '🎭',
+  hiking:        '🥾',
+  kayaking:      '🚣',
+  biking:        '🚵',
+  birdwatching:  '🦅',
+};
+
 /* ── SuggestionCard ─────────────────────────────────────────── */
 
 /**
@@ -203,6 +243,14 @@ function SuggestionCard({
             {(suggestion.event_source === 'ticketmaster' || suggestion.event_source === 'eventbrite') && (
               <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>
                 🎟 Live event
+              </span>
+            )}
+            {/* Activity badge — shown when Claude anchored this suggestion to a real venue
+                fetched via activity-specific Places API discovery. Emoji is mapped from
+                the activity_type field; falls back to 🏟 for unrecognized types. */}
+            {suggestion.activity_source === 'places_activity' && (
+              <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>
+                {ACTIVITY_EMOJI[suggestion.activity_type] || '🏟'} {suggestion.activity_type ? suggestion.activity_type.replace(/_/g, ' ') : 'activity'}
               </span>
             )}
           </div>
@@ -346,6 +394,19 @@ function SuggestionCard({
                 style={{ fontSize: '0.82rem', color: 'var(--brand)', fontWeight: 600, textDecoration: 'none' }}
               >
                 🎟 Get tickets →
+              </a>
+            </div>
+          )}
+          {/* Reserve/Book link — only shown for activity-anchored suggestions with a venue website */}
+          {suggestion.venue_url && suggestion.activity_source === 'places_activity' && (
+            <div style={{ marginTop: 10 }}>
+              <a
+                href={suggestion.venue_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: '0.82rem', color: 'var(--brand)', fontWeight: 600, textDecoration: 'none' }}
+              >
+                {ACTIVITY_EMOJI[suggestion.activity_type] || '🏟'} Reserve / Book →
               </a>
             </div>
           )}

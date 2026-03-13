@@ -1,4 +1,14 @@
-# Rendezvous — Output Quality & Location Roadmap
+# Rendezvous — Sprint Specs
+Last updated: March 13, 2026
+
+Detailed design specs for each feature sprint. Covers prompt engineering, venue quality,
+live events, activity/hobby venue discovery, group scheduling, location & travel mode,
+and timezone localization. This is the deep-dive companion to ROADMAP.md — where
+ROADMAP.md tracks what to build and when, this file explains how and why.
+
+---
+
+## Prompt engineering & output quality
 Added: March 12, 2026
 
 Core thesis: functional scaffolding is nearly done. The differentiator — and the driver of user
@@ -87,6 +97,94 @@ UI: 🎟 badge on event-anchored cards with deep link to purchase/info page
 ### Privacy
 - Event API keys in server/.env only, never client-exposed
 - Only location + date range sent to event APIs — no user data
+
+---
+
+## Activity-specific venue discovery
+Added: March 13, 2026
+
+Currently, venue discovery is passive — Claude names a venue from training data and the
+Places API verifies it after the fact. For activity-specific requests ("I want to play
+tennis", "let's golf", "pickleball?"), the right approach is proactive discovery: fetch
+real, relevant venues before Claude generates, then anchor suggestions to them.
+
+### How it differs from live events
+
+Live events are time-anchored (a specific concert on a specific night). Activity venues
+are persistent infrastructure — courts, courses, ranges, mountains. The fetch logic is
+simpler (no date-range filtering) but the intent classification is more nuanced.
+
+### Intent extraction
+
+`classifyIntent()` already returns `activity_specific`. A second pass — `extractActivityType()`
+— would identify which category:
+
+| User says | Activity type | Places API type |
+|---|---|---|
+| "play tennis" / "tennis courts" | tennis | `tennis_court` |
+| "golf" / "hit balls" / "driving range" | golf | `golf_course` |
+| "ski" / "skiing" / "hit the slopes" | skiing | `tourist_attraction` + keyword "ski" |
+| "pickleball" | pickleball | `sports_complex` + keyword "pickleball" |
+| "bowling" | bowling | `bowling_alley` |
+| "climbing" / "bouldering" | climbing | `sports_complex` + keyword "climbing" |
+| "ice skating" | ice_skating | `tourist_attraction` + keyword "skating" |
+| "mini golf" | mini_golf | `tourist_attraction` + keyword "mini golf" |
+
+### New utility: `server/utils/activityVenues.js`
+
+- `fetchActivityVenues(activityType, location)` — Places API Text Search with type hint +
+  keyword fallback for types without a clean Places category
+- Returns top 3–5 venues: name, address, rating, user_ratings_total, website URL, place_id
+- Module-scoped 60-min cache per `(activityType, location)` — same pattern as venueEnrichment.js
+- Best-effort: returns [] on any failure, never blocks generation
+
+### Claude prompt injection
+
+Fourth content source (alongside Ticketmaster, Places enrichment, and past history):
+
+```
+## NEARBY [TENNIS COURTS / GOLF COURSES / etc.]
+The following real venues exist near the users' location. If the context prompt requests
+this activity, anchor at least one suggestion to one of these venues.
+
+- Riverside Park Tennis Courts — 79th St & Riverside Dr, Manhattan (rated 4.3, 210 reviews)
+- Central Park Tennis Center — Mid-Park at 93rd St (rated 4.1, 340 reviews)
+- Crosstown Tennis — 14 W 31st St, Midtown (rated 4.0, 88 reviews)
+```
+
+### Suggestion JSONB
+
+Add `activity_source: 'places_activity'` alongside the existing `event_source` field for
+activity-anchored cards.
+
+### UI
+
+🎾 / ⛳ / ⛷️ / 🎳 activity-type badge on relevant cards. "Book / Reserve" link pointing to
+venue website (Google Maps fallback if no website). Same pattern as the 🎟 event badge.
+
+### Booking deep links (v2, not POC)
+
+Direct booking via GolfNow, CourtReserve, OpenTable, etc. is explicitly out of POC scope.
+For POC: deep link to the venue's website or Google Maps listing. The booking integration
+would follow the same pattern as the Ticketmaster ticket link but require per-platform API
+keys and auth flows.
+
+### Additional event sources (v2 roadmap)
+
+Eventbrite's public city-wide search endpoint has been deprecated since 2020 with no
+suitable replacement. Future event source candidates when APIs mature or new options emerge:
+
+| Source | Status | Notes |
+|---|---|---|
+| SeatGeek | Available | Concert and sports discovery, similar to Ticketmaster |
+| Bandsintown | Available | Music-focused, artist + venue tracking |
+| Meetup | Available | Community events, group activities |
+| Resident Advisor | No public API | Electronic music events |
+| NYC Open Data | Available | City-permitted events (free, but low coverage) |
+
+SeatGeek and Bandsintown are the highest-priority additions — both have free tiers and
+cover the same concert/sports use case as Ticketmaster, providing redundancy and broader
+coverage.
 
 ---
 
@@ -236,6 +334,106 @@ ItineraryView gets day-grouped rendering for multi-day trips.
 
 Steps 1–4 ship together as a cohesive local mode improvement.
 Steps 5–6 are travel mode proper and ship as a follow-on.
+
+---
+
+## Group scheduling
+Added: March 13, 2026
+
+Group scheduling is a meaningful scope expansion beyond 1:1. The core complexity is
+not technical — it's UX. Finding mutual availability across 8 people, and generating
+suggestions that work for a group with established context, requires a different mental
+model than two-person scheduling.
+
+### Groups as a first-class object
+
+Users should be able to create named groups, invite members, and reuse them across
+events. A group carries persistent context that informs itinerary generation:
+
+- **Group name** — e.g. "Book Club", "D&D Crew", "Work Lunches"
+- **Group description / default prompt** — free text describing what this group
+  typically does. This is the key differentiator:
+  - Book club: "We meet at a bar to discuss the current book and have drinks"
+  - D&D: "We play Dungeons and Dragons, usually at someone's place or online"
+  - Hiking crew: "We do a hike then grab food or drinks after"
+  This description injects directly into the Claude prompt as high-signal context,
+  replacing or supplementing the organizer's one-off context prompt.
+- **Members** — list of user IDs; each member must be a Rendezvous user
+- **Join/leave** — members can leave groups; organizer can add/remove members
+- **Activity history** — past accepted group itineraries feed back as taste signal,
+  same as the 1:1 accepted history pattern
+
+### Meeting modes
+
+Groups need flexible meeting modes since not all groups always meet in person:
+
+| Mode | Use case | Suggestion behavior |
+|---|---|---|
+| In-person | Book club, hiking, brunch | Normal venue-based itinerary |
+| At someone's home | D&D, game night, potluck | Home-based suggestions, rotating host logic |
+| Digital / online | Remote groups, gaming | No venue needed — suggest activity + platform |
+| Hybrid | Mixed preference groups | One suggestion per mode |
+
+The group description should be the primary signal for defaulting the mode, but
+the organizer can override per-event.
+
+### Availability logic changes
+
+1:1 freebusy logic finds one pair's mutual windows. Group scheduling must:
+- Fetch freebusy for N members concurrently
+- Find windows where ALL members are free (strict) OR where a quorum is free
+  (configurable — "at least 6 of 8")
+- Surface conflicts clearly: "3 members are busy Saturday afternoon"
+- Consider group size when sizing venue suggestions (a bar for 8 needs a reservation)
+
+### Data model additions
+
+New tables:
+
+**groups**
+- id, name, description (the default prompt), created_by, avatar_url, created_at
+
+**group_members**
+- id, group_id, user_id, role (organizer / member), joined_at, status (active / left)
+- RLS: members can view their own groups; organizer can add/remove members
+
+**group_itineraries** (or extend itineraries table)
+- Extend itineraries to support group_id in addition to organizer_id / attendee_id
+- attendee_statuses: JSONB map of user_id → status (pending/accepted/declined)
+- Lock condition: all active members accepted (or quorum threshold met)
+
+### UI additions
+
+- Groups tab in the app (alongside Friends)
+- "Create group" flow: name, description, invite members by username
+- Group detail page: members list, past itineraries, edit description
+- Create event from group: same flow as 1:1 but with group context pre-loaded
+- Per-event override: organizer can edit the default group prompt before generating
+- Group member status on itinerary: show who has accepted/declined
+
+### Claude prompt changes
+
+When generating for a group:
+- Inject group name + description as the primary context block
+- Inject group size so Claude can reason about venue capacity
+- Inject past group itinerary history (same pattern as 1:1 pair history)
+- For home-based groups: inject rotating host logic if known (store last_host on group)
+- For digital groups: suppress venue suggestions entirely, focus on activity + tools
+
+### Implementation sequencing
+
+1. DB schema: groups + group_members tables with RLS
+2. Groups UI: create, invite, join/leave
+3. Group event creation: availability logic for N members
+4. Claude prompt: group context injection
+5. Group itinerary UI: multi-member status tracking
+6. Lock logic: quorum vs all-members threshold (configurable per group)
+
+### What stays the same
+
+- Venue enrichment, activity detection, live events — all apply to groups unchanged
+- Calendar event creation fires once locked, same trigger pattern as 1:1
+- Re-roll and negotiation logic — same state machine, extended to N members
 
 ---
 

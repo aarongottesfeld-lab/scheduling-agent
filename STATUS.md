@@ -109,8 +109,9 @@ sequence is:
 See TODO.md for full task breakdown per phase.
 
 ## Roadmap documents
-- OUTPUT_QUALITY_ROADMAP.md — suggestion quality, venue filtering, route sequencing,
-  re-roll improvements, and full location/travel mode spec (added March 12)
+- ROADMAP.md — full product roadmap: audit schedule, release gating, feature backlog in priority order
+- SPRINT_SPECS.md — detailed design specs per sprint: prompt engineering, venue quality, live events,
+  activity/hobby venues, group scheduling, location & travel mode, timezone localization
 
 ## Next session (March 13, 2026)
 

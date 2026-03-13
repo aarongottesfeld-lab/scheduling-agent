@@ -1,4 +1,9 @@
-# Rendezvous — TODO
+# Rendezvous — Product Roadmap
+Last updated: March 13, 2026
+
+Full product roadmap: audit schedule, release gating, and the complete feature backlog
+in priority order. For detailed design specs on each sprint (architecture, data model,
+prompt changes, UI), see SPRINT_SPECS.md.
 
 ---
 
@@ -114,7 +119,7 @@ Revised sequence:
 ## 🟡 Feature Backlog (prioritized)
 
 ### Group Planning
-> ⚠️ BEFORE STARTING THIS SECTION: Bring TODO.md into a Claude.ai session and ask for a full scoping review. Group planning is the most complex item on the roadmap — new DB tables, three decision modes, vote logic, batched notifications, and significant ItineraryView changes. Confirm requirements, surface hidden complexity, and agree on implementation sequencing BEFORE handing anything to Claude Code.
+> ⚠️ BEFORE STARTING THIS SECTION: Bring ROADMAP.md and SPRINT_SPECS.md into a Claude.ai session and ask for a full scoping review. Group planning is the most complex item on the roadmap — new DB tables, three decision modes, vote logic, batched notifications, and significant ItineraryView changes. Confirm requirements, surface hidden complexity, and agree on implementation sequencing BEFORE handing anything to Claude Code.
 >
 > One organizer, N participants. Everyone sees the same suggestion set. Decision mode set at creation.
 - [ ] DB: add `itinerary_participants` table (id, itinerary_id, user_id, role, status, voted_for, joined_at, responded_at)
@@ -130,7 +135,7 @@ Revised sequence:
 - [ ] Notifications: batched responses (don't ping organizer once per person), deadline reminders to non-responders only, unresolved flag on deadline pass
 
 ### Output Quality & Suggestion Depth
-> Full spec in OUTPUT_QUALITY_ROADMAP.md. Suggestion and route quality are the primary retention driver — a technically working app with mediocre plans gets abandoned. Target: user reads the first suggestion on the first try and thinks "yeah, that actually sounds like us."
+> Full spec in SPRINT_SPECS.md. Suggestion and route quality are the primary retention driver — a technically working app with mediocre plans gets abandoned. Target: user reads the first suggestion on the first try and thinks "yeah, that actually sounds like us."
 
 **Prompt engineering (do first — no new infrastructure)**
 - [x] Audit `buildSuggestPrompt` in `schedule.js` — move `contextPrompt` earlier in the prompt, add explicit instruction that it overrides preference defaults. DONE.
@@ -190,7 +195,7 @@ Revised sequence:
 - [ ] After 2+ rerolls, proactively surface a prompt asking for more context
 
 ### Location Awareness & Travel Mode
-> Full spec in OUTPUT_QUALITY_ROADMAP.md. Core design principle: intent over distance sensing. 8 miles means different things in NYC vs Buffalo. The organizer declares the mode — the system never tries to infer it from coordinates.
+> Full spec in SPRINT_SPECS.md. Core design principle: intent over distance sensing. 8 miles means different things in NYC vs Buffalo. The organizer declares the mode — the system never tries to infer it from coordinates.
 
 **Local mode — where to meet (applies to all itineraries, not just long-distance)**
 - [ ] Add `location_preference` column to `itineraries` table — enum: `closer_to_organizer | closer_to_attendee | system_choice | destination`
