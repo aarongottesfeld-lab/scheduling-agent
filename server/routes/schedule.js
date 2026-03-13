@@ -852,9 +852,27 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    const today = new Date().toISOString().split('T')[0];
-    const start = startDate || today;
+    // tzOffset is derived from the client's Intl timezone, forwarded as timezoneOffsetMinutes
+    // (matches new Date().getTimezoneOffset() — positive = west of UTC, so EDT = 240).
+    // Computed early because it's needed for both the date-window floor and findFreeWindows.
+    const tzOffset = Number(timezoneOffsetMinutes) || 0;
+
+    // Date window floor: never suggest times in the past. Uses local time, not UTC —
+    // see timezone bug fix in reroll route.
+    // Convert "now" to the user's local date by subtracting the UTC offset.
+    // Without this, a UTC+10 user would receive a `today` anchored to UTC's yesterday.
+    const localNowMs = Date.now() - tzOffset * 60000;
+    const localToday = new Date(localNowMs).toISOString().split('T')[0];
+
+    // Clamp the effective start to the later of the organizer-chosen date and local today.
+    // This prevents generating windows for dates that are already fully in the past.
+    const start = (startDate && startDate >= localToday) ? startDate : localToday;
     const end   = endDate   || (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().split('T')[0]; })();
+
+    // now + 1 hour as an absolute UTC timestamp — used to strip individual windows
+    // whose start time has already passed (intra-day portion of the date floor).
+    // The +1h buffer gives the user time to actually act before the slot starts.
+    const windowFloorMs = Date.now() + 60 * 60 * 1000;
 
     // Load both profiles
     const [profileARes, profileBRes] = await Promise.all([
@@ -888,12 +906,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       });
     }
 
-    const tzOffset = Number(timezoneOffsetMinutes) || 0;
+    // tzOffset is now computed above, before start/end — moved to support the date floor.
 
     const durationMinutes = inferDurationMinutes(eventTitle, contextPrompt);
 
     // Windows where the attendee is free — used to detect if the attendee is simply unavailable.
-    const attendeeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes);
+    // Strip past windows immediately so the length === 0 check below reflects real future availability.
+    const attendeeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes)
+      .filter(w => new Date(w.start).getTime() >= windowFloorMs);
 
     // If the attendee is fully booked in the requested window, bail out early.
     if (attendeeWindows.length === 0) {
@@ -905,7 +925,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Windows where BOTH organizer and attendee are free — the ideal case.
     // If any exist, use them and skip the organizer entirely (their conflicts are excluded naturally).
     // Only warn the organizer if they are completely blocked across the entire window with no gaps.
-    const bothWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes);
+    // Strip past windows for the same reason as attendeeWindows above.
+    const bothWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, tzOffset, durationMinutes)
+      .filter(w => new Date(w.start).getTime() >= windowFloorMs);
     let freeWindows;
     if (bothWindows.length > 0) {
       // Organizer has some free time — use shared windows, no warning needed.
@@ -915,6 +937,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       return res.status(200).json({ needsConfirmation: true });
     } else {
       // Organizer confirmed override — schedule across their conflicts using attendee-only windows.
+      // attendeeWindows is already past-filtered above.
       freeWindows = attendeeWindows;
     }
 
@@ -1480,6 +1503,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     // Rebuild free windows from the original date range so reroll respects bounds.
     // Also clamp start to today — no point generating windows in the past.
+    //
+    // Date window floor: never suggest times in the past. Uses local time, not UTC —
+    // see timezone bug fix in reroll route.
+    // NOTE: unlike the suggest route, reroll has no access to the client's
+    // timezoneOffsetMinutes (it's not stored on the itinerary). todayStr therefore uses
+    // UTC, which is slightly wrong for users significantly east of UTC (e.g. UTC+10 may
+    // see "today" anchored to yesterday UTC). The windowFloorMs filter below is
+    // timezone-agnostic and catches the intra-day portion regardless of timezone.
     const todayStr   = new Date().toISOString().split('T')[0];
     const rawStart   = itin.date_range_start || todayStr;
     const rerollStart = rawStart < todayStr ? todayStr : rawStart;
@@ -1504,7 +1535,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       });
     }
     const rerollDuration = inferDurationMinutes(itin.event_title, itin.context_prompt);
-    const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' }, 20, 0, rerollDuration);
+
+    // now + 1 hour (UTC, timezone-agnostic) — strips individual windows that have
+    // already passed regardless of the user's local timezone. This is the intra-day
+    // portion of the date floor; the date-level portion is handled by rerollStart above.
+    const rerollWindowFloorMs = Date.now() + 60 * 60 * 1000;
+    const rerollWindows = findFreeWindows(rerollBusyA, rerollBusyB, rerollStart, rerollEnd, { type: itin.time_of_day || 'any' }, 20, 0, rerollDuration)
+      .filter(w => new Date(w.start).getTime() >= rerollWindowFloorMs);
 
     if (rerollWindows.length === 0) {
       return res.status(422).json({
