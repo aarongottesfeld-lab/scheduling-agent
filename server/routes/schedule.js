@@ -1435,11 +1435,27 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const itineraryId = req.params.id;
     if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
+    // DEBUG — log full request body to expose what the client is sending
+    console.log('[reroll:DEBUG] req.body:', JSON.stringify(req.body, null, 2));
+
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
     if (itin.locked_at) return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
     if ((itin.reroll_count || 0) >= 10) return res.status(400).json({ error: 'Max rerolls reached.' });
+
+    // DEBUG — log the itinerary row fields most likely to be affected by the location sprint
+    console.log('[reroll:DEBUG] itin key fields:', JSON.stringify({
+      organizer_id:      itin.organizer_id,
+      attendee_id:       itin.attendee_id,
+      location_preference: itin.location_preference,
+      travel_mode:       itin.travel_mode,
+      date_range_start:  itin.date_range_start,
+      date_range_end:    itin.date_range_end,
+      time_of_day:       itin.time_of_day,
+      reroll_count:      itin.reroll_count,
+      suggestions_count: (itin.suggestions || []).length,
+    }, null, 2));
 
     const { contextPrompt, feedback, replaceSuggestionId, rerollType = 'both', appendMode = false } = req.body;
     if (contextPrompt && typeof contextPrompt === 'string' && contextPrompt.length > MAX_CONTEXT) {
@@ -1611,6 +1627,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       locationPreference:   itin.location_preference || 'system_choice',
     });
 
+    // DEBUG — checkpoint: about to call Claude; buildSuggestPrompt completed without throwing
+    console.log('[reroll:DEBUG] buildSuggestPrompt OK. Calling Claude. isSingleCard:', isSingleCard, 'rerollType:', rerollType, 'locationPreference:', itin.location_preference || 'system_choice');
+
     let newSuggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1619,9 +1638,21 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         messages: [{ role: 'user', content: prompt }],
       });
       const raw = msg.content[0]?.text || '{}';
-      newSuggestions = JSON.parse(raw.replace(/```json|```/g, '').trim()).suggestions || [];
+      // DEBUG — log Claude's raw response so we can see what it returned before JSON parsing
+      console.log('[reroll:DEBUG] Claude raw response:', raw.slice(0, 800));
+      let parsed;
+      try {
+        parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      } catch (parseErr) {
+        // DEBUG — separate JSON parse errors from API errors so they're distinguishable in logs
+        console.error('[reroll:DEBUG] JSON parse failed:', parseErr.message, '| raw snippet:', raw.slice(0, 200));
+        throw parseErr;
+      }
+      newSuggestions = parsed.suggestions || [];
+      // DEBUG — confirm how many suggestions Claude returned before any filtering
+      console.log('[reroll:DEBUG] Claude returned', newSuggestions.length, 'suggestion(s)');
     } catch (e) {
-      console.error('Claude reroll error:', e.message);
+      console.error('[reroll:DEBUG] Claude call/parse error:', e.message, '\nStack:', e.stack);
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
 
@@ -1695,6 +1726,16 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    // DEBUG — log suggestion count before window filter and the first few window bounds
+    console.log('[reroll:DEBUG] Before window filter: newSuggestions.length =', newSuggestions.length,
+      '| rerollWindows.length =', rerollWindows.length,
+      '| first window:', rerollWindows[0] ? `${rerollWindows[0].start} – ${rerollWindows[0].end}` : 'NONE',
+      '| last window:', rerollWindows[rerollWindows.length - 1] ? `${rerollWindows[rerollWindows.length - 1].start} – ${rerollWindows[rerollWindows.length - 1].end}` : 'NONE',
+    );
+    if (newSuggestions.length > 0) {
+      console.log('[reroll:DEBUG] Suggestions before filter:', newSuggestions.map(s => ({ id: s.id, date: s.date, time: s.time, duration: s.durationMinutes })));
+    }
+
     // Filter out any suggestions whose date+time falls outside the computed free windows.
     // Reroll has no client-side tzOffset, so default to 0 (UTC). Reroll windows were built
     // with tzOffset=0, so suggestions generated from them will already be in UTC-relative slots.
@@ -1720,6 +1761,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       return inWindow;
     });
 
+    // DEBUG — log count after filter so we can see whether the filter is the culprit
+    console.log('[reroll:DEBUG] After window filter: newSuggestions.length =', newSuggestions.length);
+
     // ── Venue enrichment (reroll) ─────────────────────────────────────────────
     // Enrich only the new suggestions Claude generated — existing preserved cards
     // were enriched (or skipped) when they were first created.
@@ -1731,6 +1775,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('[reroll] enrichVenues failed, continuing unenriched:', enrichErr.message);
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    // DEBUG — final state before single-card guard that triggers the user-facing error
+    console.log('[reroll:DEBUG] Entering merge block. isSingleCard:', isSingleCard, '| newSuggestions.length:', newSuggestions.length, '| appendMode:', appendMode);
 
     // Single-card: swap only the targeted card, preserve the rest.
     // appendMode: tag new suggestions with fresh IDs and append to existing list.
