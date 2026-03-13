@@ -13,7 +13,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { getGroup, inviteMember, updateMembership, removeMember } from '../utils/api';
+import { getGroup, inviteMember, updateMembership, removeMember, updateGroup } from '../utils/api';
 import { getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
 
@@ -46,6 +46,14 @@ export default function GroupDetail() {
 
   // Per-member spinner: stores the userId currently being acted on
   const [busyUser, setBusyUser] = useState(null);
+
+  // Edit group modal state (admin only)
+  const [showEdit,      setShowEdit]      = useState(false);
+  const [editName,      setEditName]      = useState('');
+  const [editDesc,      setEditDesc]      = useState('');
+  const [editActivities, setEditActivities] = useState(''); // comma-separated
+  const [saving,        setSaving]        = useState(false);
+  const [editError,     setEditError]     = useState('');
 
   /** Fetch (or re-fetch) the group and refresh component state. */
   const load = useCallback(async () => {
@@ -154,6 +162,36 @@ export default function GroupDetail() {
     }
   }
 
+  /** Open the edit modal pre-populated with current group values. */
+  function openEdit() {
+    setEditName(group.name || '');
+    setEditDesc(group.description || '');
+    setEditActivities((group.default_activities || []).join(', '));
+    setEditError('');
+    setShowEdit(true);
+  }
+
+  /** Save group edits — name, description, default_activities. */
+  async function handleSaveEdit() {
+    if (!editName.trim()) { setEditError('Group name is required.'); return; }
+    setSaving(true);
+    setEditError('');
+    try {
+      const activities = editActivities.split(',').map(a => a.trim()).filter(Boolean);
+      await updateGroup(id, {
+        name: editName.trim(),
+        description: editDesc.trim() || null,
+        defaultActivities: activities,
+      });
+      setShowEdit(false);
+      load(); // refresh to show updated values
+    } catch (e) {
+      setEditError(e.message || 'Could not save changes.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // ── Loading / error gates ──────────────────────────────────────────────────
 
   if (loading) {
@@ -258,17 +296,106 @@ export default function GroupDetail() {
                 {pendingMembers.length > 0 && `, ${pendingMembers.length} pending`}
               </p>
             </div>
-            {/* Plan Event navigates to NewGroupEvent with this group pre-selected via URL param */}
-            {myStatus === 'active' && (
-              <button
-                className="btn btn--primary btn--sm"
-                style={{ marginLeft: 12, flexShrink: 0 }}
-                onClick={() => navigate(`/groups/${id}/new-event`)}
-              >
-                Plan Event
-              </button>
-            )}
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, marginLeft: 12 }}>
+              {/* Edit button — admin only */}
+              {myRole === 'admin' && myStatus === 'active' && (
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={openEdit}
+                >
+                  Edit
+                </button>
+              )}
+              {/* Plan Event navigates to NewGroupEvent with this group pre-selected via URL param */}
+              {myStatus === 'active' && (
+                <button
+                  className="btn btn--primary btn--sm"
+                  onClick={() => navigate(`/groups/${id}/new-event`)}
+                >
+                  Plan Event
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Edit group modal — admin only */}
+          {showEdit && (
+            <div style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 100,
+            }}>
+              <div className="card" style={{ width: '100%', maxWidth: 480, padding: 28, margin: 16 }}>
+                <h2 style={{ margin: '0 0 20px', fontSize: '1.1rem', fontWeight: 700 }}>Edit Group</h2>
+
+                {editError && (
+                  <div className="alert alert--error" style={{ marginBottom: 14, fontSize: '0.87rem' }}>
+                    {editError}
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="edit-name">Group name <span style={{ color: 'var(--danger)' }}>*</span></label>
+                  <input
+                    id="edit-name"
+                    type="text"
+                    className="form-control"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    disabled={saving}
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="edit-desc">Description</label>
+                  <textarea
+                    id="edit-desc"
+                    className="form-control"
+                    value={editDesc}
+                    onChange={e => setEditDesc(e.target.value)}
+                    disabled={saving}
+                    maxLength={1000}
+                    rows={3}
+                    style={{ resize: 'vertical' }}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="edit-activities">Default activities</label>
+                  <input
+                    id="edit-activities"
+                    type="text"
+                    className="form-control"
+                    value={editActivities}
+                    onChange={e => setEditActivities(e.target.value)}
+                    disabled={saving}
+                    placeholder="e.g. hiking, board games, trying new restaurants"
+                  />
+                  <p style={{ margin: '5px 0 0', fontSize: '0.8rem', color: 'var(--text-3)' }}>
+                    What does this group usually do together? Separate with commas.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 24 }}>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => setShowEdit(false)}
+                    disabled={saving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn--primary btn--sm"
+                    onClick={handleSaveEdit}
+                    disabled={saving}
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Admin invite form — only visible to active admins */}
           {myRole === 'admin' && myStatus === 'active' && (

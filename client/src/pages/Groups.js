@@ -30,6 +30,7 @@ export default function Groups() {
   const [showCreate,   setShowCreate]   = useState(false);
   const [newName,      setNewName]      = useState('');
   const [newDesc,      setNewDesc]      = useState('');
+  const [newActivities, setNewActivities] = useState(''); // comma-separated input
   const [creating,     setCreating]     = useState(false);
   const [createError,  setCreateError]  = useState('');
 
@@ -57,7 +58,8 @@ export default function Groups() {
     setCreating(true);
     setCreateError('');
     try {
-      const data = await createGroup(newName.trim(), newDesc.trim() || null);
+      const activities = newActivities.split(',').map(a => a.trim()).filter(Boolean);
+      const data = await createGroup(newName.trim(), newDesc.trim() || null, activities);
       navigate(`/groups/${data.group.id}`);
     } catch (e) {
       setCreateError(e.message || 'Could not create group.');
@@ -70,6 +72,7 @@ export default function Groups() {
     setShowCreate(s => !s);
     setNewName('');
     setNewDesc('');
+    setNewActivities('');
     setCreateError('');
   }
 
@@ -126,9 +129,25 @@ export default function Groups() {
                     onChange={e => setNewDesc(e.target.value)}
                     maxLength={1000}
                     rows={2}
-                    placeholder="What's this group about? Claude uses this when planning."
+                    placeholder="What's this group about? e.g. Friends from college"
                   />
-                  <p className="form-hint">Claude reads this as context when generating suggestions.</p>
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="group-activities">
+                    Default activities <span className="optional">optional</span>
+                  </label>
+                  <input
+                    id="group-activities"
+                    type="text"
+                    className="form-control"
+                    value={newActivities}
+                    onChange={e => setNewActivities(e.target.value)}
+                    maxLength={500}
+                    placeholder="e.g. golf, rooftop bars, bowling, brunch"
+                  />
+                  <p className="form-hint">
+                    What does this group usually do together? Separate with commas. Claude uses this as a fallback when no specific activity is requested.
+                  </p>
                 </div>
                 <button type="submit" className="btn btn--primary" disabled={creating}>
                   {creating ? 'Creating…' : 'Create Group'}

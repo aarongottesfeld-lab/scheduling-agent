@@ -440,27 +440,36 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
   // Fetch past group history as taste signal.
   const pastHistory = await fetchGroupHistory(itin.group_id, supabase);
 
-  // Fetch group details (name, description) if group_id is set.
+  // Fetch group details (name, description, default_activities) if group_id is set.
   let groupName = 'Group';
   let groupDescription = '';
+  let groupDefaultActivities = [];
   if (itin.group_id) {
     const { data: grp } = await supabase
       .from('groups')
-      .select('name, description')
+      .select('name, description, default_activities')
       .eq('id', itin.group_id)
       .maybeSingle();
     if (grp) {
-      groupName        = grp.name || 'Group';
-      groupDescription = grp.description || '';
+      groupName              = grp.name || 'Group';
+      groupDescription       = grp.description || '';
+      // Group's default activities — used as AI fallback context when no event-specific
+      // prompt is provided. Only applied when context_prompt is absent.
+      groupDefaultActivities = Array.isArray(grp.default_activities) ? grp.default_activities : [];
     }
   }
+
+  // Use the event-specific context prompt if set; fall back to the group's default
+  // activities as a soft signal so Claude has something to anchor on.
+  const effectiveContext = safeContext ||
+    (groupDefaultActivities.length ? groupDefaultActivities.join(', ') : '');
 
   const prompt = buildGroupSuggestPrompt({
     groupName,
     groupDescription,
     members,
     freeWindows,
-    contextPrompt:    safeContext,
+    contextPrompt:    effectiveContext,
     eventTitle:       itin.event_title,
     maxTravelMinutes: itin.max_travel_minutes,
     durationMinutes,

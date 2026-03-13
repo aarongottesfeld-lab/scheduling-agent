@@ -68,9 +68,9 @@ export async function confirmSuggestion(itineraryId, suggestionId) {
 
 // ── Groups ─────────────────────────────────────────────────────────────────
 
-/** Create a new group. Returns { group: { id, name, description, created_by, created_at } }. */
-export async function createGroup(name, description) {
-  const res = await client.post('/groups', { name, description });
+/** Create a new group. Returns { group: { id, name, description, default_activities, created_by, created_at } }. */
+export async function createGroup(name, description, defaultActivities = []) {
+  const res = await client.post('/groups', { name, description, default_activities: defaultActivities });
   return res.data;
 }
 
@@ -83,6 +83,19 @@ export async function getGroups() {
 /** Get group detail + member list. Returns { group, my_role, members }. */
 export async function getGroup(groupId) {
   const res = await client.get(`/groups/${groupId}`);
+  return res.data;
+}
+
+/**
+ * Admin-only: update group name, description, and/or default_activities.
+ * Returns { group: updated row }.
+ */
+export async function updateGroup(groupId, { name, description, defaultActivities }) {
+  const payload = {};
+  if (name !== undefined) payload.name = name;
+  if (description !== undefined) payload.description = description;
+  if (defaultActivities !== undefined) payload.default_activities = defaultActivities;
+  const res = await client.patch(`/groups/${groupId}`, payload);
   return res.data;
 }
 

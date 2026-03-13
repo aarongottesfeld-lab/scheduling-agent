@@ -3,6 +3,7 @@
 // POST   /groups                          — create a group
 // GET    /groups                          — list groups the caller belongs to (active)
 // GET    /groups/:id                      — get a group with its member list
+// PATCH  /groups/:id                      — update group details (admin only: name, description, default_activities)
 // POST   /groups/:id/members              — invite a member (admin only)
 // PATCH  /groups/:id/members/:userId      — update membership status (accept/decline/leave)
 // DELETE /groups/:id/members/:userId      — remove a member (admin only)
@@ -54,10 +55,13 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
 
     const cleanName = name.trim().slice(0, 100);
     const cleanDesc = typeof description === 'string' ? description.trim().slice(0, 1000) : null;
+    const cleanActivities = Array.isArray(req.body.default_activities)
+      ? req.body.default_activities.map(a => String(a).trim()).filter(Boolean).slice(0, 20)
+      : [];
 
     const { data: group, error: groupErr } = await supabase
       .from('groups')
-      .insert({ name: cleanName, description: cleanDesc, created_by: req.userId })
+      .insert({ name: cleanName, description: cleanDesc, default_activities: cleanActivities, created_by: req.userId })
       .select('id, name, description, created_by, created_at')
       .single();
 
@@ -110,8 +114,7 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
     const [groupsRes, countsRes] = await Promise.all([
       supabase
         .from('groups')
-        .select('id, name, description, created_by, created_at')
-        .in('id', groupIds)
+        .select('id, name, description, default_activities, created_by, created_at')
         .order('created_at', { ascending: false }),
       supabase
         .from('group_members')
@@ -165,7 +168,7 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
     const [groupRes, membersRes] = await Promise.all([
       supabase
         .from('groups')
-        .select('id, name, description, created_by, created_at, updated_at')
+        .select('id, name, description, default_activities, created_by, created_at, updated_at')
         .eq('id', req.params.id)
         .single(),
       supabase
@@ -207,6 +210,71 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
           : null,
       })),
     });
+  });
+
+  /* ── PATCH /groups/:id ───────────────────────────────────────────────── */
+  // Updates group name, description, and/or default_activities. Admin-only.
+  // default_activities is an array of activity strings (e.g. ["golf", "rooftop bars"]).
+  // These are injected into the AI prompt as a fallback context signal when the
+  // organizer provides no event-specific context_prompt.
+  app.patch('/groups/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid group ID.' });
+    }
+
+    // Verify caller is an active admin.
+    const { data: adminCheck } = await supabase
+      .from('group_members')
+      .select('role, status')
+      .eq('group_id', req.params.id)
+      .eq('user_id', req.userId)
+      .maybeSingle();
+
+    if (!adminCheck || adminCheck.role !== 'admin' || adminCheck.status !== 'active') {
+      return res.status(403).json({ error: 'Only group admins can edit group details.' });
+    }
+
+    const updates = {};
+
+    if (req.body.name !== undefined) {
+      const name = String(req.body.name).trim().slice(0, 100);
+      if (!name) return res.status(400).json({ error: 'name cannot be empty.' });
+      updates.name = name;
+    }
+
+    if (req.body.description !== undefined) {
+      updates.description = typeof req.body.description === 'string'
+        ? req.body.description.trim().slice(0, 1000)
+        : null;
+    }
+
+    if (req.body.default_activities !== undefined) {
+      if (!Array.isArray(req.body.default_activities)) {
+        return res.status(400).json({ error: 'default_activities must be an array.' });
+      }
+      updates.default_activities = req.body.default_activities
+        .map(a => String(a).trim())
+        .filter(Boolean)
+        .slice(0, 20); // cap at 20 items
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No updatable fields provided.' });
+    }
+
+    const { data: updated, error: updateErr } = await supabase
+      .from('groups')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select('id, name, description, default_activities, created_by, created_at, updated_at')
+      .single();
+
+    if (updateErr) {
+      console.error('[groups] update error:', updateErr.message);
+      return res.status(500).json({ error: 'Could not update group.' });
+    }
+
+    res.json({ group: updated });
   });
 
   /* ── POST /groups/:id/members ─────────────────────────────────────────── */
