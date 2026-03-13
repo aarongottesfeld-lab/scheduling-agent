@@ -242,7 +242,37 @@ function fmtWindowDate(d) {
   return `${weekday}, ${year}-${month}-${day} (${monthName} ${d.getUTCDate()}), ${h}:${String(m).padStart(2,'0')} ${ampm}`;
 }
 
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes }) {
+/**
+ * Derive a human-readable city/area string from two location strings.
+ * Used to give Claude geographic context without hardcoding NYC.
+ * Returns empty string if neither user has a location set.
+ */
+function deriveGeoContext(userA, userB) {
+  const locA = userA.location?.trim();
+  const locB = userB.location?.trim();
+  if (!locA && !locB) return ''; // no locations — omit geographic anchoring entirely
+  if (locA && locB && locA !== locB) {
+    return `${userA.name} is based in ${locA}; ${userB.name} is based in ${locB}.`;
+  }
+  return `Both users are based in ${locA || locB}.`;
+}
+
+/**
+ * Build the Claude prompt for generating itinerary suggestions.
+ *
+ * Parameter additions vs. original:
+ *   sharedInterests {string[]} — interests tagged on this friendship (from friend_annotations);
+ *                               injected explicitly so Claude can weight them highly.
+ *
+ * Structural changes:
+ *   1. contextPrompt moved to top with "MOST IMPORTANT" framing so Claude treats it as
+ *      the primary constraint before reading any profile data.
+ *   2. sharedInterests injected as an explicit line if present.
+ *   3. Dietary and mobility restrictions promoted from soft suggestions to hard NEVER constraints.
+ *   4. NYC / Manhattan / New York hardcoding removed; geographic context derived from user
+ *      profile locations instead. If locations are absent, city anchoring is omitted.
+ */
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -252,29 +282,58 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
     return `- ${fmtWindowDate(s)} – ${eh}:${String(em2).padStart(2,'0')} ${eampm}`;
   }).join('\n');
 
-  return `You are Rendezvous, a NYC activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
+  // Geographic context derived from user profiles — no hardcoded city.
+  // If neither user has a location, this is empty and the geo line is omitted.
+  const geoContext = deriveGeoContext(userA, userB);
+
+  // Dietary restrictions as hard NEVER constraints, one per person.
+  // Filtered to non-empty, non-"none" values so we only emit real restrictions.
+  const dietaryA = (userA.dietary_restrictions || []).filter(r => r && r !== 'none');
+  const dietaryB = (userB.dietary_restrictions || []).filter(r => r && r !== 'none');
+  const dietaryConstraints = [
+    ...(dietaryA.length ? [`NEVER suggest any venue that cannot fully accommodate ${userA.name}'s dietary restrictions: ${dietaryA.join(', ')}. This is a hard requirement, not a preference.`] : []),
+    ...(dietaryB.length ? [`NEVER suggest any venue that cannot fully accommodate ${userB.name}'s dietary restrictions: ${dietaryB.join(', ')}. This is a hard requirement, not a preference.`] : []),
+  ].join('\n');
+
+  // Mobility restrictions as hard NEVER constraints, same pattern as dietary above.
+  const mobilityA = (userA.mobility_restrictions || []).filter(r => r && r !== 'none');
+  const mobilityB = (userB.mobility_restrictions || []).filter(r => r && r !== 'none');
+  const mobilityConstraints = [
+    ...(mobilityA.length ? [`NEVER suggest venues that do not meet ${userA.name}'s accessibility needs: ${mobilityA.join(', ')}. This is a hard requirement, not a preference.`] : []),
+    ...(mobilityB.length ? [`NEVER suggest venues that do not meet ${userB.name}'s accessibility needs: ${mobilityB.join(', ')}. This is a hard requirement, not a preference.`] : []),
+  ].join('\n');
+
+  const hardConstraints = [dietaryConstraints, mobilityConstraints].filter(Boolean).join('\n');
+
+  return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
+${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
 
+${contextPrompt
+  // contextPrompt is placed first and framed as the primary constraint so Claude
+  // treats the user's explicit intent above all profile-derived preferences.
+  ? `MOST IMPORTANT — treat this as the primary constraint above all other preferences: ${contextPrompt}\n`
+  : ''}
 PERSON A: ${userA.name}
-Location: ${userA.location || 'NYC'}
-Into: ${(userA.activity_preferences || []).join(', ') || 'general NYC activities'}
-Dietary: ${(userA.dietary_restrictions || []).join(', ') || 'none'}
-Mobility: ${(userA.mobility_restrictions || []).join(', ') || 'none'}
+Location: ${userA.location || 'not specified'}
+Into: ${(userA.activity_preferences || []).join(', ') || 'general activities'}
 
 PERSON B: ${userB.name}
-Location: ${userB.location || 'NYC'}
-Into: ${(userB.activity_preferences || []).join(', ') || 'general NYC activities'}
-Dietary: ${(userB.dietary_restrictions || []).join(', ') || 'none'}
-Mobility: ${(userB.mobility_restrictions || []).join(', ') || 'none'}
-
+Location: ${userB.location || 'not specified'}
+Into: ${(userB.activity_preferences || []).join(', ') || 'general activities'}
+${
+  // Inject shared interests explicitly — these are interests the organizer has tagged on
+  // this specific friendship and should be weighted more heavily than general preferences.
+  sharedInterests && sharedInterests.length > 0
+    ? `\nInterests this pair has in common: ${sharedInterests.join(', ')}`
+    : ''
+}
 AVAILABLE TIME WINDOWS (use one per suggestion):
 ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
 EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
-
-${contextPrompt ? `ADDITIONAL CONTEXT FROM USER: ${contextPrompt}` : ''}
-
+${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}
 Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 {
   "suggestions": [
@@ -284,9 +343,9 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "date": "YYYY-MM-DD",
       "time": "7:00 PM",
       "durationMinutes": 120,
-      "neighborhood": "West Village",
+      "neighborhood": "Neighborhood name",
       "venues": [
-        { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, New York, NY" }
+        { "name": "Venue Name", "type": "bar|restaurant|activity|venue", "address": "123 Main St, City, State" }
       ],
       "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
       "estimatedTravelA": "15 min",
@@ -297,15 +356,13 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 }
 
 Rules:
-- All venues must be real, currently open NYC establishments
-- Respect dietary restrictions — if someone is vegetarian, all dining venues must have strong veggie options
-- Respect mobility restrictions
+- All venues must be real, currently open establishments
 - Spread suggestions across different vibes (e.g. chill, active, social)
 - Use different time windows for each suggestion when possible
-- Venue variety: do not default to the most popular or highest-rated spots. NYC has thousands of good options. Mix well-known places with neighborhood spots and less obvious choices. Avoid recommending the same venues repeatedly across sessions.
+- Venue variety: do not default to the most popular or highest-rated spots. Mix well-known places with neighborhood spots and less obvious choices. Avoid recommending the same venues repeatedly across sessions.
 - Free and public options are valid and often preferred: parks, public courts, piers, plazas, beaches, trails, free museum nights, open-air markets. If the activity is naturally free (spikeball, frisbee, picnic, running), suggest a specific named park or public space — not a paid venue. Do not bias toward paid experiences.
 - Cost range across suggestions: aim for a mix — at least one low-cost or free option per set of suggestions when the context allows it. Users should not feel like every plan requires spending money.
-- Narrative tone: direct and practical, like a friend who knows the city recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.`;
+- Narrative tone: direct and practical, like a friend who knows the area recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.`;
 }
 
 
@@ -536,8 +593,19 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Strips prompt-injection patterns and enforces the 500-char hard cap.
     const safeContext = sanitizePromptInput(contextPrompt);
 
+    // Fetch shared interests from friend_annotations — organizer's annotation of the attendee.
+    // Queried from the organizer's perspective (user_id = organizer, friend_id = attendee).
+    // Best-effort: a missing or errored annotation is non-fatal; we just omit the field.
+    const { data: annotationData } = await supabase
+      .from('friend_annotations')
+      .select('shared_interests')
+      .eq('user_id', req.userId)
+      .eq('friend_id', targetUserId)
+      .maybeSingle();
+    const sharedInterests = annotationData?.shared_interests || [];
+
     // Call Claude
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -957,6 +1025,16 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       });
     }
 
+    // Fetch shared interests for the reroll — same pattern as the suggest route.
+    // Organizer's annotation of the attendee; best-effort, non-fatal if absent.
+    const { data: rerollAnnotation } = await supabase
+      .from('friend_annotations')
+      .select('shared_interests')
+      .eq('user_id', itin.organizer_id)
+      .eq('friend_id', itin.attendee_id)
+      .maybeSingle();
+    const rerollSharedInterests = rerollAnnotation?.shared_interests || [];
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
@@ -972,6 +1050,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       maxTravelMinutes: itin.max_travel_minutes || null,
       eventTitle: itin.event_title || null,
       durationMinutes: rerollDuration,
+      sharedInterests: rerollSharedInterests,
     });
 
     let newSuggestions;
