@@ -453,7 +453,7 @@ function deriveGeoContext(userA, userB) {
  *      are generated when the intent is casual/vague, and venue-focused when specific.
  *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '' }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -497,6 +497,35 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
 
   const hardConstraints = [dietaryConstraints, mobilityConstraints].filter(Boolean).join('\n');
 
+  // ── Location anchoring block ───────────────────────────────────────────────
+  // Tells Claude which geographic area to anchor venue suggestions to.
+  // closer_to_organizer / closer_to_attendee: use that user's profile location.
+  //   If that location is missing, fall through to system_choice silently.
+  // system_choice: use the derived geo context (equidistant / best connected area).
+  // orgFirst / attFirst are already declared above (intent block) — reused here.
+  const orgLocation = userA.location?.trim();
+  const attLocation = userB.location?.trim();
+
+  let locationAnchorBlock;
+  if (locationPreference === 'closer_to_organizer' && orgLocation) {
+    locationAnchorBlock =
+      `\nLOCATION ANCHORING\nSuggest venues in or near ${orgLocation}. ` +
+      `${orgFirst} wants plans closer to their side of the city.`;
+  } else if (locationPreference === 'closer_to_attendee' && attLocation) {
+    locationAnchorBlock =
+      `\nLOCATION ANCHORING\nSuggest venues in or near ${attLocation}. ` +
+      `${orgFirst} wants plans closer to ${attFirst}'s side of the city.`;
+  } else {
+    // system_choice (default), or fallback when the requested location is missing.
+    // Only emit the block when geoContext is available — no point repeating an empty string.
+    locationAnchorBlock = geoContext
+      ? `\nLOCATION ANCHORING\nBoth users are located in: ${geoContext}. ` +
+        `Suggest venues in a convenient area between them — consider neighborhoods ` +
+        `that are roughly equidistant or well-connected by transit.`
+      : '';
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
@@ -519,7 +548,7 @@ ${
   sharedInterests && sharedInterests.length > 0
     ? `\nInterests this pair has in common: ${sharedInterests.join(', ')}`
     : ''
-}${
+}${locationAnchorBlock}${
   // Past accepted plans for this pair — used as a taste signal so Claude can avoid
   // repeating plans they've already done and learn what kinds of things they enjoy.
   // Injected as context, not as a template: the instruction explicitly says not to repeat.
@@ -785,7 +814,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict } = req.body;
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference: rawLocationPreference } = req.body;
+    // Validate and default location_preference — only the three local-mode values are
+    // accepted here. 'destination' is reserved for the travel-mode sprint (steps 5–6).
+    const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice']);
+    const locationPreference = VALID_LOCATION_PREFS.has(rawLocationPreference)
+      ? rawLocationPreference
+      : 'system_choice';
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
@@ -952,7 +987,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -997,7 +1032,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           // Prepend the retry instruction before the normal context so Claude sees it first.
           contextPrompt: [retryInstruction, finalSuggestContext].filter(Boolean).join('\n'),
           maxTravelMinutes, eventTitle, durationMinutes,
-          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock,
+          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1116,8 +1151,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         date_range_end:   end,
         time_of_day:      timeOfDay?.type || 'any',
         max_travel_minutes: maxTravelMinutes || null,
-        context_prompt:   contextPrompt || null,
-        event_title:      eventTitle?.trim() || null,
+        context_prompt:      contextPrompt || null,
+        event_title:         eventTitle?.trim() || null,
+        location_preference: locationPreference,
         suggestion_telemetry: telemetry,
       })
       .select('id')
@@ -1569,6 +1605,10 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       pastHistory:          rerollPastHistory,
       localEvents:          rerollLocalEvents,
       activityVenuesBlock:  rerollActivityVenuesBlock,
+      // Always read location_preference from the stored itinerary row — never from the
+      // request body. This prevents the client from overriding a preference that was
+      // set at creation time. Falls back to 'system_choice' for pre-migration rows.
+      locationPreference:   itin.location_preference || 'system_choice',
     });
 
     let newSuggestions;
@@ -1628,6 +1668,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           pastHistory:          rerollPastHistory,
           localEvents:          rerollLocalEvents,
           activityVenuesBlock:  rerollActivityVenuesBlock,
+          locationPreference:   itin.location_preference || 'system_choice',
         });
         try {
           const retryMsg = await anthropic.messages.create({

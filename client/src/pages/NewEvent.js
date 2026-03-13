@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { getSuggestions } from '../utils/api';
+import { getSuggestions, getMe } from '../utils/api';
 import client from '../utils/client';
 
 /* ── Constants ──────────────────────────────────────────────── */
@@ -38,6 +38,14 @@ const TIME_OPTIONS = [
   { value: 'evening',   label: '🌆 Evening',     sub: '5pm – 10pm' },
   { value: 'any',       label: '🕐 Any time',    sub: '' },
   { value: 'custom',    label: '🎯 Custom time', sub: '' },
+];
+
+// Where-to-meet options — controls location anchoring in the suggestion engine.
+// Maps to location_preference values stored on the itinerary row.
+const LOCATION_OPTIONS = [
+  { value: 'system_choice',        label: '🗺 Up to the system' },
+  { value: 'closer_to_organizer',  label: '📍 Closer to me' },
+  { value: 'closer_to_attendee',   label: '📍 Closer to them' },
 ];
 
 // Max-travel time cap options sent to the suggestion engine.
@@ -99,9 +107,15 @@ export default function NewEvent() {
   const [timeOfDay,    setTimeOfDay]    = useState('any');
   const [customTime,   setCustomTime]   = useState('7:00 PM');
   const [customWindow, setCustomWindow] = useState('30');
-  const [maxTravel,    setMaxTravel]    = useState('30');
-  const [context,      setContext]      = useState('');
-  const [eventTitle,   setEventTitle]   = useState('');
+  const [maxTravel,           setMaxTravel]           = useState('30');
+  const [context,             setContext]             = useState('');
+  const [eventTitle,          setEventTitle]          = useState('');
+  // location_preference — where to anchor venue suggestions. Defaults to system_choice
+  // so the form works without any extra interaction (same behavior as before this feature).
+  const [locationPreference,  setLocationPreference]  = useState('system_choice');
+  // Organizer's first name — fetched once for the helper text below the location selector.
+  // Falls back to 'you' if the fetch fails or the name is missing.
+  const [organizerFirstName,  setOrganizerFirstName]  = useState('');
 
   // UI state
   const [generating,            setGenerating]            = useState(false);
@@ -123,6 +137,15 @@ export default function NewEvent() {
   // Load all friends once so we can populate the dropdown on focus.
   useEffect(() => {
     client.get('/friends').then(res => setAllFriends(res.data?.friends ?? [])).catch(() => {});
+  }, []);
+
+  // Fetch the organizer's first name for the location preference helper text.
+  // Best-effort — falls back to '' (which the helper text renders as 'your location').
+  useEffect(() => {
+    getMe().then(me => {
+      const first = (me?.full_name || me?.name || '').split(' ')[0];
+      if (first) setOrganizerFirstName(first);
+    }).catch(() => {});
   }, []);
 
   // If a friendId was passed via query param, fetch and pre-select that friend.
@@ -183,6 +206,7 @@ export default function NewEvent() {
         eventTitle: eventTitle.trim() || null,
         timezoneOffsetMinutes: new Date().getTimezoneOffset(),
         confirmedOrganizerConflict,
+        locationPreference,
       });
       // Server found a conflict on the organizer's calendar — ask before generating.
       if (data?.needsConfirmation) {
@@ -326,6 +350,32 @@ export default function NewEvent() {
                   </p>
                 </div>
               )}
+            </div>
+
+            {/* Where to meet — controls which user's location Claude anchors suggestions to.
+                Defaults to 'system_choice' (equidistant / best fit) so the form works
+                without any extra interaction. Styled to match the time-of-day selector. */}
+            <div className="form-group">
+              <label className="form-label">Where should you meet?</label>
+              <div className="radio-group">
+                {LOCATION_OPTIONS.map((opt) => (
+                  <label key={opt.value} className={`radio-item${locationPreference === opt.value ? ' radio-item--checked' : ''}`}>
+                    <input type="radio" name="locationPreference" value={opt.value}
+                      checked={locationPreference === opt.value}
+                      onChange={() => setLocationPreference(opt.value)} />
+                    <span>{opt.label}</span>
+                  </label>
+                ))}
+              </div>
+              {/* Helper text — updates based on selection to explain what Claude will do. */}
+              <p className="form-hint" style={{ marginTop: 8 }}>
+                {locationPreference === 'closer_to_organizer' &&
+                  `We'll suggest venues near ${organizerFirstName ? `${organizerFirstName}'s` : 'your'} location.`}
+                {locationPreference === 'closer_to_attendee' &&
+                  `We'll suggest venues near ${selectedFriend ? `${selectedFriend.name.split(' ')[0]}'s` : "your friend's"} location.`}
+                {locationPreference === 'system_choice' &&
+                  "We'll find the best spot between you both."}
+              </p>
             </div>
 
             {/* Max travel time — passed to the AI to filter out venues too far away. */}
