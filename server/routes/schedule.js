@@ -262,8 +262,14 @@ function classifyIntent(contextPrompt) {
   // "go to" almost always means a specific venue, even if no venue name follows.
   if (/^\s*go\s+to\b/.test(text)) return 'activity_specific';
 
-  // "watch [something]" in a single-card context means a movie/show at home, not a theater,
-  // unless "theater" or "cinema" appears alongside it.
+  // "watch [something] at [Named Venue]" — attending a live event (game, concert, show) at a
+  // specific place.  The original-case text is used so uppercase venue names are detected.
+  // e.g. "watch the Knicks at MSG", "watch the game at Madison Square Garden" → activity_specific.
+  if (/\bwatch\b/.test(text) && /\bat [A-Z]/.test(contextPrompt)) {
+    return 'activity_specific';
+  }
+  // "watch [something]" with no named venue → home streaming / movie night.
+  // Still exempt explicit theater/cinema mentions so "watch a movie at the cinema" stays correct.
   if (/\bwatch\b/.test(text) && !/\b(theater|cinema|movie theater|imax)\b/.test(text)) {
     return 'home_likely';
   }
