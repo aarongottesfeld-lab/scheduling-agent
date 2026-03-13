@@ -8,7 +8,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
-import { getUserName } from '../utils/auth';
+import { getUserName, isOnboardingCompleted } from '../utils/auth';
 import client from '../utils/client';
 
 /* ── Constants ──────────────────────────────────────────────── */
@@ -175,6 +175,10 @@ function ItineraryCard({ item, onDelete }) {
 export default function Home() {
   const navigate = useNavigate();
   const name     = getUserName();
+  // Show banner when onboarding hasn't been completed yet.
+  // isOnboardingCompleted() is set by App.js before routes render, so this
+  // value is stable by the time Home mounts.
+  const showOnboardingBanner = isOnboardingCompleted() === false;
 
   const [nudges,    setNudges]    = useState([]);
   const [friends,   setFriends]   = useState([]);
@@ -272,6 +276,20 @@ export default function Home() {
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </p>
           </div>
+
+          {/* Onboarding completion banner — shown when onboarding_completed_at is null */}
+          {showOnboardingBanner && (
+            <Link
+              to="/onboarding"
+              className="alert"
+              style={{
+                display: 'block', marginBottom: 16, cursor: 'pointer',
+                textDecoration: 'none', fontWeight: 500,
+              }}
+            >
+              Finish setting up your profile →
+            </Link>
+          )}
 
           {error && <div className="alert alert--error">{error}</div>}
 

@@ -28,10 +28,10 @@
 //   → authReady = true, ProtectedRoute fails → /login
 
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import posthog from 'posthog-js';
 
-import { initSessionFromUrl, setSessionFromApi, clearSession } from './utils/auth';
+import { initSessionFromUrl, setSessionFromApi, clearSession, setOnboardingCompleted, isOnboardingCompleted } from './utils/auth';
 import client from './utils/client';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -48,6 +48,7 @@ import Groups              from './pages/Groups';
 import GroupDetail         from './pages/GroupDetail';
 import NewGroupEvent       from './pages/NewGroupEvent';
 import GroupItineraryView  from './pages/GroupItineraryView';
+import Onboarding          from './pages/Onboarding';
 
 /**
  * Fires a PostHog $pageview event on every route change.
@@ -59,6 +60,23 @@ function PageViewTracker() {
   useEffect(() => {
     try { posthog.capture('$pageview'); } catch {}
   }, [location.pathname]);
+  return null;
+}
+
+/**
+ * Redirects to /onboarding when the user has not completed onboarding.
+ * Must live inside <BrowserRouter> so useNavigate/useLocation are available.
+ * Only fires when isOnboardingCompleted() === false (not null/unknown).
+ * Does not redirect if already on /onboarding — prevents infinite loop.
+ */
+function OnboardingRedirector() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (isOnboardingCompleted() === false && location.pathname !== '/onboarding') {
+      navigate('/onboarding', { replace: true });
+    }
+  }, [location.pathname, navigate]);
   return null;
 }
 
@@ -78,12 +96,22 @@ export default function App() {
     // On success, /auth/me returns { userId (supabaseId), name, picture }.
     // On 401, the cookie is missing/expired — clear stale sessionStorage data.
     client.get('/auth/me')
-      .then(res => {
+      .then(async res => {
         const supabaseId = res.data.userId;
         setSessionFromApi(supabaseId, res.data.name, res.data.picture);
         // Identify the user in PostHog using their stable Supabase UUID only.
         // Never send name, email, avatar, or any other PII.
         try { posthog.identify(supabaseId); } catch {}
+        // Fetch profile to determine onboarding status before routes render.
+        // Must complete before setAuthReady(true) so OnboardingRedirector has
+        // the correct value on first render and avoids a flash to /home.
+        try {
+          const profileRes = await client.get('/users/me');
+          setOnboardingCompleted(!!profileRes.data.onboarding_completed_at);
+        } catch {
+          // Fail open — don't force onboarding on a transient /users/me error.
+          setOnboardingCompleted(true);
+        }
       })
       .catch(() => {
         // No valid cookie — wipe any stale sessionStorage so isAuthenticated()
@@ -107,9 +135,15 @@ export default function App() {
     <BrowserRouter>
       {/* Fires $pageview on every pathname change — must be inside BrowserRouter */}
       <PageViewTracker />
+      {/* Redirects to /onboarding when onboarding_completed_at is null */}
+      <OnboardingRedirector />
       <Routes>
         {/* Public — Login redirects to /home if already authenticated */}
         <Route path="/" element={<Login />} />
+
+        {/* Onboarding — not wrapped in ProtectedRoute; Onboarding.js handles its own
+            auth redirect. Part of the auth completion flow, not a protected feature. */}
+        <Route path="/onboarding" element={<Onboarding />} />
 
         {/* Protected — requireAuth on the server also enforces auth on all API calls */}
         <Route path="/profile/setup" element={

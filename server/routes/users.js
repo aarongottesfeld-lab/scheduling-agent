@@ -41,11 +41,38 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
   app.get('/users/me', requireAuth, async (req, res) => {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, email, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url, share_token')
+      .select('id, full_name, email, username, location, timezone, bio, activity_preferences, dietary_restrictions, mobility_restrictions, avatar_url, share_token, onboarding_completed_at')
       .eq('id', req.userId)
       .single();
     if (error) return res.status(404).json({ error: 'Profile not found.' });
     res.json(data);
+  });
+
+  // PATCH /users/onboarding-complete — marks the user's onboarding as finished.
+  // Sets onboarding_completed_at = now() so the client stops redirecting to /onboarding.
+  app.patch('/users/onboarding-complete', requireAuth, async (req, res) => {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ onboarding_completed_at: new Date().toISOString() })
+      .eq('id', req.userId);
+    if (error) return res.status(500).json({ error: 'Could not update onboarding status.' });
+    res.json({ success: true });
+  });
+
+  // PATCH /users/location — update only location and timezone.
+  // Used by the onboarding flow's step 2 when the user may not yet have a username set,
+  // so the full /users/profile endpoint (which requires username) cannot be used.
+  app.patch('/users/location', requireAuth, async (req, res) => {
+    const { location, timezone } = req.body;
+    if (location !== undefined && typeof location === 'string' && location.trim().length > MAX.location) {
+      return res.status(400).json({ error: `location must be ${MAX.location} characters or fewer.` });
+    }
+    const updates = {};
+    if (location !== undefined) updates.location = location?.trim() || null;
+    if (timezone !== undefined) updates.timezone = timezone || null;
+    const { error } = await supabase.from('profiles').update(updates).eq('id', req.userId);
+    if (error) return res.status(500).json({ error: 'Could not save location.' });
+    res.json({ success: true });
   });
 
   // POST /users/profile — create or update profile

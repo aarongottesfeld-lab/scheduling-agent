@@ -21,10 +21,11 @@
 //   2. /auth/me confirms the cookie is still valid; setSessionFromApi refreshes state
 //   3. If /auth/me returns 401, App.js calls clearSession() and the user sees Login
 
-let _supabaseId = null; // Supabase UUID — stable user identifier for DB comparisons (isOrganizer etc.)
-let _userName   = null; // display name shown in NavBar and greeting
-let _avatarUrl  = null; // avatar URL (uploaded photo or Google picture)
-let _isNewUser  = false; // true on first login, before profile setup is complete
+let _supabaseId          = null;  // Supabase UUID — stable user identifier for DB comparisons (isOrganizer etc.)
+let _userName            = null;  // display name shown in NavBar and greeting
+let _avatarUrl           = null;  // avatar URL (uploaded photo or Google picture)
+let _isNewUser           = false; // true on first login, before profile setup is complete
+let _onboardingCompleted = null;  // null=unknown, true=done, false=not yet done
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -40,10 +41,11 @@ function restoreFromSession() {
   try {
     const stored = sessionStorage.getItem('rv_session');
     if (stored) {
-      const { supabaseId, userName, avatarUrl } = JSON.parse(stored);
-      _supabaseId = supabaseId || null;
-      _userName   = userName   || '';
-      _avatarUrl  = avatarUrl  || null;
+      const { supabaseId, userName, avatarUrl, onboardingCompleted } = JSON.parse(stored);
+      _supabaseId          = supabaseId          || null;
+      _userName            = userName            || '';
+      _avatarUrl           = avatarUrl           || null;
+      _onboardingCompleted = onboardingCompleted ?? null;
     }
   } catch { /* ignore parse errors — corrupted storage is treated as empty */ }
 }
@@ -55,9 +57,10 @@ function restoreFromSession() {
 function persistToSession() {
   try {
     sessionStorage.setItem('rv_session', JSON.stringify({
-      supabaseId: _supabaseId,
-      userName:   _userName,
-      avatarUrl:  _avatarUrl,
+      supabaseId:          _supabaseId,
+      userName:            _userName,
+      avatarUrl:           _avatarUrl,
+      onboardingCompleted: _onboardingCompleted,
     }));
   } catch { /* ignore QuotaExceededError */ }
 }
@@ -132,6 +135,24 @@ export function isNewUser()    { return _isNewUser; }
 export function clearNewUser() { _isNewUser = false; }
 
 /**
+ * Sets the onboarding completion state. Called by App.js after fetching /users/me,
+ * and by Onboarding.js when the user completes the flow.
+ * @param {boolean} val - true if onboarding_completed_at is set, false if null
+ */
+export function setOnboardingCompleted(val) {
+  _onboardingCompleted = val;
+  persistToSession();
+}
+
+/**
+ * Returns the known onboarding completion state.
+ *   null  — not yet determined (App.js auth check still in flight)
+ *   true  — user has completed onboarding
+ *   false — user has NOT completed onboarding (redirect to /onboarding)
+ */
+export function isOnboardingCompleted() { restoreFromSession(); return _onboardingCompleted; }
+
+/**
  * Returns true if we have a supabaseId — meaning /auth/me has confirmed a valid
  * cookie at least once in this tab's lifetime. Used by ProtectedRoute.
  */
@@ -144,9 +165,10 @@ export function isAuthenticated() { restoreFromSession(); return !!_supabaseId; 
  * handles that on POST /auth/logout (which also calls res.clearCookie).
  */
 export function clearSession() {
-  _supabaseId = null;
-  _userName   = null;
-  _avatarUrl  = null;
-  _isNewUser  = false;
+  _supabaseId          = null;
+  _userName            = null;
+  _avatarUrl           = null;
+  _isNewUser           = false;
+  _onboardingCompleted = null;
   try { sessionStorage.removeItem('rv_session'); } catch { /* ignore */ }
 }
