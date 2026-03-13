@@ -20,6 +20,54 @@ accumulated: new DB columns, new prompt logic with health data flowing through i
 UI flows, and the group planning state machine. Full audit — security, privacy, disaster
 recovery, consistency — before real people's data is in play.
 
+Audit 3 scope includes a dedicated recommendation engine review. In addition to the
+standard security/privacy/DR categories, Claude Code should evaluate:
+- Intent classification accuracy: does classifyIntent() correctly bucket edge cases?
+  (e.g. "watch the Knicks at my place" vs "watch the Knicks at MSG", ambiguous prompts)
+- Home vs. venue split fidelity: are home-based agendas generating correctly for
+  home_likely intents, and are venue suggestions being suppressed appropriately?
+- Prompt instruction hierarchy: is contextPrompt actually treated as the primary
+  constraint in practice, or do profile preferences override it in edge cases?
+- Exact-match reroll behavior: does a specific venue name or activity in a reroll
+  prompt produce a matching suggestion, or does Claude drift to something adjacent?
+- Venue substitution quality: when a named venue is unavailable, is the fallback
+  genuinely similar (vibe, price, neighborhood) or generic?
+- Dietary/mobility hard constraint enforcement: are NEVER constraints actually
+  honored across all suggestion types including home-based plans?
+- Duplicate venue detection: do any suggestion sets contain the same venue
+  across multiple cards?
+- Tags field: evaluate whether tags are wired to any client-side filtering or
+  display — if not, remove from schema to reduce hallucination surface area and
+  token waste (see AUDIT-NOTE comment in buildSuggestPrompt)
+- Geo context accuracy: does deriveGeoContext() produce sensible output for
+  users in different cities, same city, or with missing location data?
+- System prompt drift: does the persona instruction ("sharp, well-connected
+  activity planner") hold across rerolls and edge-case prompts, or does Claude
+  revert to generic Yelp-list tone?
+- schedule.js file split: the file has grown to 1,400+ lines. Evaluate splitting
+  into focused submodules before it becomes harder to maintain:
+    - server/routes/schedule.js — route handlers only (suggest, reroll, confirm, etc.)
+    - server/lib/promptBuilder.js — buildSuggestPrompt, classifyIntent, extractVenueName,
+      buildVenueSubstitutionBlock, deriveGeoContext, RENDEZVOUS_SYSTEM_PROMPT
+    - server/lib/availability.js — findFreeWindows, inferDurationMinutes, fetchBusy,
+      timeOfDayHours, fmtWindowDate
+    - server/lib/calendarSync.js — createCalendarEventForUser, createOAuth2Client
+    - server/lib/events.js — fetchLocalEvents (Ticketmaster + Eventbrite, when built)
+  Claude Code should propose the split, verify no circular dependencies, and confirm
+  all existing tests pass before committing. Do not merge partial splits.
+- Performance & latency audit: the suggestion pipeline has grown with multiple sequential
+  operations (calendar freebusy, friend_annotations fetch, past history fetch, Claude call,
+  short-circuit retry, venue enrichment). Before real users, audit end-to-end latency and
+  identify parallelization opportunities. Priority order: quality and security first, then
+  speed. Specific questions to answer:
+    - Which fetches can run concurrently? (e.g. freebusy + friend_annotations + past history
+      could all be Promise.all'd instead of sequential awaits)
+    - What is the p50/p95 latency of the suggest route in production? (check Vercel runtime logs)
+    - Does the short-circuit retry add meaningful latency in practice, or does it rarely fire?
+    - If venue enrichment (Places API) is added, does it block the response or can it run
+      async and be written to the DB in the background?
+    - Are there any N+1 query patterns in the suggest or reroll routes?
+
 **Audit 4 — Before App Store submission**
 Trigger: when React Native migration is complete and App Store submission is being
 prepared. Scope shifts to include Apple's data privacy requirements, privacy nutrition
@@ -40,13 +88,14 @@ app will be mentally filed as "not ready" and re-engagement is difficult.
 
 Revised sequence:
   1. ✅ Session persistence + OAuth fixes → DONE (March 12)
-  2. Privacy/security fixes → friends.js:186, rate limiting, avatar MIME  ← YOU ARE HERE
-  3. Vercel deploy → needed for Maps referrer restriction + live testing environment
-  4. Output quality → prompt engineering first (zero new infrastructure, highest ROI)
+  2. ✅ Audit 2 security/privacy fixes → DONE (March 12)
+  3. ✅ Vercel deploy → DONE (March 12)
+  4. Output quality → prompt engineering first (zero new infrastructure, highest ROI)  ← YOU ARE HERE
   5. Location & Travel Mode
   6. Group planning
-  7. Share with real users
-  8. React Native / App Store → after feature set is proven on live users
+  7. Audit 3 → full pre-launch audit before real users
+  8. Share with real users
+  9. React Native / App Store → after feature set is proven on live users
 
 ---
 
@@ -84,23 +133,45 @@ Revised sequence:
 > Full spec in OUTPUT_QUALITY_ROADMAP.md. Suggestion and route quality are the primary retention driver — a technically working app with mediocre plans gets abandoned. Target: user reads the first suggestion on the first try and thinks "yeah, that actually sounds like us."
 
 **Prompt engineering (do first — no new infrastructure)**
-- [ ] Audit `buildSuggestPrompt` in `schedule.js` — move `contextPrompt` earlier in the prompt, add explicit instruction that it overrides preference defaults
-- [ ] Add emphasis framing: "MOST IMPORTANT — treat this as the primary constraint, above activity preferences and neighborhood defaults: {contextPrompt}"
-- [ ] Inject `friend_annotations.shared_interests` explicitly into system prompt as a high-signal input
-- [ ] Feed past accepted itineraries (both statuses = accepted) as context — infer what lands well for this pair
-- [ ] Add persona instruction: "a well-connected local friend who knows the city, not a Yelp list"
-- [ ] Hard-constraint dietary and mobility restrictions with "never suggest X" framing, not soft hints
-- [ ] Remove all hardcoded NYC assumptions — make city context fully dynamic from user profile locations
-- [ ] Reroll: ensure `singleCardNote` and `contextPrompt` are treated as highest-priority carry-forward, not flat-joined strings
-- [ ] Haiku vs Sonnet: test whether prompt-following improves in prod (Sonnet) vs dev (Haiku)
-- [ ] Consider short-circuit: if contextPrompt is specific (e.g. "golf"), validate returned suggestions match before saving — reject and retry once if none do
-- [ ] Add telemetry: log `context_prompt` hit rate (manual QA for now, structured eval later)
+- [x] Audit `buildSuggestPrompt` in `schedule.js` — move `contextPrompt` earlier in the prompt, add explicit instruction that it overrides preference defaults. DONE.
+- [x] Add emphasis framing: "MOST IMPORTANT — treat this as the primary constraint, above activity preferences and neighborhood defaults: {contextPrompt}". DONE.
+- [x] Inject `friend_annotations.shared_interests` explicitly into system prompt as a high-signal input. DONE.
+- [x] Add persona instruction via `RENDEZVOUS_SYSTEM_PROMPT` constant — "a well-connected local friend who knows the city, not a Yelp list". DONE.
+- [x] Hard-constraint dietary and mobility restrictions with "never suggest X" framing, not soft hints. DONE.
+- [x] Remove all hardcoded NYC assumptions — make city context fully dynamic from user profile locations via `deriveGeoContext()`. DONE.
+- [x] Reroll: ensure `singleCardNote` and `contextPrompt` are treated as highest-priority carry-forward. DONE — single-card reroll treated as near-literal instruction via exactMatchBlock.
+- [x] Home-based itinerary support — `classifyIntent()` routes home_likely / activity_specific / ambiguous. Home split: 2 home + 1 venue for home_likely. 🏠 badge on home cards. DONE.
+- [x] Venue substitution — `buildVenueSubstitutionBlock()` instructs Claude to find closest match when named venue unavailable, with honest note field. DONE.
+- [x] No duplicate venues rule added to buildSuggestPrompt. DONE.
+- [x] **Feed past accepted itineraries as context** — `fetchAcceptedPairHistory()` queries locked itineraries for the pair (both directions), injects top 3 as "WHAT HAS WORKED FOR THIS PAIR BEFORE" block in prompt. Used as taste signal only — explicit instruction to not repeat venues or plans. Called in both suggest and reroll routes. DONE.
+- [x] **Short-circuit validation** — `themeMatchesContextPrompt()` checks keyword match against title+narrative+tags. If `activity_specific` intent and no match, retries once with a hard RETRY instruction block. Applies to both suggest and reroll routes. Reroll uses stored `context_prompt` as fallback match target. Comment fences mark retry points for telemetry wiring. DONE.
+- [ ] **Haiku vs Sonnet QA pass** — test a set of real prompts (empty, vague, specific, home-based, named venue) in both dev (Haiku) and prod (Sonnet) and document quality delta.
+- [ ] **Structured telemetry** — log `context_prompt_present`, `intent_class`, `home_suggestion_count`, `retry_count` as JSONB on the itinerary row for Audit 3 QA pass.
 
-**Venue quality filtering**
-- [ ] Filter Places API results to 4.2+ stars / 100+ reviews before passing to Claude
-- [ ] Pull `price_level` from Places API and pass to Claude — match vibe to budget implicitly
-- [ ] Use `editorial_summary` from Places API (New) where available — far richer than name + rating
-- [ ] Prefer venues with photos (signals active, real business)
+**Venue quality filtering (use as soft signals, not hard filters)**
+> IMPORTANT ARCHITECTURE NOTE: Claude currently generates venue names entirely from its training data — no Places API is called during suggestion generation. This means venues can be closed, renamed, or hallucinated. The venue quality sprint must address this before soft signals make sense.
+>
+> Chosen approach: enrich-after-generation. Claude generates suggestions with venue names as it does now, then the server validates and enriches each venue via Places API (Text Search by name + location). Real address, rating, review count, price_level, editorial_summary, and open status are attached to the suggestion before it's saved and returned to the client.
+>
+> This is lower complexity than a two-pass Claude architecture and doesn't require restructuring the prompt. If Places API can't find a venue, the suggestion is flagged with `venue_verified: false` so the client can optionally surface a disclaimer.
+- [x] Build `enrichVenues(suggestions, cityContext)` in `server/utils/venueEnrichment.js`. Places API Text Search per non-home venue, concurrent per suggestion via Promise.allSettled, sequential across suggestions. Attaches `place_id`, `formatted_address`, `rating`, `user_ratings_total`, `price_level`, `venue_verified`. 60-min module-scoped cache by venue name + city. Fully wrapped in try/catch — returns suggestions unmodified on any failure. DONE.
+- [x] `extractCityFromGeoContext(geoContext)` helper — parses deriveGeoContext() output into Places-friendly city string. CITY_ALIASES table covers common inputs (nyc, brooklyn, manhattan, la, sf, dc). Falls back to raw string. DONE.
+- [x] Wired into suggest route (after short-circuit retry, before DB save) and reroll route (newly generated cards only — preserved cards keep original enrichment). DONE.
+- [x] Surface `venue_verified` in ItineraryView — `✓ Verified` badge (green) on verified venues, subtle `· unverified` tag (gray) on unverified non-home venues. Home venues suppressed — never sent to Places API by design, showing "unverified" there would be misleading. DONE.
+- [x] ⓘ tooltip in ItineraryView — scoped per card via `tooltipOpen` state so cards don't interfere with each other. Appears only on first verified venue per card (IIFE for `firstVerifiedIdx`). Accessible via hover, tap (toggle), and keyboard (Enter/Space). Renders inline beneath venue row using CSS variables for light/dark theme. Copy: "Venue verified means we confirmed this location exists via Google Places. It does not guarantee current hours, availability, or quality." DONE.
+- [x] `v.formatted_address || v.address` — enriched address wins, Claude's address is fallback. Google Maps link uses richer address. DONE.
+- [x] Privacy: Places API key stays server-side only. No user data sent to Places API — only venue name + city. Enforced in venueEnrichment.js. DONE.
+- [ ] Option B (post-launch): feed enriched venue data (editorial_summary, price_level, rating) into a second Claude call to rewrite suggestion narratives using ground truth. Adds ~3–5s latency — defer until real users signal narrative quality is a pain point.
+
+**Limited-time & live events (new sprint — do after venue quality)**
+> Differentiating feature: a concert suggestion that's actually playing when the user is free is a completely different value prop than a generic venue recommendation.
+- [ ] **Ticketmaster Discovery API** — free tier (5,000 calls/day). Fetch concerts, shows, sports by location + date range. Register at developer.ticketmaster.com. Store as `TICKETMASTER_API_KEY`.
+- [ ] **Eventbrite API** — local festivals, pop-ups, neighborhood events. Register at eventbrite.com/platform. Store as `EVENTBRITE_API_KEY`.
+- [ ] Build `fetchLocalEvents(location, dateRangeStart, dateRangeEnd, interests)` in `server/utils/events.js`. Calls both APIs concurrently, dedupes, filters by relevance to user interests, returns top 5–8 events with name, date/time, venue, category, URL.
+- [ ] Inject into `buildSuggestPrompt` as a third content source: "AVAILABLE TIME-SENSITIVE EVENTS (happening during the suggested window): [list]". Instruct Claude to anchor a suggestion around a live event when it matches user interests or contextPrompt.
+- [ ] Add 1-hour caching layer per (location, date_range) using a module-scoped Map or Supabase row.
+- [ ] Add `event_source` field to suggestion JSONB: `ticketmaster | eventbrite | places | home`. Render 🎟 badge on event-anchored cards with deep link to purchase/info.
+- [ ] Privacy: event API keys in `server/.env` only. Only location + date range sent to event APIs — no user data.
 
 **Route logic and sequencing**
 - [ ] Use Distance Matrix to validate venue sequence is geographically sensible (no zigzagging)
@@ -205,6 +276,15 @@ Revised sequence:
 - [ ] iCloud CalDAV fallback for web (app-specific passwords — evaluate UX tradeoff)
 - [ ] Outlook / Microsoft 365 Calendar (Graph API — similar OAuth flow to Google)
 
+### Maps API Key Split (pre-maps-feature)
+> Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
+- [ ] Create a second Google Maps API key in Google Cloud Console — restrict to Maps JavaScript API only
+- [ ] Add HTTP referrer restriction to the new browser key: `https://rendezvous-gamma.vercel.app/*`
+- [ ] Add the new key to Vercel env vars as `GOOGLE_MAPS_JS_API_KEY` (distinct from server-side `GOOGLE_MAPS_API_KEY`)
+- [ ] Add `GOOGLE_MAPS_JS_API_KEY` to `client/.env.production` and reference it in the Maps JS component
+- [ ] Keep the existing server-side key with API restrictions only (no referrer restriction) — do not change it
+- [ ] Verify both keys work end-to-end before removing the old key from any client-side usage
+
 ### Embedded Views — Calendar & Route iframes
 > Inline visual context where it matters most. Users shouldn't have to mentally reconstruct a route or check a separate app to see if a time works — surface that information directly in the UI.
 
@@ -246,7 +326,16 @@ Revised sequence:
 
 ---
 
-## 🟢 Deployment & Infrastructure
+## 🔵 Known Polish Items — Deprioritized Until Post-Launch
+
+These are known issues or small improvements that aren't worth debugging time now.
+Revisit after sharing with first users and collecting signal on what actually matters.
+
+- **Draft cards date range pill** — cards in the Drafts/pending state should show the scheduling
+  window (e.g. "Mar 13 – Mar 15"). Previous fix attempt did not stick. Hold for user feedback
+  on whether this causes confusion before prioritizing a deeper fix.
+
+---
 
 - [ ] Vercel deployment
 - [ ] HTTP referrer restriction on Maps API key

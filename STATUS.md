@@ -1,3 +1,40 @@
+## Session Notes (March 12–13, 2026 — output quality sprint)
+
+### Completed this session
+
+**Prompt engineering sprint (all shipped to prod):**
+- [x] RENDEZVOUS_SYSTEM_PROMPT constant — injected as system: param into both Claude calls. Establishes voice, banned phrases, home-plan specificity.
+- [x] contextPrompt moved to top of prompt with "MOST IMPORTANT" framing
+- [x] friend_annotations.shared_interests injected as high-signal input
+- [x] Dietary/mobility restrictions promoted to hard NEVER constraints
+- [x] All NYC/Manhattan hardcoding removed — deriveGeoContext() builds dynamic geo context from profiles
+- [x] classifyIntent() — returns home_likely | activity_specific | ambiguous. Extended with possessive phrases, movement idioms, named venue prepositions, sports-at-home gap
+- [x] Home vs venue split — home_likely: 2 home + 1 venue. ambiguous: at least 1 home. activity_specific: all venue. location_type field in JSON schema. 🏠 badge in SuggestionCard.
+- [x] Single-card reroll exact-match block — user input treated as near-literal instruction
+- [x] extractVenueName() — detects named venues in contextPrompt
+- [x] buildVenueSubstitutionBlock() — if named venue unavailable, find closest match by vibe/price/neighborhood with honest note field
+- [x] No duplicate venues rule added to prompt
+- [x] Tags field AUDIT-NOTE added — evaluate at Audit 3
+
+**Commits (all READY on Vercel):**
+3ae0db1, 40ced19, 00cd218, d4ddf49, 8edd65e, b90b94c, a1f2067, 8f805b8, c0770ff, 6df30cf, d70d014, 5803ec8
+
+### Output quality — remaining sequence
+
+1. **Feed past accepted itineraries as context** (next) — query accepted pair history, inject as "what has worked before" block
+2. **Short-circuit validation** — retry once if contextPrompt is specific but suggestions don't match
+3. **Venue quality as soft signals** — pass rating/reviews/price_level/editorial_summary to Claude as data, not hard filters
+4. **Limited-time & live events sprint** — Ticketmaster + Eventbrite APIs, fetchLocalEvents() utility, event_source field in JSONB, 🎟 badge on event-anchored cards
+
+### YOU ARE HERE
+Output quality sprint — venue enrichment complete. Remaining items before moving to Location & Travel Mode:
+- [ ] Haiku vs Sonnet QA pass (manual test run)
+- [ ] Structured telemetry on itinerary row
+- [ ] Limited-time & live events sprint (Ticketmaster + Eventbrite)
+- [ ] Option B post-launch (narrative rewrite via second Claude call)
+
+---
+
 ## Session Notes (March 11, 2026 — major feature session)
 
 ### Completed this session

@@ -137,6 +137,10 @@ function SuggestionCard({
   // vibeInputOpen: toggles the inline prompt box when user clicks "New vibe"
   const [vibeInputOpen,  setVibeInputOpen]  = useState(false);
   const [vibeText,       setVibeText]       = useState('');
+  // tooltipOpen: controls the "what does verified mean?" explanation popover.
+  // Scoped per card so each card manages its own tooltip state independently.
+  // Toggled on click/tap (mobile) and on mouse enter/leave (desktop).
+  const [tooltipOpen,    setTooltipOpen]    = useState(false);
 
   const isOrganizer  = role === 'organizer';
   const isAttendee   = role === 'attendee';
@@ -194,6 +198,13 @@ function SuggestionCard({
                 {suggestion.activityType}
               </span>
             )}
+            {/* Event badge — shown when this suggestion is anchored to a live event
+                from Ticketmaster or Eventbrite. Tapping opens the ticket link. */}
+            {(suggestion.event_source === 'ticketmaster' || suggestion.event_source === 'eventbrite') && (
+              <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>
+                🎟 Live event
+              </span>
+            )}
           </div>
         </div>
 
@@ -236,18 +247,106 @@ function SuggestionCard({
         {/* Expanded detail panel — CSS transition on maxHeight for smooth animation */}
         <div style={{ overflow: 'hidden', maxHeight: expanded ? '2000px' : '0', opacity: expanded ? 1 : 0, transition: 'max-height 0.3s ease, opacity 0.3s ease' }}>
           {narrative && <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>}
-          {suggestion.venues?.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
-              {suggestion.venues.map((v, i) => (
-                <div key={i}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <a href={`https://maps.google.com/?q=${encodeURIComponent(v.address || v.name)}`} target="_blank" rel="noopener noreferrer"
-                      style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}>{v.name}</a>
-                    {v.type && <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>{v.type}</span>}
-                  </div>
-                  {v.address && <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>{v.address}</div>}
-                </div>
-              ))}
+          {suggestion.venues?.length > 0 && (() => {
+            // Find the first venue that was verified by Places API — the ⓘ explanation
+            // is shown only on that one venue to avoid clutter on cards with multiple stops.
+            const firstVerifiedIdx = suggestion.venues.findIndex(v => v.venue_verified === true);
+
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+                {suggestion.venues.map((v, i) => {
+                  // Prefer the Places-enriched address; fall back to Claude's address field.
+                  const displayAddress = v.formatted_address || v.address;
+                  // Only the first verified venue gets the ⓘ tooltip trigger.
+                  const isFirstVerified = i === firstVerifiedIdx;
+
+                  return (
+                    <div key={i}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <a
+                          href={`https://maps.google.com/?q=${encodeURIComponent(displayAddress || v.name)}`}
+                          target="_blank" rel="noopener noreferrer"
+                          style={{ fontWeight: 600, color: 'var(--brand)', textDecoration: 'none' }}
+                        >{v.name}</a>
+
+                        {v.type && (
+                          <span className="badge" style={{ fontSize: '0.7rem', textTransform: 'capitalize' }}>{v.type}</span>
+                        )}
+
+                        {/* Verified badge — only shown when venue_verified is explicitly true.
+                            Venues without the field (pre-enrichment data) show nothing. */}
+                        {v.venue_verified === true && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.72rem', color: '#16a34a', fontWeight: 500 }}>
+                            ✓ Verified
+                            {/* ⓘ appears only on the first verified venue per card.
+                                Uses both onMouseEnter/Leave (desktop hover) and onClick (tap/click)
+                                so the tooltip is accessible on mobile without relying on CSS :hover. */}
+                            {isFirstVerified && (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                aria-label="What does verified mean?"
+                                aria-expanded={tooltipOpen}
+                                style={{ cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1, marginLeft: 1 }}
+                                onMouseEnter={() => setTooltipOpen(true)}
+                                onMouseLeave={() => setTooltipOpen(false)}
+                                onClick={() => setTooltipOpen(o => !o)}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTooltipOpen(o => !o); } }}
+                              >ⓘ</span>
+                            )}
+                          </span>
+                        )}
+
+                        {/* Unverified note — shown when venue_verified is explicitly false
+                            AND the venue is not a home (home venues are intentionally skipped
+                            by the enrichment layer; showing "Unverified" there would be misleading). */}
+                        {v.venue_verified === false && v.type !== 'home' && (
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-3)', fontWeight: 400 }}>· unverified</span>
+                        )}
+                      </div>
+
+                      {/* Tooltip — rendered beneath the venue name row on the first verified venue.
+                          Exact copy is required: do not paraphrase the disclaimer. */}
+                      {isFirstVerified && tooltipOpen && (
+                        <div
+                          role="tooltip"
+                          style={{
+                            fontSize: '0.75rem',
+                            color: 'var(--text-2)',
+                            background: 'var(--surface-2)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 6,
+                            padding: '6px 10px',
+                            marginTop: 4,
+                            maxWidth: 300,
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <strong>"Venue verified"</strong> means we confirmed this location exists via Google Places. It does not guarantee current hours, availability, or quality.
+                        </div>
+                      )}
+
+                      {/* Address row — enriched address takes priority over Claude's address string */}
+                      {displayAddress && (
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>{displayAddress}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+          {/* Ticket link — only shown for event-anchored suggestions with a URL */}
+          {suggestion.event_url && (suggestion.event_source === 'ticketmaster' || suggestion.event_source === 'eventbrite') && (
+            <div style={{ marginTop: 10 }}>
+              <a
+                href={suggestion.event_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: '0.82rem', color: 'var(--brand)', fontWeight: 600, textDecoration: 'none' }}
+              >
+                🎟 Get tickets →
+              </a>
             </div>
           )}
           {suggestion.durationMinutes > 0 && (

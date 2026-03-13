@@ -20,6 +20,8 @@
 'use strict';
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
+const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
+const { fetchLocalEvents } = require('../utils/events');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -63,10 +65,88 @@ function sanitizePromptInput(text, maxLen = MAX_CONTEXT) {
   return text.replace(INJECTION_RE, '[removed]').trim().slice(0, maxLen);
 }
 
+// Filler words excluded from keyword extraction in themeMatchesContextPrompt.
+// These are common English words that appear in prompts but carry no activity signal.
+const THEME_FILLER = new Set([
+  'want', 'something', 'with', 'just', 'like', 'lets', "let's", 'going', 'maybe',
+  'some', 'have', 'that', 'this', 'would', 'could', 'should', 'think', 'feel',
+  'really', 'kind', 'sort', 'maybe', 'around', 'about', 'very', 'much', 'more',
+]);
+
+/**
+ * Check whether at least one Claude suggestion plausibly matches the organizer's intent.
+ * Used as a short-circuit to trigger a retry when Claude ignores an activity_specific prompt.
+ *
+ * Only meaningful for 'activity_specific' intents (e.g. "golf", "sushi dinner", "escape room").
+ * Returns true (bypass retry) for: absent/blank contextPrompt, 'home_likely', 'ambiguous'.
+ *
+ * Matching is intentionally simple — no external calls, no NLP:
+ *   1. Extract keywords from contextPrompt (words >3 chars, not in filler list).
+ *   2. Concatenate each suggestion's title + narrative + tags into one lowercase string.
+ *   3. Return true if ANY keyword appears in ANY suggestion's combined text.
+ *
+ * Never throws — returns true (skip retry) on any error so a bug here never blocks responses.
+ *
+ * @param {Array}  suggestions   - parsed suggestion objects from Claude
+ * @param {string} contextPrompt - organizer's raw context string
+ * @returns {boolean}
+ */
+function themeMatchesContextPrompt(suggestions, contextPrompt) {
+  try {
+    if (!contextPrompt || !contextPrompt.trim()) return true;
+    // Only validate activity_specific intents — home/ambiguous are too open-ended to keyword-match.
+    if (classifyIntent(contextPrompt) !== 'activity_specific') return true;
+    if (!suggestions || suggestions.length === 0) return false;
+
+    // Extract meaningful keywords: lowercase words longer than 3 chars, not in the filler set.
+    const keywords = contextPrompt.toLowerCase()
+      .split(/\s+/)
+      .map(w => w.replace(/[^a-z]/g, '')) // strip punctuation
+      .filter(w => w.length > 3 && !THEME_FILLER.has(w));
+
+    if (keywords.length === 0) return true; // nothing meaningful to check — skip retry
+
+    // Build a searchable blob per suggestion from title + narrative + tags.
+    const blobs = suggestions.map(s =>
+      [s.title, s.narrative, ...(s.tags || [])].join(' ').toLowerCase()
+    );
+
+    // Pass if ANY keyword matches ANY suggestion blob.
+    return keywords.some(kw => blobs.some(blob => blob.includes(kw)));
+  } catch {
+    // Safety net: any unexpected error skips the retry to avoid blocking the response.
+    return true;
+  }
+}
+
 // Emails exempt from all rate limits — useful for testing in production.
 const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
 /** Returns true only if s is a well-formed UUID v4 string. */
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
+
+/**
+ * Count venues with venue_verified === true across all suggestions.
+ * Used by telemetry to track how many venues were successfully confirmed
+ * by the Places API enrichment layer.
+ * @param {Array} suggestions - Claude suggestion objects with venues[]
+ * @returns {number}
+ */
+function countVerified(suggestions) {
+  return (suggestions || []).reduce((n, s) =>
+    n + (s.venues || []).filter(v => v.venue_verified === true).length, 0);
+}
+
+/**
+ * Count venues with venue_verified === false across all suggestions.
+ * This includes both Places API misses and home venues (intentionally skipped).
+ * Tracked separately from verified count so the ratio is queryable in analytics.
+ * @param {Array} suggestions - Claude suggestion objects with venues[]
+ * @returns {number}
+ */
+function countUnverified(suggestions) {
+  return (suggestions || []).reduce((n, s) =>
+    n + (s.venues || []).filter(v => v.venue_verified === false).length, 0);
+}
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
@@ -372,7 +452,7 @@ function deriveGeoContext(userA, userB) {
  *      are generated when the intent is casual/vague, and venue-focused when specific.
  *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [] }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -438,6 +518,29 @@ ${
   sharedInterests && sharedInterests.length > 0
     ? `\nInterests this pair has in common: ${sharedInterests.join(', ')}`
     : ''
+}${
+  // Past accepted plans for this pair — used as a taste signal so Claude can avoid
+  // repeating plans they've already done and learn what kinds of things they enjoy.
+  // Injected as context, not as a template: the instruction explicitly says not to repeat.
+  pastHistory && pastHistory.length > 0
+    ? `\nWHAT HAS WORKED FOR THIS PAIR BEFORE (accepted plans — use as context, not as a template to repeat):\n` +
+      pastHistory.map(p =>
+        `- ${p.title}: ${p.neighborhood || 'unspecified area'}, venues: ${p.venues.join(', ') || 'N/A'}, tags: ${p.tags.join(', ') || 'none'}`
+      ).join('\n') +
+      `\nUse this as a taste signal only. Do NOT suggest these specific plans or revisit these venues.`
+    : ''
+}${
+  // Live events block — only injected when events were found. If empty, omit entirely:
+  // never send Claude a "no events found" message, which could bias output toward apology.
+  // Events are optional context: Claude should only anchor a suggestion on one if it
+  // genuinely fits both users' interests and the requested date range.
+  localEvents && localEvents.length > 0
+    ? `\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the users' interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits. Do not force events that don't match.\n` +
+      localEvents.map(ev =>
+        `- ${ev.title} at ${ev.venue_name || 'TBD'} (${ev.date}${ev.time ? ' at ' + ev.time : ''}) — ${ev.category || 'Event'} — Ticket link: ${ev.url}`
+      ).join('\n') +
+      `\nIf you use an event as the anchor for a suggestion, set "event_source": "${localEvents[0]?.source || 'ticketmaster'}" (or "eventbrite" as appropriate) and include the ticket URL in a top-level "event_url" field on that suggestion object.`
+    : ''
 }
 AVAILABLE TIME WINDOWS (use one per suggestion):
 ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
@@ -468,7 +571,13 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       // client. Before Audit 3, evaluate whether to wire tags into filtering/display
       // or remove them from the schema to reduce hallucination surface area and token
       // waste. If unused at that point, remove.
-      "tags": ["cocktails", "rooftop"]
+      "tags": ["cocktails", "rooftop"],
+      // Optional — only set when this suggestion is anchored on a real event fetched
+      // from Ticketmaster or Eventbrite. Omit entirely for venue-based or home suggestions.
+      "event_source": "ticketmaster|eventbrite|places|home",
+      // Optional — deep link to the event's ticket/detail page. Only present when
+      // event_source is 'ticketmaster' or 'eventbrite'. Rendered as "Get tickets →" in the UI.
+      "event_url": "https://..."
     }
   ]
 }
@@ -493,6 +602,57 @@ Rules:
 async function getProfileName(userId, supabase) {
   const { data } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
   return data?.full_name?.split(' ')[0] || 'Someone';
+}
+
+/**
+ * Fetch the last N accepted itineraries shared between two users (in either direction).
+ * Used to give Claude context on what this pair has already done together, so new
+ * suggestions feel fresh rather than repeating plans they've already made.
+ *
+ * Returns a lightweight array of objects: { title, neighborhood, venues[], tags[] }.
+ * Never throws — returns [] on any error so a DB hiccup never blocks generation.
+ *
+ * @param {string} organizerId - UUID of the current organizer
+ * @param {string} attendeeId  - UUID of the current attendee
+ * @param {object} supabase    - Supabase client
+ * @param {number} limit       - max past itineraries to return (default 3)
+ */
+async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit = 3) {
+  try {
+    // Query itineraries where either user was the organizer, both accepted, and the plan locked.
+    const { data, error } = await supabase
+      .from('itineraries')
+      .select('id, suggestions, selected_suggestion_id, context_prompt, locked_at')
+      .or(
+        `and(organizer_id.eq.${organizerId},attendee_id.eq.${attendeeId}),` +
+        `and(organizer_id.eq.${attendeeId},attendee_id.eq.${organizerId})`
+      )
+      .eq('organizer_status', 'accepted')
+      .eq('attendee_status', 'accepted')
+      .not('locked_at', 'is', null)
+      .order('locked_at', { ascending: false })
+      .limit(limit);
+
+    if (error || !data) return [];
+
+    // For each itinerary, extract the selected suggestion (matched by selected_suggestion_id).
+    // Fall back to the first suggestion if the ID can't be matched (shouldn't happen in practice).
+    return data.flatMap(itin => {
+      const suggestions = itin.suggestions || [];
+      const selected = suggestions.find(s => s.id === itin.selected_suggestion_id)
+        || suggestions[0];
+      if (!selected) return [];
+      return [{
+        title:        selected.title        || '',
+        neighborhood: selected.neighborhood || '',
+        venues:       (selected.venues || []).map(v => v.name).filter(Boolean),
+        tags:         selected.tags         || [],
+      }];
+    });
+  } catch (err) {
+    console.warn('fetchAcceptedPairHistory failed:', err.message);
+    return [];
+  }
 }
 
 /**
@@ -730,11 +890,30 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       .maybeSingle();
     const sharedInterests = annotationData?.shared_interests || [];
 
+    // Fetch past accepted plans for this pair — gives Claude taste-signal context.
+    // Best-effort: a failure returns [] and silently omits the history block.
+    const pastHistory = await fetchAcceptedPairHistory(req.userId, targetUserId, supabase);
+
+    // Fetch live events for the requested city + date range from Ticketmaster and Eventbrite.
+    // Interests are used only for local relevance scoring — never sent to external APIs.
+    // Best-effort: a failure returns [] and silently omits the events block from the prompt.
+    let localEvents = [];
+    try {
+      localEvents = await fetchLocalEvents(
+        deriveGeoContext(userA, userB),
+        start,
+        end,
+        [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
+      );
+    } catch (eventsErr) {
+      console.error('[suggest] fetchLocalEvents failed:', eventsErr.message);
+    }
+
     // Call Claude
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -751,6 +930,60 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       // Never expose internal API errors (billing, keys, etc.) to the client
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
     }
+
+    // ── Theme-match retry (suggest) ──────────────────────────────────────────
+    // If the organizer gave an activity_specific prompt (e.g. "bowling", "sushi dinner")
+    // but none of Claude's suggestions reflect that activity, retry once with a
+    // strengthened prompt that makes the requirement explicit.
+    // Only one retry — if it also misses or fails, we keep the original suggestions.
+    // Flags are declared outside the block so the telemetry object below can read them.
+    let retryAttempted = false;
+    let retrySucceeded = false;
+    {
+      const needsRetry =
+        contextPrompt &&
+        classifyIntent(contextPrompt) === 'activity_specific' &&
+        !themeMatchesContextPrompt(suggestions, contextPrompt);
+
+      if (needsRetry) {
+        // ── RETRY POINT ──────────────────────────────────────────────────────
+        retryAttempted = true;
+        console.error('[suggest] retry_attempted: true — no suggestions matched context:', contextPrompt);
+        const retryInstruction =
+          `RETRY — the previous attempt did not return any suggestions matching "${safeContext}". ` +
+          `This is mandatory: at least one of the 3 suggestions MUST directly feature "${safeContext}" ` +
+          `as the primary activity. Do not substitute a thematically adjacent activity.`;
+        const retryPrompt = buildSuggestPrompt({
+          userA, userB, freeWindows,
+          // Prepend the retry instruction before the normal context so Claude sees it first.
+          contextPrompt: [retryInstruction, finalSuggestContext].filter(Boolean).join('\n'),
+          maxTravelMinutes, eventTitle, durationMinutes,
+          sharedInterests, organizerFirstName, attendeeFirstName, pastHistory,
+        });
+        try {
+          const retryMsg = await anthropic.messages.create({
+            model: CLAUDE_MODEL, max_tokens: 2000,
+            system: RENDEZVOUS_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: retryPrompt }],
+          });
+          const retryRaw    = retryMsg.content[0]?.text || '{}';
+          const retryParsed = JSON.parse(retryRaw.replace(/```json|```/g, '').trim());
+          const retrySugs   = retryParsed.suggestions;
+          if (Array.isArray(retrySugs) && retrySugs.length > 0) {
+            suggestions = retrySugs;
+            retrySucceeded = true;
+            console.error('[suggest] retry_succeeded: true');
+          } else {
+            console.error('[suggest] retry_succeeded: false — retry returned empty, using original');
+          }
+        } catch (retryErr) {
+          // Retry failed — use the original suggestions rather than blocking the response.
+          console.error('[suggest] retry_succeeded: false — retry threw:', retryErr.message);
+        }
+        // ── END RETRY POINT ──────────────────────────────────────────────────
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Validate Claude's suggestions against the free windows.
     // Claude occasionally picks times that weren't in the provided window list.
@@ -782,6 +1015,50 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       return inWindow;
     });
 
+    // ── Venue enrichment (suggest) ────────────────────────────────────────────
+    // Attach Places API data (place_id, formatted_address, rating, price_level)
+    // to each non-home venue. Best-effort — if enrichment throws or the API key
+    // is missing, we log and continue with Claude's unenriched suggestions.
+    try {
+      const geoCtx    = deriveGeoContext(userA, userB);
+      const cityCtx   = extractCityFromGeoContext(geoCtx);
+      suggestions = await enrichVenues(suggestions, cityCtx);
+    } catch (enrichErr) {
+      console.error('[suggest] enrichVenues failed, continuing unenriched:', enrichErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Telemetry (suggest) ───────────────────────────────────────────────────
+    // Stored as JSONB on the itinerary row so it can be queried in analytics
+    // without touching the suggestions array. Fields are designed to be cheap
+    // to compute (no extra DB queries) and safe to evolve (new fields can be
+    // added without breaking old rows, which will simply lack those keys).
+    const telemetry = {
+      // Was the organizer's context prompt non-empty? Tracks blank vs. guided requests.
+      context_prompt_present: Boolean(contextPrompt),
+      // Intent classification: 'home_likely' | 'activity_specific' | 'ambiguous'
+      // Helps correlate intent class with retry rate and suggestion quality.
+      intent_class: classifyIntent(contextPrompt),
+      // How many of the 3 returned suggestions are home-based (location_type === 'home').
+      // Useful for understanding home vs. venue split distribution.
+      home_suggestion_count: suggestions.filter(s => s.location_type === 'home').length,
+      // Did the theme-match check trigger a second Claude call?
+      retry_attempted: retryAttempted,
+      // Did the retry produce usable suggestions that replaced the originals?
+      retry_succeeded: retrySucceeded,
+      // How many venues were confirmed via Google Places Text Search.
+      venue_enrichment_verified_count: countVerified(suggestions),
+      // How many venues came back unverified (Places miss, home, or API error).
+      venue_enrichment_failed_count: countUnverified(suggestions),
+      // Final suggestion count after window-filter drops hallucinated times.
+      suggestion_count: suggestions.length,
+      // How many past accepted plans were injected as context for this pair.
+      past_history_count: (pastHistory || []).length,
+      // How many live events were injected into the prompt from Ticketmaster / Eventbrite.
+      events_injected_count: localEvents.length,
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Persist itinerary
     const { data: itinerary, error: insertErr } = await supabase
       .from('itineraries')
@@ -798,6 +1075,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         max_travel_minutes: maxTravelMinutes || null,
         context_prompt:   contextPrompt || null,
         event_title:      eventTitle?.trim() || null,
+        suggestion_telemetry: telemetry,
       })
       .select('id')
       .single();
@@ -1165,6 +1443,24 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       .maybeSingle();
     const rerollSharedInterests = rerollAnnotation?.shared_interests || [];
 
+    // Fetch past accepted plans for this pair — same pattern as the suggest route.
+    // Best-effort: a failure returns [] and silently omits the history block.
+    const rerollPastHistory = await fetchAcceptedPairHistory(itin.organizer_id, itin.attendee_id, supabase);
+
+    // Fetch live events for the itinerary's original date range and city.
+    // Best-effort: a failure returns [] and silently omits the events block.
+    let rerollLocalEvents = [];
+    try {
+      rerollLocalEvents = await fetchLocalEvents(
+        deriveGeoContext(userA, userB),
+        itin.date_range_start,
+        itin.date_range_end,
+        [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
+      );
+    } catch (eventsErr) {
+      console.error('[reroll] fetchLocalEvents failed:', eventsErr.message);
+    }
+
     // Extract first names for home-based agenda copy, same as in the suggest route.
     const rerollOrgFirst = (userA.full_name || '').split(' ')[0] || '';
     const rerollAttFirst = (userB.full_name || '').split(' ')[0] || '';
@@ -1206,6 +1502,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       sharedInterests: rerollSharedInterests,
       organizerFirstName: rerollOrgFirst,
       attendeeFirstName:  rerollAttFirst,
+      pastHistory: rerollPastHistory,
+      localEvents: rerollLocalEvents,
     });
 
     let newSuggestions;
@@ -1221,6 +1519,74 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('Claude reroll error:', e.message);
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
+
+    // ── Theme-match retry (reroll) ───────────────────────────────────────────
+    // Mirror of the suggest route retry: if the reroll context is activity_specific
+    // but no returned suggestion reflects that activity, retry once with a strengthened prompt.
+    // Flags declared outside the block so the telemetry object below can read them.
+    let retryAttempted = false;
+    let retrySucceeded = false;
+    {
+      const rerollContextForMatch = contextPrompt || itin.context_prompt || '';
+      const needsRerollRetry =
+        rerollContextForMatch &&
+        classifyIntent(rerollContextForMatch) === 'activity_specific' &&
+        !themeMatchesContextPrompt(newSuggestions, rerollContextForMatch);
+
+      if (needsRerollRetry) {
+        // ── RETRY POINT ──────────────────────────────────────────────────────
+        retryAttempted = true;
+        console.error('[reroll] retry_attempted: true — no suggestions matched context:', rerollContextForMatch);
+        const rerollRetryInstruction =
+          `RETRY — the previous attempt did not return any suggestions matching "${safeRerollContext || rerollContextForMatch}". ` +
+          `This is mandatory: at least one suggestion MUST directly feature "${safeRerollContext || rerollContextForMatch}" ` +
+          `as the primary activity. Do not substitute a thematically adjacent activity.`;
+        const retryRerollPrompt = buildSuggestPrompt({
+          userA: { ...userA, name: userA.full_name || 'User A' },
+          userB: { ...userB, name: userB.full_name || 'User B' },
+          freeWindows: rerollWindows,
+          contextPrompt: [
+            rerollRetryInstruction,
+            exactMatchBlock,
+            rerollVenueBlock,
+            safeRerollContext,
+            feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
+            singleCardNote,
+            appendNote,
+          ].filter(Boolean).join('\n'),
+          maxTravelMinutes: itin.max_travel_minutes || null,
+          eventTitle: itin.event_title || null,
+          durationMinutes: rerollDuration,
+          sharedInterests: rerollSharedInterests,
+          organizerFirstName: rerollOrgFirst,
+          attendeeFirstName:  rerollAttFirst,
+          pastHistory: rerollPastHistory,
+          localEvents: rerollLocalEvents,
+        });
+        try {
+          const retryMsg = await anthropic.messages.create({
+            model: CLAUDE_MODEL, max_tokens: 2000,
+            system: RENDEZVOUS_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: retryRerollPrompt }],
+          });
+          const retryRaw    = retryMsg.content[0]?.text || '{}';
+          const retryParsed = JSON.parse(retryRaw.replace(/```json|```/g, '').trim());
+          const retrySugs   = retryParsed.suggestions;
+          if (Array.isArray(retrySugs) && retrySugs.length > 0) {
+            newSuggestions = retrySugs;
+            retrySucceeded = true;
+            console.error('[reroll] retry_succeeded: true');
+          } else {
+            console.error('[reroll] retry_succeeded: false — retry returned empty, using original');
+          }
+        } catch (retryErr) {
+          // Retry failed — use original suggestions rather than blocking the response.
+          console.error('[reroll] retry_succeeded: false — retry threw:', retryErr.message);
+        }
+        // ── END RETRY POINT ──────────────────────────────────────────────────
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Filter out any suggestions whose date+time falls outside the computed free windows.
     // Reroll has no client-side tzOffset, so default to 0 (UTC). Reroll windows were built
@@ -1246,6 +1612,18 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       }
       return inWindow;
     });
+
+    // ── Venue enrichment (reroll) ─────────────────────────────────────────────
+    // Enrich only the new suggestions Claude generated — existing preserved cards
+    // were enriched (or skipped) when they were first created.
+    try {
+      const rerollGeoCtx  = deriveGeoContext(userA, userB);
+      const rerollCityCtx = extractCityFromGeoContext(rerollGeoCtx);
+      newSuggestions = await enrichVenues(newSuggestions, rerollCityCtx);
+    } catch (enrichErr) {
+      console.error('[reroll] enrichVenues failed, continuing unenriched:', enrichErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Single-card: swap only the targeted card, preserve the rest.
     // appendMode: tag new suggestions with fresh IDs and append to existing list.
@@ -1275,6 +1653,31 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const isOrganizer = itin.organizer_id === req.userId;
     const otherUserId = isOrganizer ? itin.attendee_id : itin.organizer_id;
 
+    // ── Telemetry (reroll) ────────────────────────────────────────────────────
+    // Same schema as the suggest telemetry, plus reroll_count so trends across
+    // successive rerolls on the same itinerary are queryable. feedbackOrContext
+    // captures whichever prompt was active: user-supplied feedback or the stored
+    // original context (from the itinerary row).
+    const feedbackOrContext = contextPrompt || itin.context_prompt || '';
+    const updatedRerollCount = (itin.reroll_count || 0) + 1;
+    const rerollTelemetry = {
+      context_prompt_present: Boolean(feedbackOrContext),
+      intent_class: classifyIntent(feedbackOrContext),
+      home_suggestion_count: newSuggestions.filter(s => s.location_type === 'home').length,
+      retry_attempted: retryAttempted,
+      retry_succeeded: retrySucceeded,
+      venue_enrichment_verified_count: countVerified(newSuggestions),
+      venue_enrichment_failed_count: countUnverified(newSuggestions),
+      suggestion_count: newSuggestions.length,
+      past_history_count: (rerollPastHistory || []).length,
+      // How many live events were injected into the prompt from Ticketmaster / Eventbrite.
+      events_injected_count: rerollLocalEvents.length,
+      // Which reroll number this was (1-indexed) — useful for analyzing
+      // how quality changes with successive rerolls on the same itinerary.
+      reroll_count: updatedRerollCount,
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     // When the attendee swaps out a card that is NOT the organizer's pick, preserve the
     // organizer's pick and status so the attendee still sees Accept/Decline on the original
     // pick card — and accepting it will still auto-lock (otherStatus stays 'accepted').
@@ -1291,7 +1694,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // would fail. Only include selected_suggestion_id when we explicitly want to null it.
     const rerollData = {
       suggestions,
-      reroll_count: (itin.reroll_count || 0) + 1,
+      reroll_count: updatedRerollCount,
+      suggestion_telemetry: rerollTelemetry,
       // appendMode: preserve all statuses — we're only adding options, not resetting negotiation
       organizer_status: preserveOrgPick
         ? itin.organizer_status

@@ -30,11 +30,63 @@ The Claude prompt in `buildSuggestPrompt` is the engine. Current state is functi
 
 Right now Places API returns results ranked by proximity and generic rating. Low bar.
 
-- Filter by minimum threshold (4.2+ stars, 100+ reviews) before passing to Claude
+**Key decision: use quality signals as soft context for Claude, not hard filters.**
+A 4.2+ star / 100+ review threshold mechanically excludes newer spots, hidden gems,
+neighborhood joints, and niche venues — biasing everything toward the Yelp-famous tier.
+That defeats the product's differentiation. Instead:
+
+- Pass `rating` and `user_ratings_total` per venue to Claude as context — let Claude reason
+  about whether a 4.0 with 38 reviews is the right underground pick
 - Pull `price_level` and pass to Claude — match vibe to budget implicitly
-- Use `editorial_summary` from Places API (New) — much richer than name + address
-- Prefer places with photos (signals active, real business)
-- Consider pulling recent review summaries as a sentiment quality signal
+- Use `editorial_summary` from Places API (New) where available — far richer than name + address
+- Pass `has_photos` boolean to Claude — signals active, real business
+- Do NOT implement a hard star/review floor
+
+---
+
+## Limited-time & live events
+Added: March 13, 2026
+
+This is a meaningful product differentiator. A concert recommendation that's actually
+playing when the user is free is a completely different value prop than "there are generally
+concerts at Brooklyn Steel."
+
+### Data sources
+
+| Source | API | Coverage | Free tier |
+|---|---|---|---|
+| Ticketmaster | Discovery API | Concerts, sports, shows | 5,000 calls/day |
+| Eventbrite | Events API | Local festivals, pop-ups, community events | Free with registration |
+| Museum exhibitions | None reliable | NYC has no unified API | Out of POC scope |
+| Comedy shows | None reliable | Venue-specific | Out of POC scope |
+
+### Architecture
+
+New utility: `server/utils/events.js`
+- `fetchLocalEvents(location, dateRangeStart, dateRangeEnd, interests)`
+- Calls Ticketmaster + Eventbrite concurrently
+- Dedupes by name + date
+- Filters by relevance to user interests (string match against interests array)
+- Returns top 5–8 events: name, date/time, venue, category, URL
+- 1-hour module-scoped cache per (location, date_range) — event data doesn't change minute-to-minute
+
+Claude prompt injection (third content source alongside Places + profiles):
+```
+AVAILABLE TIME-SENSITIVE EVENTS (happening during the suggested window):
+- Knicks vs. Celtics @ MSG — Sat Mar 14, 7:30 PM [sports, basketball]
+- LCD Soundsystem @ Terminal 5 — Sat Mar 14, 9 PM [music, concert]
+- NYC Brewery Crawl @ Williamsburg — Sun Mar 15, 2 PM [local event, food/drink]
+
+If any of these match the users' interests or context prompt, strongly prefer them
+over generic venue suggestions. These are real events with real dates.
+```
+
+Suggestion JSONB: add `event_source` field — `ticketmaster | eventbrite | places | home`
+UI: 🎟 badge on event-anchored cards with deep link to purchase/info page
+
+### Privacy
+- Event API keys in server/.env only, never client-exposed
+- Only location + date range sent to event APIs — no user data
 
 ---
 
@@ -184,3 +236,48 @@ ItineraryView gets day-grouped rendering for multi-day trips.
 
 Steps 1–4 ship together as a cohesive local mode improvement.
 Steps 5–6 are travel mode proper and ship as a follow-on.
+
+---
+
+## Timezone localization
+Added: March 12, 2026
+
+Required when travel mode ships. Two users in different timezones creates ambiguity in
+availability windows, suggested meeting times, and calendar event creation.
+
+### Core problem
+
+All scheduling logic currently assumes both users share a timezone. A user in NYC and a
+friend in LA have a 3-hour offset — "evening" means different things, and a calendar
+event must be created with the correct local time for each user.
+
+### What needs to change
+
+- Store `timezone` on `profiles` (column already exists — confirm it's being populated)
+- All availability queries against Google Calendar API must request events in each user's
+  respective timezone — not UTC, not a single shared timezone
+- Overlap detection must normalize both calendars to UTC before finding mutual free windows,
+  then convert suggested times back to each user's local timezone before display
+- Claude prompt should receive timezone-aware time windows (e.g., "7pm–10pm ET / 4pm–7pm PT")
+  so suggestions reflect actual local experience
+- Calendar event creation must set the correct `timeZone` field per attendee in the Google
+  Calendar API call
+- UI should display times in the viewing user's local timezone with an optional "their time"
+  annotation (e.g., "7:00pm your time / 4:00pm their time")
+
+### Edge cases to handle
+
+- Users who travel and have stale timezone on profile — consider pulling timezone from
+  Google Calendar API's calendar object, which reflects current device timezone
+- DST transitions during a multi-day trip window — use IANA timezone identifiers throughout,
+  never raw UTC offsets
+- "Any" time of day selection — define sensible local-time bounds per user rather than a
+  single global window
+
+### Implementation sequencing
+
+1. Audit current timezone handling — confirm `profiles.timezone` is populated on OAuth login
+2. Update availability query to normalize to UTC, surface results in local time
+3. Update Claude prompt to include both users' timezone-aware windows
+4. Update calendar event creation to use per-user `timeZone` field
+5. Update UI to show times in viewer's local timezone with "their time" annotation
