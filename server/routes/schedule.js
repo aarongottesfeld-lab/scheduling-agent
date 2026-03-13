@@ -189,6 +189,42 @@ function classifyIntent(contextPrompt) {
 }
 
 /**
+ * Attempt to extract a specific named venue from a user-supplied context prompt.
+ * Returns the extracted name string, or null if no specific venue is detected.
+ *
+ * Detection patterns (applied to the original-case text, not lowercased):
+ *   "go to [Venue Name]"              — strongest signal
+ *   "at [Venue Name]" / "dinner at"   — activity + preposition pattern
+ *
+ * The captured name is limited to 2–50 characters and must start with a capital
+ * letter so that generic phrases like "go to a bar" are not mistakenly extracted.
+ */
+function extractVenueName(text) {
+  if (!text) return null;
+  // "go to [Venue Name]" — capture the capitalized phrase after "go to"
+  let m = text.match(/\bgo\s+to\s+([A-Z][^.!?\n,]{1,49})/);
+  if (m) return m[1].trim();
+  // "[preposition] [Venue Name]" — "drinks at", "dinner at", "meet at", etc.
+  m = text.match(/\b(?:at|dinner at|drinks at|lunch at|meet at|brunch at|going to)\s+([A-Z][^.!?\n,]{1,49})/);
+  if (m) return m[1].trim();
+  return null;
+}
+
+/**
+ * Build the venue-substitution instruction block for a named venue.
+ * Injected into the Claude prompt when a specific venue is referenced so Claude
+ * doesn't silently drop it or return a generic suggestion if the venue can't be used.
+ */
+function buildVenueSubstitutionBlock(venueName) {
+  return `VENUE SUBSTITUTION RULE: If "${venueName}" is unavailable, closed during the requested time window, or cannot be confirmed as a real place, do NOT omit it silently or return a generic suggestion. Instead, find the closest alternative that matches on ALL of these dimensions:
+  - Vibe and atmosphere (e.g. speakeasy-style, casual dive, upscale cocktail bar)
+  - Price point (use the same general tier)
+  - Neighborhood or proximity to the original venue's location
+  - Relevant to the same time of day and occasion
+In the suggestion output, include a note field explaining the substitution: "${venueName} is closed at this time — [Substitute] has a similar [vibe/price/location]." The note should be honest and specific, not generic.`;
+}
+
+/**
  * Infer event duration in minutes from the event title and optional context.
  * Used to size free-window slots and as a hint to Claude for durationMinutes.
  * Errs toward the typical activity length; defaults to 2 hours.
@@ -652,6 +688,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Strips prompt-injection patterns and enforces the 500-char hard cap.
     const safeContext = sanitizePromptInput(contextPrompt);
 
+    // If the organizer named a specific venue in their context prompt, prepend a
+    // substitution instruction so Claude doesn't silently drop it or return a generic
+    // suggestion if that venue is unavailable.
+    const suggestVenueName = extractVenueName(contextPrompt);
+    const suggestVenueBlock = suggestVenueName ? buildVenueSubstitutionBlock(suggestVenueName) : '';
+    const finalSuggestContext = [suggestVenueBlock, safeContext].filter(Boolean).join('\n');
+
     // Fetch shared interests from friend_annotations — organizer's annotation of the attendee.
     // Queried from the organizer's perspective (user_id = organizer, friend_id = attendee).
     // Best-effort: a missing or errored annotation is non-fatal; we just omit the field.
@@ -667,7 +710,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: safeContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1112,15 +1155,21 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       ? `EXACT MATCH REQUIRED: The user has given a specific instruction for this suggestion: "${safeRerollContext || singleCardNote}". Generate a suggestion that matches this as closely as possible. If it names a specific venue, activity type, or location, use that directly. If it describes an activity at home (e.g. "just hang out", "watch a movie", "come over"), generate a home-based agenda. Do not substitute a thematically similar but different activity — match the intent as literally as possible.`
       : '';
 
+    // If the context prompt names a specific venue, also inject the substitution rule
+    // so Claude handles venue unavailability gracefully rather than silently ignoring it.
+    const rerollVenueName  = extractVenueName(contextPrompt);
+    const rerollVenueBlock = rerollVenueName ? buildVenueSubstitutionBlock(rerollVenueName) : '';
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: rerollWindows,
-      // exactMatchBlock goes first so it overrides everything else in the prompt.
+      // exactMatchBlock and venueBlock go first so they override everything else.
       // singleCardNote / appendNote are server-generated strings — no sanitization needed.
       // safeRerollContext is already sanitized above; feedback is sanitized inline.
       contextPrompt: [
         exactMatchBlock,
+        rerollVenueBlock,
         safeRerollContext,
         feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
         singleCardNote,
