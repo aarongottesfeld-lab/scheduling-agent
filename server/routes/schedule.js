@@ -1435,27 +1435,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const itineraryId = req.params.id;
     if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
-    // DEBUG — log full request body to expose what the client is sending
-    console.log('[reroll:DEBUG] req.body:', JSON.stringify(req.body, null, 2));
-
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
     if (itin.locked_at) return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
     if ((itin.reroll_count || 0) >= 10) return res.status(400).json({ error: 'Max rerolls reached.' });
-
-    // DEBUG — log the itinerary row fields most likely to be affected by the location sprint
-    console.log('[reroll:DEBUG] itin key fields:', JSON.stringify({
-      organizer_id:      itin.organizer_id,
-      attendee_id:       itin.attendee_id,
-      location_preference: itin.location_preference,
-      travel_mode:       itin.travel_mode,
-      date_range_start:  itin.date_range_start,
-      date_range_end:    itin.date_range_end,
-      time_of_day:       itin.time_of_day,
-      reroll_count:      itin.reroll_count,
-      suggestions_count: (itin.suggestions || []).length,
-    }, null, 2));
 
     const { contextPrompt, feedback, replaceSuggestionId, rerollType = 'both', appendMode = false } = req.body;
     if (contextPrompt && typeof contextPrompt === 'string' && contextPrompt.length > MAX_CONTEXT) {
@@ -1627,9 +1611,6 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       locationPreference:   itin.location_preference || 'system_choice',
     });
 
-    // DEBUG — checkpoint: about to call Claude; buildSuggestPrompt completed without throwing
-    console.log('[reroll:DEBUG] buildSuggestPrompt OK. Calling Claude. isSingleCard:', isSingleCard, 'rerollType:', rerollType, 'locationPreference:', itin.location_preference || 'system_choice');
-
     let newSuggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1638,21 +1619,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         messages: [{ role: 'user', content: prompt }],
       });
       const raw = msg.content[0]?.text || '{}';
-      // DEBUG — log Claude's raw response so we can see what it returned before JSON parsing
-      console.log('[reroll:DEBUG] Claude raw response:', raw.slice(0, 800));
-      let parsed;
-      try {
-        parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
-      } catch (parseErr) {
-        // DEBUG — separate JSON parse errors from API errors so they're distinguishable in logs
-        console.error('[reroll:DEBUG] JSON parse failed:', parseErr.message, '| raw snippet:', raw.slice(0, 200));
-        throw parseErr;
-      }
-      newSuggestions = parsed.suggestions || [];
-      // DEBUG — confirm how many suggestions Claude returned before any filtering
-      console.log('[reroll:DEBUG] Claude returned', newSuggestions.length, 'suggestion(s)');
+      newSuggestions = JSON.parse(raw.replace(/```json|```/g, '').trim()).suggestions || [];
     } catch (e) {
-      console.error('[reroll:DEBUG] Claude call/parse error:', e.message, '\nStack:', e.stack);
+      console.error('Claude reroll error:', e.message, e.stack?.split('\n')[1]);
       return res.status(500).json({ error: 'Could not generate new suggestions. Please try again.' });
     }
 
@@ -1726,19 +1695,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // DEBUG — log suggestion count before window filter and the first few window bounds
-    console.log('[reroll:DEBUG] Before window filter: newSuggestions.length =', newSuggestions.length,
-      '| rerollWindows.length =', rerollWindows.length,
-      '| first window:', rerollWindows[0] ? `${rerollWindows[0].start} – ${rerollWindows[0].end}` : 'NONE',
-      '| last window:', rerollWindows[rerollWindows.length - 1] ? `${rerollWindows[rerollWindows.length - 1].start} – ${rerollWindows[rerollWindows.length - 1].end}` : 'NONE',
-    );
-    if (newSuggestions.length > 0) {
-      console.log('[reroll:DEBUG] Suggestions before filter:', newSuggestions.map(s => ({ id: s.id, date: s.date, time: s.time, duration: s.durationMinutes })));
-    }
+    // ── Window filter (reroll) ────────────────────────────────────────────────
+    // Drop suggestions whose date+time doesn't overlap any computed free window.
+    //
+    // Reroll windows are built with tzOffset=0 because the stored itinerary has no
+    // record of the client's timezone offset. Times in the prompt are therefore UTC,
+    // and Claude should pick from them — but it occasionally picks times outside the
+    // window (e.g. when asked to keep an existing card's "evening" time and that time
+    // maps past the UTC window boundary, or when the theme-match retry fires and
+    // returns a suggestion with a different date/time than the prompt specified).
+    //
+    // FIX — single-card fallback: save Claude's raw output before filtering so that
+    // if every suggestion is dropped, we can fall back to the unfiltered first result
+    // rather than returning a hard error. The user asked for a replacement — getting
+    // one at a slightly imprecise time is always better than seeing an error modal.
+    // Full-reroll and append paths are unaffected; they retain the strict filter.
+    const newSuggestionsBeforeWindowFilter = newSuggestions.slice(); // snapshot pre-filter
 
-    // Filter out any suggestions whose date+time falls outside the computed free windows.
-    // Reroll has no client-side tzOffset, so default to 0 (UTC). Reroll windows were built
-    // with tzOffset=0, so suggestions generated from them will already be in UTC-relative slots.
     newSuggestions = newSuggestions.filter(s => {
       if (!s.date || !s.time) return true;
       const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
@@ -1749,6 +1722,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       if (ampm === 'PM' && h !== 12) h += 12;
       if (ampm === 'AM' && h === 12) h = 0;
       const [sy2, sm2, sd2] = s.date.split('-').map(Number);
+      // Times are treated as UTC here because rerollWindows were built with tzOffset=0.
+      // See the note above for why this diverges from the suggest route.
       const utcStart = new Date(Date.UTC(sy2, sm2 - 1, sd2, h, min, 0));
       const durMs    = (s.durationMinutes || rerollDuration) * 60000;
       const utcEnd   = new Date(utcStart.getTime() + durMs);
@@ -1756,13 +1731,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         utcStart < new Date(w.end) && utcEnd > new Date(w.start)
       );
       if (!inWindow) {
-        console.warn(`[reroll] Dropping hallucinated suggestion: ${s.date} ${s.time}`);
+        console.warn(`[reroll] Window filter dropped suggestion: ${s.date} ${s.time}`);
       }
       return inWindow;
     });
-
-    // DEBUG — log count after filter so we can see whether the filter is the culprit
-    console.log('[reroll:DEBUG] After window filter: newSuggestions.length =', newSuggestions.length);
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Venue enrichment (reroll) ─────────────────────────────────────────────
     // Enrich only the new suggestions Claude generated — existing preserved cards
@@ -1776,9 +1749,6 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // DEBUG — final state before single-card guard that triggers the user-facing error
-    console.log('[reroll:DEBUG] Entering merge block. isSingleCard:', isSingleCard, '| newSuggestions.length:', newSuggestions.length, '| appendMode:', appendMode);
-
     // Single-card: swap only the targeted card, preserve the rest.
     // appendMode: tag new suggestions with fresh IDs and append to existing list.
     // Full reroll: replace all suggestions.
@@ -1790,7 +1760,26 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       suggestions = (itin.suggestions || []).map(s =>
         s.id === replaceSuggestionId ? replacement : s
       );
+    } else if (isSingleCard && newSuggestionsBeforeWindowFilter.length > 0) {
+      // ── Single-card window-filter fallback ────────────────────────────────
+      // The window filter dropped every suggestion Claude generated. Rather than
+      // returning an error, use the first pre-filter suggestion as the replacement.
+      //
+      // Root cause: reroll windows use tzOffset=0 (UTC) because the client's timezone
+      // offset is not stored on the itinerary. Claude occasionally picks a time that
+      // was correct in the original local timezone but maps outside the UTC window
+      // range (e.g., 8 PM EDT = 12 AM UTC, past the 11 PM UTC cutoff). The user
+      // explicitly asked for a replacement card — a slightly imprecise time is
+      // acceptable; a hard error is not.
+      console.warn(`[reroll] Single-card window filter dropped all suggestions — using pre-filter fallback.`);
+      const fallback = { ...newSuggestionsBeforeWindowFilter[0], id: replaceSuggestionId, attendeeSelected: false };
+      suggestions = (itin.suggestions || []).map(s =>
+        s.id === replaceSuggestionId ? fallback : s
+      );
     } else if (isSingleCard) {
+      // Claude returned no suggestions at all (empty array from JSON parse).
+      // This is distinct from the window-filter case above — there's nothing to fall back to.
+      console.error('[reroll] Single-card reroll: Claude returned 0 suggestions, cannot replace card.');
       return res.status(500).json({ error: 'Could not generate a replacement. Please try again.' });
     } else if (appendMode) {
       // Give each appended suggestion a unique ID so they don't collide with existing IDs
