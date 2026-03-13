@@ -368,6 +368,21 @@ event schema we're building is compatible.
 - [ ] Privacy: never silently add anyone — always organizer-initiated
 - [ ] v2: `calendar.events.watch` webhook (requires Vercel URL + renewal logic, max 7-day channels)
 
+### Visual Design Refresh (after React Native migration, before App Store submission)
+
+Simon (graphic designer) will create mockups in Figma or Canva. Implementation path:
+- Simon delivers: screen mockups (PNG exports), hex color palette, font choices (Google Fonts preferred), component-level detail on cards/buttons/nav
+- Upload screenshots to Claude.ai — Claude reads them directly and writes a precise Claude Code prompt
+- Claude Code updates CSS variables (--brand, --surface-2, --border, etc.), NavBar, card components, and Google Fonts import
+- Expect 80–90% fidelity from screenshots; one round of iteration for spacing/fine-tuning
+- No code or asset files needed from Simon — mockups + color/font spec is sufficient
+
+Sequencing rationale: design refresh is highest value as a native app heading to the App Store,
+where first impressions against polished competitors matter most. Less critical for the PWA
+early-user phase where feedback on functionality is the priority.
+
+---
+
 ### React Native Migration & Native App
 > PWA is the right first platform — no App Store review, installable on home screen, backend unchanged. React Native migration comes after the PWA is stable and the core feature set is proven. The migration unlocks native capabilities (EventKit, push, haptics) and proper App Store distribution.
 
