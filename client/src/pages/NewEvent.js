@@ -2,9 +2,11 @@
 // Collects friend, date window, time-of-day preference, travel cap,
 // optional title and free-text context, then calls the AI suggestion engine.
 // Once generation starts, the form is replaced with a spinner overlay until the AI responds.
+// Privacy: only supabaseId sent to PostHog — no PII, no health data, no calendar content
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { getSuggestions, getMe } from '../utils/api';
 import client from '../utils/client';
@@ -240,6 +242,14 @@ export default function NewEvent() {
       }
       const itineraryId = data?.itineraryId || data?.id;
       if (!itineraryId) throw new Error('No itinerary ID returned from server.');
+      // Track successful suggestion generation. intent_class comes from the server response
+      // if available (the schedule route may not return it yet — undefined is fine).
+      try {
+        posthog.capture('suggestion_generated', {
+          intent_class:       data?.intent_class ?? null,
+          has_context_prompt: !!context,
+        });
+      } catch {}
       navigate(`/schedule/${itineraryId}`);
     } catch (err) {
       setError(err.message || 'Could not generate suggestions. Please try again.');

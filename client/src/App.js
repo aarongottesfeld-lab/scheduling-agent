@@ -1,4 +1,5 @@
 // App.js — root component
+// Privacy: only supabaseId sent to PostHog — no PII, no health data, no calendar content
 //
 // Responsibilities:
 //   1. Read display info (name, picture, new flag) from the OAuth redirect URL
@@ -6,6 +7,7 @@
 //   3. Block route rendering behind an auth-ready gate to prevent ProtectedRoute
 //      from flash-redirecting to /login before the cookie check completes
 //   4. Set up all client-side routes via React Router
+//   5. Identify the user in PostHog (supabaseId only) and fire pageview events on route change
 //
 // Auth flow (first load after OAuth):
 //   Browser lands at /?name=...&picture=...&new=1
@@ -26,7 +28,8 @@
 //   → authReady = true, ProtectedRoute fails → /login
 
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import posthog from 'posthog-js';
 
 import { initSessionFromUrl, setSessionFromApi, clearSession } from './utils/auth';
 import client from './utils/client';
@@ -46,6 +49,19 @@ import GroupDetail         from './pages/GroupDetail';
 import NewGroupEvent       from './pages/NewGroupEvent';
 import GroupItineraryView  from './pages/GroupItineraryView';
 
+/**
+ * Fires a PostHog $pageview event on every route change.
+ * Must live inside <BrowserRouter> so useLocation() has a Router context.
+ * Renders nothing — purely a side-effect component.
+ */
+function PageViewTracker() {
+  const location = useLocation();
+  useEffect(() => {
+    try { posthog.capture('$pageview'); } catch {}
+  }, [location.pathname]);
+  return null;
+}
+
 export default function App() {
   // authReady: false while the /auth/me round-trip is in flight.
   // Keeps routes from rendering (and ProtectedRoute from redirecting) before
@@ -63,7 +79,11 @@ export default function App() {
     // On 401, the cookie is missing/expired — clear stale sessionStorage data.
     client.get('/auth/me')
       .then(res => {
-        setSessionFromApi(res.data.userId, res.data.name, res.data.picture);
+        const supabaseId = res.data.userId;
+        setSessionFromApi(supabaseId, res.data.name, res.data.picture);
+        // Identify the user in PostHog using their stable Supabase UUID only.
+        // Never send name, email, avatar, or any other PII.
+        try { posthog.identify(supabaseId); } catch {}
       })
       .catch(() => {
         // No valid cookie — wipe any stale sessionStorage so isAuthenticated()
@@ -85,6 +105,8 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      {/* Fires $pageview on every pathname change — must be inside BrowserRouter */}
+      <PageViewTracker />
       <Routes>
         {/* Public — Login redirects to /home if already authenticated */}
         <Route path="/" element={<Login />} />

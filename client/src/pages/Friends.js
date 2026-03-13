@@ -2,8 +2,10 @@
 // Three sections: user search, incoming friend requests, and the accepted friends list.
 // All friend mutations (add, accept/decline, remove) update local state optimistically
 // so the UI responds immediately without a full reload.
+// Privacy: only supabaseId sent to PostHog — no PII, no health data, no calendar content
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { searchUserByEmail } from '../utils/api';
 import client from '../utils/client';
@@ -96,6 +98,8 @@ export default function Friends() {
       setResults((prev) => prev.map((u) =>
         u.id === userId ? { ...u, requestSent: true } : u
       ));
+      // TODO: onboarding_completed — wire here once the onboarding flow is built.
+      try { posthog.capture('friend_added'); } catch {}
     } catch (err) {
       setActionErr(err.response?.data?.error || err.message || 'Could not send friend request.');
     }

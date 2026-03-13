@@ -1,4 +1,5 @@
 // ItineraryView.js — detail view for a single itinerary (scheduling session between two users).
+// Privacy: only supabaseId sent to PostHog — no PII, no health data, no calendar content
 //
 // Shows suggestion cards with context-sensitive action buttons depending on the viewer's
 // role (organizer or attendee) and the current negotiation state.
@@ -16,6 +17,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 // No auth imports needed — isOrganizer is computed server-side in the API response.
 // The session cookie is sent automatically; no manual auth header required.
@@ -707,8 +709,15 @@ export default function ItineraryView() {
   async function handleAccept(suggestionId) {
     setSubmitting(true);
     try {
-      await client.post('/schedule/confirm', { itineraryId: id, suggestionId });
+      const res = await client.post('/schedule/confirm', { itineraryId: id, suggestionId });
       await load();
+      // Fire itinerary_locked when the server confirms the plan is locked.
+      // The confirm endpoint returns locked_at or itinerary_status to signal this.
+      if (res.data?.locked_at || res.data?.itinerary_status === 'locked') {
+        try {
+          posthog.capture('itinerary_locked', { is_organizer: !!itin?.isOrganizer });
+        } catch {}
+      }
     } catch { setError('Could not confirm. Please try again.'); }
     finally { setSubmitting(false); }
   }
@@ -735,6 +744,12 @@ export default function ItineraryView() {
   async function handleRerollSubmit(context) {
     setRerolling(true);
     try {
+      try {
+        posthog.capture('reroll_triggered', {
+          reroll_type:  'full',
+          reroll_count: (itin?.reroll_count ?? 0) + 1,
+        });
+      } catch {}
       await client.post(`/schedule/itinerary/${id}/reroll`, { contextPrompt: context });
       await load();
     } catch { setError('Could not generate new suggestions. Please try again.'); }
@@ -774,6 +789,12 @@ export default function ItineraryView() {
     setActiveCardId(suggestionId);
     setError('');
     try {
+      try {
+        posthog.capture('reroll_triggered', {
+          reroll_type:  rerollType, // 'timing' | 'activity' | 'both'
+          reroll_count: (itin?.reroll_count ?? 0) + 1,
+        });
+      } catch {}
       await client.post(`/schedule/itinerary/${id}/reroll`, {
         replaceSuggestionId: suggestionId,
         rerollType,
