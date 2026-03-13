@@ -163,14 +163,28 @@ function classifyIntent(contextPrompt) {
   // No prompt at all → most likely a casual hang at home
   if (!contextPrompt || !contextPrompt.trim()) return 'home_likely';
   const text = contextPrompt.toLowerCase();
+
+  // Single-card reroll patterns: "go to [place]" or "watch [title]" are near-literal
+  // instructions — treat as activity_specific so Claude focuses on the named thing.
+  // "go to" almost always means a specific venue, even if no venue name follows.
+  if (/^\s*go\s+to\b/.test(text)) return 'activity_specific';
+
+  // "watch [something]" in a single-card context means a movie/show at home, not a theater,
+  // unless "theater" or "cinema" appears alongside it.
+  if (/\bwatch\b/.test(text) && !/\b(theater|cinema|movie theater|imax)\b/.test(text)) {
+    return 'home_likely';
+  }
+
   // Keywords that strongly imply going out to a venue
   if (/\b(dinner|lunch|brunch|restaurant|bar|bars|drinks|cocktails|concert|show|museum|gallery|golf|bowling|movie theater|cinema|club|lounge|arcade|escape room|spa|class|workout|gym|hike|beach|park outing|sporting event|game night out|rooftop)\b/.test(text)) {
     return 'activity_specific';
   }
+
   // Keywords that suggest staying in / home-based hangout
-  if (/\b(hang(ing)? out|chill|come over|at (my|your|the) place|home|house|apartment|cook(ing)?|bake|movie night|watch|netflix|jam(ming)?|game night|board games?|video games?|play(ing)? games?|night in|stay in|order in|take(out|away))\b/.test(text)) {
+  if (/\b(hang(ing)? out|chill|come over|just hang|at (my|your|the) place|home|house|apartment|cook(ing)?|bake|movie night|netflix|jam(ming)?|game night|board games?|video games?|play(ing)? games?|night in|stay in|order in|take(out|away))\b/.test(text)) {
     return 'home_likely';
   }
+
   return 'ambiguous';
 }
 
@@ -1087,14 +1101,27 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const rerollOrgFirst = (userA.full_name || '').split(' ')[0] || '';
     const rerollAttFirst = (userB.full_name || '').split(' ')[0] || '';
 
+    // Single-card rerolls with a specific contextPrompt or singleCardNote should be
+    // treated as near-literal instructions, not preference hints. The user said exactly
+    // what they want ("go to Russ & Daughters", "watch a movie", "just hang out") —
+    // Claude should match the intent as literally as possible, not substitute something
+    // thematically similar. We prepend a hard EXACT MATCH block before anything else
+    // so it takes precedence over profile preferences and general rules.
+    const safeRerollContext = sanitizePromptInput(contextPrompt);
+    const exactMatchBlock = isSingleCard && (safeRerollContext || singleCardNote)
+      ? `EXACT MATCH REQUIRED: The user has given a specific instruction for this suggestion: "${safeRerollContext || singleCardNote}". Generate a suggestion that matches this as closely as possible. If it names a specific venue, activity type, or location, use that directly. If it describes an activity at home (e.g. "just hang out", "watch a movie", "come over"), generate a home-based agenda. Do not substitute a thematically similar but different activity — match the intent as literally as possible.`
+      : '';
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
       freeWindows: rerollWindows,
-      // Sanitize both user-supplied fields before concatenating into the prompt.
+      // exactMatchBlock goes first so it overrides everything else in the prompt.
       // singleCardNote / appendNote are server-generated strings — no sanitization needed.
+      // safeRerollContext is already sanitized above; feedback is sanitized inline.
       contextPrompt: [
-        sanitizePromptInput(contextPrompt),
+        exactMatchBlock,
+        safeRerollContext,
         feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '',
         singleCardNote,
         appendNote,
