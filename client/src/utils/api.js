@@ -65,3 +65,136 @@ export async function confirmSuggestion(itineraryId, suggestionId) {
   const res = await client.post('/schedule/confirm', { itineraryId, suggestionId });
   return res.data;
 }
+
+// ── Groups ─────────────────────────────────────────────────────────────────
+
+/** Create a new group. Returns { group: { id, name, description, created_by, created_at } }. */
+export async function createGroup(name, description) {
+  const res = await client.post('/groups', { name, description });
+  return res.data;
+}
+
+/** List all groups the current user is an active member of. Returns { groups: [...] }. */
+export async function getGroups() {
+  const res = await client.get('/groups');
+  return res.data;
+}
+
+/** Get group detail + member list. Returns { group, my_role, members }. */
+export async function getGroup(groupId) {
+  const res = await client.get(`/groups/${groupId}`);
+  return res.data;
+}
+
+/**
+ * Admin-only: invite a user to a group by their Supabase userId.
+ * Returns { message: 'Invitation sent.' }.
+ */
+export async function inviteMember(groupId, userId) {
+  const res = await client.post(`/groups/${groupId}/members`, { userId });
+  return res.data;
+}
+
+/**
+ * Update the current user's own membership status.
+ * status: 'active' (accept invite), 'declined', or 'left'.
+ * Returns { message: 'Membership updated.' }.
+ */
+export async function updateMembership(groupId, userId, status) {
+  const res = await client.patch(`/groups/${groupId}/members/${userId}`, { status });
+  return res.data;
+}
+
+/** Admin-only: hard-remove a member from the group. Returns { message: 'Member removed.' }. */
+export async function removeMember(groupId, userId) {
+  const res = await client.delete(`/groups/${groupId}/members/${userId}`);
+  return res.data;
+}
+
+// ── Group Itineraries ───────────────────────────────────────────────────────
+
+/**
+ * Create a new group itinerary in organizer_draft state.
+ * Returns { itineraryId: uuid }.
+ * Call generateGroupSuggestions() after this to generate AI suggestions.
+ */
+export async function createGroupItinerary(payload) {
+  const res = await client.post('/group-itineraries', payload);
+  return res.data;
+}
+
+/**
+ * Trigger AI suggestion generation for an organizer_draft itinerary.
+ * Organizer-only. Returns { suggestions: [...] }.
+ * Itinerary stays in organizer_draft after this — organizer reviews before sending.
+ */
+export async function generateGroupSuggestions(itineraryId) {
+  const res = await client.post(`/group-itineraries/${itineraryId}/suggest`);
+  return res.data;
+}
+
+/**
+ * Organizer sends the itinerary to all attendees.
+ * Transitions status: organizer_draft → awaiting_responses.
+ * Returns { message: 'Itinerary sent to group.' }.
+ */
+export async function sendGroupItinerary(itineraryId) {
+  const res = await client.post(`/group-itineraries/${itineraryId}/send`);
+  return res.data;
+}
+
+/**
+ * Attendee records their vote on a suggestion.
+ * vote: 'accepted' | 'declined' | 'abstained'
+ * Returns { message, itinerary_status, locked_at }.
+ * The DB trigger handles quorum evaluation — do not replicate that logic here.
+ */
+export async function voteOnGroupItinerary(itineraryId, selectedSuggestionId, vote) {
+  const res = await client.patch(`/group-itineraries/${itineraryId}/vote`, {
+    selected_suggestion_id: selectedSuggestionId,
+    vote,
+  });
+  return res.data;
+}
+
+/**
+ * Organizer requests a fresh set of AI suggestions.
+ * Appends current suggestions to changelog, resets attendee_statuses to 'pending'.
+ * Returns { suggestions: [...] }.
+ */
+export async function rerollGroupItinerary(itineraryId) {
+  const res = await client.post(`/group-itineraries/${itineraryId}/reroll`);
+  return res.data;
+}
+
+/**
+ * Get a group itinerary with vote_status map and organizer profile.
+ * Returns the full row plus { organizer, vote_status, is_organizer }.
+ */
+export async function getGroupItinerary(itineraryId) {
+  const res = await client.get(`/group-itineraries/${itineraryId}`);
+  return res.data;
+}
+
+/**
+ * Add a comment on a specific suggestion.
+ * body is capped at 2000 chars (enforced in UI and server).
+ * Returns { comment: { id, suggestion_id, user_id, body, created_at } }.
+ */
+export async function addGroupComment(itineraryId, suggestionId, body) {
+  const res = await client.post(`/group-itineraries/${itineraryId}/comments`, {
+    suggestion_id: suggestionId,
+    body,
+  });
+  return res.data;
+}
+
+/**
+ * Fetch paginated comments for an itinerary.
+ * params: { page?, suggestion_id? }
+ * Returns { comments: [...], total, page, pages }.
+ */
+export async function getGroupComments(itineraryId, params = {}) {
+  const res = await client.get(`/group-itineraries/${itineraryId}/comments`, { params });
+  return res.data;
+}

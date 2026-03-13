@@ -59,6 +59,9 @@ export default function NavBar() {
         <NavLink to="/friends" className={linkClass}>
           Friends
         </NavLink>
+        <NavLink to="/groups" className={linkClass}>
+          Groups
+        </NavLink>
         <NavLink to="/schedule/new" className={linkClass}>
           New Event
         </NavLink>

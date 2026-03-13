@@ -32,15 +32,19 @@ import { initSessionFromUrl, setSessionFromApi, clearSession } from './utils/aut
 import client from './utils/client';
 import ProtectedRoute from './components/ProtectedRoute';
 
-import Login         from './pages/Login';
-import ProfileSetup  from './pages/ProfileSetup';
-import Home          from './pages/Home';
-import Friends       from './pages/Friends';
-import FriendProfile from './pages/FriendProfile';
-import NewEvent      from './pages/NewEvent';
-import ItineraryView from './pages/ItineraryView';
-import MyProfile     from './pages/MyProfile';
-import Notifications from './pages/Notifications';
+import Login               from './pages/Login';
+import ProfileSetup        from './pages/ProfileSetup';
+import Home                from './pages/Home';
+import Friends             from './pages/Friends';
+import FriendProfile       from './pages/FriendProfile';
+import NewEvent            from './pages/NewEvent';
+import ItineraryView       from './pages/ItineraryView';
+import MyProfile           from './pages/MyProfile';
+import Notifications       from './pages/Notifications';
+import Groups              from './pages/Groups';
+import GroupDetail         from './pages/GroupDetail';
+import NewGroupEvent       from './pages/NewGroupEvent';
+import GroupItineraryView  from './pages/GroupItineraryView';
 
 export default function App() {
   // authReady: false while the /auth/me round-trip is in flight.
@@ -109,6 +113,20 @@ export default function App() {
         } />
         <Route path="/notifications" element={
           <ProtectedRoute><Notifications /></ProtectedRoute>
+        } />
+        {/* Group mode routes */}
+        <Route path="/groups" element={
+          <ProtectedRoute><Groups /></ProtectedRoute>
+        } />
+        <Route path="/groups/:id" element={
+          <ProtectedRoute><GroupDetail /></ProtectedRoute>
+        } />
+        {/* NewGroupEvent receives groupId from URL params (navigated from GroupDetail) */}
+        <Route path="/groups/:groupId/new-event" element={
+          <ProtectedRoute><NewGroupEvent /></ProtectedRoute>
+        } />
+        <Route path="/group-itineraries/:id" element={
+          <ProtectedRoute><GroupItineraryView /></ProtectedRoute>
         } />
       </Routes>
     </BrowserRouter>
