@@ -542,10 +542,11 @@ function GroupSuggestionCard({
 
         {/* ── Card actions (send + re-roll) ── */}
         {/* Organizer in draft: all cards. Organizer waiting: only their rec card.
-            Attendee: only the card they've already counter-proposed (myVoteIsHere). */}
+            Attendee: non-pick cards they haven't yet counter-proposed — re-roll disappears
+            once they vote on this card (myVoteIsHere), locking in the counter-proposal. */}
         {((isOrganizer && isDraft) ||
           (isOrganizer && isAwaiting && isOrganizerPick) ||
-          (!isOrganizer && isAwaiting && !isOrganizerPick && myVoteIsHere)) && !isLocked && (
+          (!isOrganizer && isAwaiting && !isOrganizerPick && !myVoteIsHere)) && !isLocked && (
           <div style={{ marginTop: 14 }}>
             {/* Loading state: replaces buttons while this card is being rerolled */}
             {isThisRerolling ? (
