@@ -438,7 +438,7 @@ export default function GroupDetail() {
 
           {/* Admin invite form — only visible to active admins */}
           {myRole === 'admin' && myStatus === 'active' && (
-            <div className="card" style={{ marginBottom: 24, padding: '14px 18px' }}>
+            <div className="card" style={{ marginBottom: 24, padding: '14px 18px', overflow: 'visible' }}>
               <div style={{ fontWeight: 600, marginBottom: 10, fontSize: '0.88rem' }}>
                 Invite a member
               </div>
