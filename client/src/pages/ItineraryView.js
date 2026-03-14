@@ -637,6 +637,7 @@ export default function ItineraryView() {
   // Inline title editing
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft,   setTitleDraft]   = useState('');
+  const [titleError,   setTitleError]   = useState('');
 
   /**
    * Fetches the latest itinerary data from the server and refreshes myId in case
@@ -826,16 +827,21 @@ export default function ItineraryView() {
   }
 
   /**
-   * Saves an updated event title inline. Best-effort: failures don't surface to the user
-   * because the title is cosmetic (just a label in the plans list).
+   * Saves an updated event title inline.
+   * On failure: keeps the input open so the user can retry, and surfaces the error inline.
    */
   async function handleSaveTitle() {
     const trimmed = titleDraft.trim().slice(0, 80);
+    setTitleError('');
     try {
       await client.patch(`/schedule/itinerary/${id}/title`, { eventTitle: trimmed || null });
       setItin(prev => ({ ...prev, event_title: trimmed || null }));
-    } catch { /* best-effort — title is cosmetic, don't block the user on failure */ }
-    setEditingTitle(false);
+      setEditingTitle(false);
+    } catch (err) {
+      console.error('handleSaveTitle failed:', err);
+      setTitleError(err.message || 'Could not save title. Please try again.');
+      // Do NOT call setEditingTitle(false) — keep the input open so the user can retry.
+    }
   }
 
   /* ── Render ── */
@@ -954,12 +960,13 @@ export default function ItineraryView() {
                   className="form-control"
                   value={titleDraft}
                   onChange={(e) => setTitleDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') setEditingTitle(false); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') { setEditingTitle(false); setTitleError(''); } }}
                   maxLength={80}
                   style={{ flex: 1, minWidth: 160, fontSize: '1.1rem' }}
                 />
                 <button className="btn btn--primary btn--sm" onClick={handleSaveTitle}>Save</button>
-                <button className="btn btn--ghost btn--sm" onClick={() => setEditingTitle(false)}>Cancel</button>
+                <button className="btn btn--ghost btn--sm" onClick={() => { setEditingTitle(false); setTitleError(''); }}>Cancel</button>
+                {titleError && <span className="form-error" style={{ width: '100%', marginTop: 4 }}>{titleError}</span>}
               </>
             ) : (
               <>

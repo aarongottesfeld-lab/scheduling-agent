@@ -89,13 +89,16 @@ function findFreeWindowsForGroup(busySlots, startDate, endDate, todFilter, maxWi
   const durationMs   = durationMinutes * 60000;
   const durationHours = durationMinutes / 60;
 
-  const windows = [];
+  // Collect up to 100 candidate windows sequentially, then sample across 3 equal buckets
+  // to ensure suggestions are spread across the full date range rather than clustered early.
+  const INTERNAL_CAP = 100;
+  const allWindows = [];
   const [sy, sm, sd] = startDate.split('-').map(Number);
   const [ey, em, ed] = endDate.split('-').map(Number);
   const cur = new Date(Date.UTC(sy, sm - 1, sd));
   const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59));
 
-  while (cur <= end && windows.length < maxWindows) {
+  while (cur <= end && allWindows.length < INTERNAL_CAP) {
     for (let h = utcStart; h + durationHours <= utcEnd; h += 1) {
       const wStart = new Date(cur);
       wStart.setUTCHours(h, 0, 0, 0);
@@ -110,13 +113,41 @@ function findFreeWindowsForGroup(busySlots, startDate, endDate, todFilter, maxWi
       // Accept window only when no member in the group is busy.
       const anyBusy = busySlots.some(memberBusy => overlaps(memberBusy));
       if (!anyBusy) {
-        windows.push({ start: wStart.toISOString(), end: wEnd.toISOString() });
-        if (windows.length >= maxWindows) break;
+        allWindows.push({ start: wStart.toISOString(), end: wEnd.toISOString() });
+        if (allWindows.length >= INTERNAL_CAP) break;
       }
     }
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
-  return windows;
+
+  if (allWindows.length === 0) return [];
+
+  // Divide all found windows into 3 equal buckets and sample up to 7 from each.
+  // This spreads returned windows across early, mid, and late portions of the date range.
+  const bucketSize = Math.ceil(allWindows.length / 3);
+  const buckets = [
+    allWindows.slice(0, bucketSize),
+    allWindows.slice(bucketSize, bucketSize * 2),
+    allWindows.slice(bucketSize * 2),
+  ];
+  const perBucket = 7;
+  const sampled = [];
+  // First pass: take up to perBucket from each bucket.
+  const remainders = buckets.map(b => {
+    const take = b.slice(0, perBucket);
+    sampled.push(...take);
+    return b.slice(perBucket); // leftover windows
+  });
+  // Second pass: fill remainder quota from adjacent buckets (left to right) until maxWindows.
+  for (const leftover of remainders) {
+    for (const w of leftover) {
+      if (sampled.length >= maxWindows) break;
+      sampled.push(w);
+    }
+    if (sampled.length >= maxWindows) break;
+  }
+
+  return sampled.slice(0, maxWindows);
 }
 
 /**
@@ -247,6 +278,8 @@ function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWin
     `- ${m.full_name}${m.isOrganizer ? ' (organizer)' : ''}: ${(m.activity_preferences || []).join(', ') || 'general activities'}`
   ).join('\n');
 
+  // Group events default to venue-based when contextPrompt is empty — intentional, no classifyIntent() call here.
+
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for a group of ${members.length} people.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
@@ -301,10 +334,10 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 ${rerollNote ? `\nREROLL INSTRUCTION (highest priority):\n${rerollNote}\n` : ''}Rules:
 - All venues must be real, currently open establishments with sufficient capacity for ${members.length} people
 - Spread suggestions across different vibes (chill, active, social)
-- Use different time windows for each suggestion when possible
+- Generate exactly 3 suggestions. Use different time windows and spread them across different parts of the scheduling window — do not cluster all suggestions near the earliest available dates. If fewer than 3 windows are available, reuse windows and vary activity, neighborhood, and vibe across suggestions instead. Never return fewer than 3 suggestions.
 - Venue variety: mix well-known places with neighborhood spots
 - Free and public options are valid: parks, public courts, plazas, beaches, trails
-- No venue should appear in more than one suggestion in the same set
+- No venue should appear in more than one suggestion within this generated set. Each suggestion must use a completely distinct set of venues. This rule applies when generating multiple suggestions simultaneously (initial generation, full reroll, append). It does NOT apply to single-card rerolls — when replacing one card, the user may intentionally direct Claude toward a venue already shown on another card, and that is allowed.
 - The neighborhood field must be derived from the first venue's actual address — never from a different area`;
 }
 
@@ -485,7 +518,7 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
       activity: `Keep the same date and time as "${targetSuggestion.title || 'this option'}" (${targetSuggestion.date || ''} at ${targetSuggestion.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.${vibeAddendum}`,
       both:     `Replace "${targetSuggestion.title || 'this option'}" with a fresh alternative — different activity and different time.${vibeAddendum}`,
     };
-    rerollNote = `Generate exactly 1 suggestion (not 3). ${singleCardInstructions[rerollType] || singleCardInstructions.both}${avoidClause} Return a JSON object with a "suggestions" array containing exactly 1 item.`;
+    rerollNote = `Generate exactly 1 suggestion (not 3). ${singleCardInstructions[rerollType] || singleCardInstructions.both}${avoidClause} Return a JSON object with a "suggestions" array containing exactly 1 item. You are replacing a single card, not a full set. You are not bound by the cross-card no-duplicate venue rule — if the user's request references or implies a venue shown on another card, use it.`;
   } else {
     const rerollNoteMap = {
       timing:   `Generate 3 suggestions with DIFFERENT dates/times than before — keep the same activity types and neighborhood vibes but find new time windows.${avoidClause}`,

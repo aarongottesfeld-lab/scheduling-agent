@@ -667,6 +667,8 @@ export default function GroupItineraryView() {
   const [actionError,   setActionError]   = useState('');
   const [sentSuccess,   setSentSuccess]   = useState(false);
 
+  // TODO: inline title edit not yet implemented for group itineraries — add parity with ItineraryView handleSaveTitle once built (see FIX 6 in bug fix session, March 14 2026)
+
   /** Fetch (or re-fetch) the itinerary from the server. */
   const load = useCallback(async () => {
     try {

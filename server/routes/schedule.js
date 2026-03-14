@@ -253,8 +253,8 @@ function timeOfDayHours(tod) {
  *   'ambiguous'        — doesn't clearly fit either category
  */
 function classifyIntent(contextPrompt) {
-  // No prompt at all → most likely a casual hang at home
-  if (!contextPrompt || !contextPrompt.trim()) return 'home_likely';
+  // No prompt at all → ambiguous (no signal to classify; let the prompt builder decide the home/venue split)
+  if (!contextPrompt || !contextPrompt.trim()) return 'ambiguous';
   const text = contextPrompt.toLowerCase();
 
   // Single-card reroll patterns: "go to [place]" or "watch [title]" are near-literal
@@ -369,14 +369,17 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
   const durationHours = durationMinutes / 60;
   const durationMs   = durationMinutes * 60000;
 
-  const windows = [];
+  // Collect up to 100 candidate windows sequentially, then sample across 3 equal buckets
+  // to ensure suggestions are spread across the full date range rather than clustered early.
+  const INTERNAL_CAP = 100;
+  const allWindows = [];
   // Use UTC date construction so the loop is timezone-agnostic on any server.
   const [sy, sm, sd] = startDate.split('-').map(Number);
   const [ey, em, ed] = endDate.split('-').map(Number);
   const cur = new Date(Date.UTC(sy, sm - 1, sd));
   const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59));
 
-  while (cur <= end && windows.length < maxWindows) {
+  while (cur <= end && allWindows.length < INTERNAL_CAP) {
     // Step by 1 hour through the day; each window spans durationMinutes from that hour.
     for (let h = utcStart; h + durationHours <= utcEnd; h += 1) {
       const wStart = new Date(cur);
@@ -390,13 +393,41 @@ function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows
       });
 
       if (!overlaps(busyA) && !overlaps(busyB)) {
-        windows.push({ start: wStart.toISOString(), end: wEnd.toISOString() });
-        if (windows.length >= maxWindows) break;
+        allWindows.push({ start: wStart.toISOString(), end: wEnd.toISOString() });
+        if (allWindows.length >= INTERNAL_CAP) break;
       }
     }
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
-  return windows;
+
+  if (allWindows.length === 0) return [];
+
+  // Divide all found windows into 3 equal buckets and sample up to 7 from each.
+  // This spreads returned windows across early, mid, and late portions of the date range.
+  const bucketSize = Math.ceil(allWindows.length / 3);
+  const buckets = [
+    allWindows.slice(0, bucketSize),
+    allWindows.slice(bucketSize, bucketSize * 2),
+    allWindows.slice(bucketSize * 2),
+  ];
+  const perBucket = 7;
+  const sampled = [];
+  // First pass: take up to perBucket from each bucket.
+  const remainders = buckets.map(b => {
+    const take = b.slice(0, perBucket);
+    sampled.push(...take);
+    return b.slice(perBucket); // leftover windows
+  });
+  // Second pass: fill remainder quota from adjacent buckets (left to right) until maxWindows.
+  for (const leftover of remainders) {
+    for (const w of leftover) {
+      if (sampled.length >= maxWindows) break;
+      sampled.push(w);
+    }
+    if (sampled.length >= maxWindows) break;
+  }
+
+  return sampled.slice(0, maxWindows);
 }
 
 /**
@@ -679,12 +710,12 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 Rules:
 - All venues must be real, currently open establishments
 - Spread suggestions across different vibes (e.g. chill, active, social)
-- Use different time windows for each suggestion when possible
+- Generate exactly 3 suggestions. Use different time windows and spread them across different parts of the scheduling window — do not cluster all suggestions near the earliest available dates. If fewer than 3 windows are available, reuse windows and vary activity, neighborhood, and vibe across suggestions instead. Never return fewer than 3 suggestions.
 - Venue variety: do not default to the most popular or highest-rated spots. Mix well-known places with neighborhood spots and less obvious choices. Avoid recommending the same venues repeatedly across sessions.
 - Free and public options are valid and often preferred: parks, public courts, piers, plazas, beaches, trails, free museum nights, open-air markets. If the activity is naturally free (spikeball, frisbee, picnic, running), suggest a specific named park or public space — not a paid venue. Do not bias toward paid experiences.
 - Cost range across suggestions: aim for a mix — at least one low-cost or free option per set of suggestions when the context allows it. Users should not feel like every plan requires spending money.
 - Narrative tone: direct and practical, like a friend who knows the area recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.
-- No venue should appear in more than one suggestion in the same set. Each suggestion must use a completely distinct set of venues.`;
+- No venue should appear in more than one suggestion within this generated set. Each suggestion must use a completely distinct set of venues. This rule applies when generating multiple suggestions simultaneously (initial generation, full reroll, append). It does NOT apply to single-card rerolls — when replacing one card, the user may intentionally direct Claude toward a venue already shown on another card, and that is allowed.`;
 }
 
 
@@ -758,7 +789,7 @@ async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit
  *
  * Returns the created event ID, or null on failure.
  */
-async function createCalendarEventForUser({ session, suggestion, organizer, attendee }) {
+async function createCalendarEventForUser({ session, suggestion, organizer, attendee, itineraryId }) {
   if (!session?.tokens?.access_token) return null;
 
   try {
@@ -821,6 +852,7 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
     const description = [
       suggestion.narrative,
       venueLines ? '\nStops:\n' + venueLines : '',
+      itineraryId ? `\nRendezvous itinerary ID: ${itineraryId}` : '',
     ].filter(Boolean).join('\n\n');
 
     const venueName   = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
@@ -1467,6 +1499,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           suggestion,
           organizer: organizerProfile,
           attendee:  attendeeProfile,
+          itineraryId,
         });
 
         if (calendarEventId) {
@@ -1568,7 +1601,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       both: `Replace the option titled "${targetSuggestion?.title || 'unknown'}" with a fresh alternative — different activity and different time.`,
     };
     const singleCardNote = isSingleCard
-      ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item.`
+      ? `Generate exactly 1 suggestion (not 3). ${rerollInstructions[rerollType] || rerollInstructions.both} Make it clearly different from these existing options: ${existingTitles.join(', ')}. Return a JSON object with a "suggestions" array containing exactly 1 item. You are replacing a single card, not a full set. You are not bound by the cross-card no-duplicate venue rule — if the user's request references or implies a venue shown on another card, use it.`
       : '';
     // appendMode: generate 3 new suggestions distinct from everything already shown
     const appendNote = appendMode && !isSingleCard
