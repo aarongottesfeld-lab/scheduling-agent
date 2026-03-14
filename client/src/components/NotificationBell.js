@@ -13,13 +13,15 @@ function timeAgo(ts) {
 }
 
 const TYPE_ICON = {
-  friend_request:      '👋',
-  itinerary_invite:    '📅',
-  itinerary_accepted:  '✅',
-  itinerary_declined:  '❌',
-  itinerary_reroll:    '🔄',
-  group_invite:        '🎉',
-  group_event_invite:  '📅',
+  friend_request:              '👋',
+  itinerary_invite:            '📅',
+  itinerary_accepted:          '✅',
+  itinerary_declined:          '❌',
+  itinerary_reroll:            '🔄',
+  itinerary_locked:            '📅',
+  group_invite:                '🎉',
+  group_event_invite:          '📅',
+  group_event_counter_proposal: '🔄',
 };
 
 export default function NotificationBell() {

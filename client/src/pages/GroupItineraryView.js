@@ -463,14 +463,7 @@ function GroupSuggestionCard({
         </div>
 
         {/* ── Google Calendar link (locked only) ── */}
-        {isWinner && (
-          <div style={{ marginTop: 14 }}>
-            <a href={buildGCalUrl(suggestion, itinerary)} target="_blank" rel="noopener noreferrer"
-              className="btn btn--ghost btn--sm">
-              📅 Add to Calendar
-            </a>
-          </div>
-        )}
+        {/* TODO: wire calendar button once group calendar write path is built */}
 
         {/* ── Vote buttons (attendees only, awaiting_responses) ── */}
         {/* Design: no hidden-then-revealed flow — vote state is shown inline with a direct

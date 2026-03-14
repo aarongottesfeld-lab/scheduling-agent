@@ -892,7 +892,7 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
       },
     });
 
-    return event.data.id || null;
+    return { id: event.data.id || null, htmlLink: event.data.htmlLink || null };
   } catch (err) {
     // Calendar write is best-effort — log but don't throw
     console.warn('createCalendarEventForUser failed:', err.message);
@@ -1479,28 +1479,28 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       return res.status(500).json({ error: 'Could not save confirmation.' });
     }
 
-    // Notify the other person
+    // Notify the other person — only for non-lock accepts.
+    // Lock notifications are sent to both users in a dedicated block below.
     const confirmerName = await getProfileName(req.userId, supabase);
     const otherForConfirm = isOrganizer ? itin.attendee_id : itin.organizer_id;
-    const confirmMsg = updated?.locked_at
-      ? confirmerName + ' accepted — your plan is locked in! 🎉'
-      : isSuggestAlternative
+    if (!updated?.locked_at) {
+      const confirmMsg = isSuggestAlternative
         ? confirmerName + ' is suggesting a different option. Take a look.'
         : confirmerName + ' accepted a plan. Waiting for the other person to confirm.';
-    const confirmTitle = updated?.locked_at
-      ? 'Plan locked in! 🎉'
-      : isSuggestAlternative
+      const confirmTitle = isSuggestAlternative
         ? confirmerName + ' suggested an alternative'
         : confirmerName + ' accepted a plan';
-    await supabase.from('notifications').insert({
-      user_id: otherForConfirm, type: 'itinerary_accepted',
-      title: confirmTitle,
-      body: confirmMsg,
-      action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
-    });
+      await supabase.from('notifications').insert({
+        user_id: otherForConfirm, type: 'itinerary_accepted',
+        title: confirmTitle,
+        body: confirmMsg,
+        action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+      });
+    }
 
     // If just locked — create Google Calendar events for both users (best-effort)
-    let calendarEventId = updated?.calendar_event_id || null;
+    let calendarEventId  = updated?.calendar_event_id  || null;
+    let calendarEventUrl = updated?.calendar_event_url || null;
     if (updated?.locked_at && !calendarEventId) {
       const suggestion = (itin.suggestions || []).find(s => s.id === suggestionId);
 
@@ -1521,10 +1521,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         sessionStore.getSessionBySupabaseId(itin.attendee_id),
       ]);
 
-      // Create event using whichever user has valid tokens (organizer preferred)
+      // Create event using whichever user has valid tokens (organizer preferred).
+      // createCalendarEventForUser now returns { id, htmlLink } or null.
       const activeSession = organizerSession || attendeeSession;
       if (suggestion && activeSession) {
-        calendarEventId = await createCalendarEventForUser({
+        const calResult = await createCalendarEventForUser({
           session: activeSession,
           suggestion,
           organizer: organizerProfile,
@@ -1532,15 +1533,39 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           itineraryId,
         });
 
-        if (calendarEventId) {
+        if (calResult?.id) {
+          calendarEventId  = calResult.id;
+          calendarEventUrl = calResult.htmlLink || null;
           await supabase.from('itineraries')
-            .update({ calendar_event_id: calendarEventId })
+            .update({ calendar_event_id: calendarEventId, calendar_event_url: calendarEventUrl })
             .eq('id', itineraryId);
         }
       }
     }
 
-    res.json({ itinerary: updated, locked: !!updated?.locked_at, calendarEventId });
+    // Send lock notification to BOTH users when the plan just locked.
+    if (updated?.locked_at) {
+      const organizerName = await getProfileName(itin.organizer_id, supabase);
+      const attendeeName  = await getProfileName(itin.attendee_id,  supabase);
+      const lockTitle     = 'Plans confirmed — calendar invite sent';
+      // Each user's notification names the other party.
+      await Promise.all([
+        supabase.from('notifications').insert({
+          user_id: itin.organizer_id, type: 'itinerary_locked',
+          title: lockTitle,
+          body: `Your plans with ${attendeeName} are locked in. The event has been added to both your Google Calendars.`,
+          action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+        }),
+        supabase.from('notifications').insert({
+          user_id: itin.attendee_id, type: 'itinerary_locked',
+          title: lockTitle,
+          body: `Your plans with ${organizerName} are locked in. The event has been added to both your Google Calendars.`,
+          action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+        }),
+      ]);
+    }
+
+    res.json({ itinerary: updated, locked: !!updated?.locked_at, calendarEventId, calendar_event_url: calendarEventUrl });
   });
 
   /* ── POST /schedule/itinerary/:id/send ───────────────────── */

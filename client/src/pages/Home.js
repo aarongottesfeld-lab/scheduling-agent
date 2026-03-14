@@ -168,6 +168,11 @@ function EventCard({ item, onDelete }) {
             <span className="itinerary-card__dot" />
             <span className={`badge ${badgeCls}`}>{badgeLabel}</span>
           </div>
+          {tab === 'confirmed' && !!item.calendar_event_id && (
+            <div style={{ color: 'var(--text-3)', fontSize: '0.75rem', marginTop: 2 }}>
+              📅 On your calendar
+            </div>
+          )}
         </div>
       </Link>
       {/* Group indicator — visible on all group event pills */}

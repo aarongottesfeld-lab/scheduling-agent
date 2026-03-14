@@ -173,7 +173,7 @@ function SuggestionCard({
   role, status,
   onAccept, onDecline, onReroll, onPick, onRerollWithFeedback, onSuggestAlternative,
   organizerName, attendeeName, organizerLocation,
-  submitting, activeCardId, itinerary, calendarEventId,
+  submitting, activeCardId, itinerary, calendarEventId, calendarEventUrl,
 }) {
   const [expanded,       setExpanded]       = useState(isConfirmed);
   // vibeInputOpen: toggles the inline prompt box when user clicks "New vibe"
@@ -603,9 +603,15 @@ function SuggestionCard({
       {/* Calendar link shown only once the plan is locked */}
       {locked && (
         <div className="suggestion-card__footer">
-          <a href={buildGCalUrl(suggestion, itinerary)} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
-            {calendarEventId ? '📅 View in Google Calendar' : '📅 Add to Calendar'}
-          </a>
+          {calendarEventId && calendarEventUrl ? (
+            <a href={calendarEventUrl} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
+              📅 View in Google Calendar
+            </a>
+          ) : (
+            <a href={buildGCalUrl(suggestion, itinerary)} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
+              {calendarEventId ? '📅 View in Google Calendar' : '📅 Add to Calendar'}
+            </a>
+          )}
         </div>
       )}
     </div>
@@ -623,12 +629,15 @@ export default function ItineraryView() {
   const { id }   = useParams();
   const navigate = useNavigate();
 
-  const [itin,         setItin]       = useState(null);
-  const [loading,      setLoading]    = useState(true);
-  const [error,        setError]      = useState('');
-  const [submitting,   setSubmitting] = useState(false);
+  const [itin,             setItin]           = useState(null);
+  const [loading,          setLoading]        = useState(true);
+  const [error,            setError]          = useState('');
+  const [submitting,       setSubmitting]     = useState(false);
   // Tracks the suggestion.id whose per-card action is in-flight (for spinners).
-  const [activeCardId, setActiveCardId] = useState(null);
+  const [activeCardId,     setActiveCardId]   = useState(null);
+  // Cached calendar event URL from the confirm response — available immediately after lock
+  // without waiting for the itinerary to reload from the server.
+  const [calendarEventUrl, setCalendarEventUrl] = useState(null);
   const [rerollOpen,      setRerollOpen]      = useState(false);
   const [rerolling,       setRerolling]       = useState(false);
   // True while the "Generate More" append request is in-flight.
@@ -713,6 +722,10 @@ export default function ItineraryView() {
     setSubmitting(true);
     try {
       const res = await client.post('/schedule/confirm', { itineraryId: id, suggestionId });
+      // Cache the calendar event URL immediately so the button is usable before reload.
+      if (res.data?.calendar_event_url) {
+        setCalendarEventUrl(res.data.calendar_event_url);
+      }
       await load();
       // Fire itinerary_locked when the server confirms the plan is locked.
       // The confirm endpoint returns locked_at or itinerary_status to signal this.
@@ -1014,6 +1027,7 @@ export default function ItineraryView() {
                   activeCardId={activeCardId}
                   itinerary={itin}
                   calendarEventId={itin.calendar_event_id}
+                  calendarEventUrl={itin.calendar_event_url || calendarEventUrl}
                 />
               );
             })}

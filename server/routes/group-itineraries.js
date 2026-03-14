@@ -840,7 +840,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     const { data: itin } = await supabase
       .from('group_itineraries')
-      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id')
       .eq('id', req.params.id)
       .single();
 
@@ -911,6 +911,35 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
           'group_event_counter_proposal', 2,
           `${voterName} suggested "${counterTitle}"`,
           `${voterName} voted for a different option in ${eventName}. Review it and update your vote if you like it.`,
+          { group_itinerary_id: req.params.id },
+          `/group-itineraries/${req.params.id}`,
+        )
+      ));
+    }
+
+    // Notify all members when voting triggers a lock.
+    if (updated.itinerary_status === 'locked') {
+      // Resolve the group name for the notification body.
+      let groupName = itin.event_title || 'Group event';
+      if (itin.group_id) {
+        const { data: groupRow } = await supabase
+          .from('groups')
+          .select('name')
+          .eq('id', itin.group_id)
+          .single();
+        if (groupRow?.name) groupName = groupRow.name;
+      }
+
+      const notifyIds = [
+        itin.organizer_id,
+        ...Object.keys(itin.attendee_statuses || {}),
+      ];
+      await Promise.all(notifyIds.map(uid =>
+        insertNotification(
+          supabase, uid,
+          'itinerary_locked', 1,
+          'Group plans confirmed',
+          `${groupName} plans are locked in. Calendar invites for group events are coming soon — add it to your calendar manually from the event view for now.`,
           { group_itinerary_id: req.params.id },
           `/group-itineraries/${req.params.id}`,
         )
