@@ -20,6 +20,7 @@
 'use strict';
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
+const { createOAuth2Client, createCalendarEventForUser } = require('../utils/calendarUtils');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
@@ -150,21 +151,6 @@ function countUnverified(suggestions) {
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
-
-/**
- * Creates a fresh Google OAuth2 client, optionally pre-loaded with stored tokens.
- * A new instance is created per-request/per-operation to avoid shared mutable state
- * across concurrent requests.
- */
-function createOAuth2Client(tokens) {
-  const c = new (require('googleapis').google.auth.OAuth2)(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
-  );
-  if (tokens) c.setCredentials(tokens);
-  return c;
-}
 
 /**
  * Fetch busy slots for a user. Uses real Google Calendar if tokens exist,
@@ -789,114 +775,6 @@ async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit
   } catch (err) {
     console.warn('fetchAcceptedPairHistory failed:', err.message);
     return [];
-  }
-}
-
-/**
- * Creates a Google Calendar event for a single user.
- * Gracefully no-ops if the user has no valid tokens — calendar write is
- * best-effort and should never block the itinerary lock.
- *
- * Returns the created event ID, or null on failure.
- */
-async function createCalendarEventForUser({ session, suggestion, organizer, attendee, itineraryId }) {
-  if (!session?.tokens?.access_token) return null;
-
-  try {
-    const auth = createOAuth2Client(session.tokens);
-
-    // Refresh token if expired
-    const expiry = session.tokens.expiry_date;
-    if (expiry && Date.now() > expiry - 60000 && session.tokens.refresh_token) {
-      const { credentials } = await auth.refreshAccessToken();
-      session.tokens = credentials;
-      auth.setCredentials(credentials);
-    }
-
-    const calendar = google.calendar({ version: 'v3', auth });
-
-    /**
-     * Convert a suggestion's date + time into an RFC 3339 datetime string.
-     * Accepts "7:00 PM" style time strings from Claude's JSON output.
-     * Logs a warning if the year looks like a past year — this is a signal that
-     * buildSuggestPrompt's window strings are missing the year field and Claude
-     * defaulted to the wrong year.
-     */
-    function toRFC3339(dateStr, timeStr) {
-      if (!dateStr) return null;
-      if (!timeStr) return dateStr; // date-only fallback — calendar event will be all-day
-      const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
-      if (!match) return dateStr;
-      let h = parseInt(match[1]);
-      const min = match[2];
-      const ampm = match[3].toUpperCase();
-      if (ampm === 'PM' && h !== 12) h += 12;
-      if (ampm === 'AM' && h === 12) h = 0;
-      const hh = String(h).padStart(2, '0');
-
-      // Safety net: warn if Claude returned a date in the past year.
-      // Root cause is usually missing year:'numeric' in buildSuggestPrompt's window list.
-      const parsedYear = parseInt((dateStr || '').split('-')[0], 10);
-      if (parsedYear && parsedYear < new Date().getFullYear()) {
-        console.warn(
-          `[toRFC3339] Suggestion date "${dateStr}" is in a past year (${parsedYear}). ` +
-          'Check that buildSuggestPrompt includes year in window date strings.'
-        );
-      }
-
-      return `${dateStr}T${hh}:${min}:00`;
-    }
-
-    const startDT = toRFC3339(suggestion.date, suggestion.time);
-    const durMs   = (suggestion.durationMinutes || 120) * 60000;
-    const endDT   = startDT
-      ? new Date(new Date(startDT).getTime() + durMs).toISOString().replace(/\.\d{3}Z$/, '')
-      : null;
-
-    if (!startDT) return null;
-
-    // Build venue description
-    const venueLines = (suggestion.venues || [])
-      .map(v => `${v.name}${v.address ? ' — ' + v.address : ''}`)
-      .join('\n');
-    const description = [
-      suggestion.narrative,
-      venueLines ? '\nStops:\n' + venueLines : '',
-      itineraryId ? `\nRendezvous itinerary ID: ${itineraryId}` : '',
-    ].filter(Boolean).join('\n\n');
-
-    const venueName   = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
-    const otherFirst  = (attendee?.full_name || '').split(' ')[0] || 'Friend';
-    const location    = suggestion.venues?.[0]?.address || suggestion.neighborhood || '';
-
-    const event = await calendar.events.insert({
-      calendarId: 'primary',
-      sendUpdates: 'none', // we handle our own notifications
-      requestBody: {
-        summary: `${venueName} with ${otherFirst}`,
-        description,
-        location,
-        start: { dateTime: startDT, timeZone: 'America/New_York' },
-        end:   { dateTime: endDT,   timeZone: 'America/New_York' },
-        attendees: [
-          { email: organizer.email, displayName: organizer.full_name },
-          { email: attendee.email,  displayName: attendee.full_name  },
-        ],
-        reminders: {
-          useDefault: false,
-          overrides: [
-            { method: 'popup', minutes: 60 },
-            { method: 'email', minutes: 1440 }, // 1 day before
-          ],
-        },
-      },
-    });
-
-    return { id: event.data.id || null, htmlLink: event.data.htmlLink || null };
-  } catch (err) {
-    // Calendar write is best-effort — log but don't throw
-    console.warn('createCalendarEventForUser failed:', err.message);
-    return null;
   }
 }
 

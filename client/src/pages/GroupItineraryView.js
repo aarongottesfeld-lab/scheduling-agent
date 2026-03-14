@@ -27,6 +27,7 @@ import {
   getGroupComments,
   deleteGroupItinerary,
 } from '../utils/api';
+import client from '../utils/client';
 import { getSupabaseId } from '../utils/auth';
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -463,7 +464,19 @@ function GroupSuggestionCard({
         </div>
 
         {/* ── Google Calendar link (locked only) ── */}
-        {/* TODO: wire calendar button once group calendar write path is built */}
+        {isLocked && isWinner && (
+          <div className="suggestion-card__footer">
+            {itinerary.calendar_event_url ? (
+              <a href={itinerary.calendar_event_url} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
+                📅 View in Google Calendar
+              </a>
+            ) : (
+              <a href={buildGCalUrl(suggestion, itinerary)} target="_blank" rel="noopener noreferrer" className="btn btn--ghost btn--sm">
+                📅 Add to Calendar
+              </a>
+            )}
+          </div>
+        )}
 
         {/* ── Vote buttons (attendees only, awaiting_responses) ── */}
         {/* Design: no hidden-then-revealed flow — vote state is shown inline with a direct
@@ -739,9 +752,17 @@ export default function GroupItineraryView() {
     setActionError('');
     try {
       const result = await voteOnGroupItinerary(id, suggestionId, vote);
-      // Refresh so we see the latest vote_status and any lock transition
+      // If this vote triggered a lock, kick off the calendar write before refreshing.
+      if (result?.itinerary_status === 'locked') {
+        // Best-effort calendar write — do not block UI on failure
+        try {
+          await client.post(`/group-itineraries/${id}/finalize-lock`);
+        } catch (err) {
+          console.warn('[GroupItineraryView] finalize-lock failed:', err.message);
+        }
+      }
+      // Refresh so we see the latest vote_status, lock state, and calendar_event_url
       await load();
-      // If the itinerary just locked, the refresh will show the locked state automatically
       return result;
     } catch (e) {
       setActionError(e.message || 'Could not record vote.');

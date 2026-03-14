@@ -23,6 +23,7 @@
 const { randomUUID } = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
+const { createCalendarEventForUser } = require('../utils/calendarUtils');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
@@ -950,6 +951,99 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       message:          'Vote recorded.',
       itinerary_status: updated.itinerary_status,
       locked_at:        updated.locked_at,
+    });
+  });
+
+  /* ── POST /group-itineraries/:id/finalize-lock ───────────────────────── */
+  // Creates Google Calendar events for all group members once an itinerary locks.
+  // Idempotent — if calendar_event_id is already set, returns immediately.
+  // Best-effort: members without valid OAuth tokens are silently skipped.
+  app.post('/group-itineraries/:id/finalize-lock', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin, error: fetchErr } = await supabase
+      .from('group_itineraries')
+      .select('id, itinerary_status, locked_at, attendee_statuses, organizer_id, suggestions, selected_suggestion_id, event_title, calendar_event_id, calendar_event_url')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchErr || !itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    if (itin.itinerary_status !== 'locked' || !itin.locked_at) {
+      return res.status(400).json({ error: 'Itinerary is not locked.' });
+    }
+
+    if (itin.calendar_event_id) {
+      return res.status(200).json({ message: 'Calendar events already created.', alreadyDone: true });
+    }
+
+    const isOrganizer = req.userId === itin.organizer_id;
+    const isAttendee  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizer && !isAttendee) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    // Resolve selected suggestion
+    const suggestion = (itin.suggestions || []).find(s => s.id === itin.selected_suggestion_id)
+      || itin.suggestions?.[0];
+
+    // All member IDs: organizer + every attendee
+    const memberIds = [itin.organizer_id, ...Object.keys(itin.attendee_statuses || {})];
+
+    // Fetch profiles for all members
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .in('id', memberIds);
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    // Build calendar write promises for each member
+    const calendarPromises = memberIds.map(async (memberId) => {
+      const session = await sessionStore.getSessionBySupabaseId(memberId);
+      if (!session?.tokens?.access_token) {
+        console.warn(`[finalize-lock] No tokens for member ${memberId} — skipping calendar write.`);
+        return null;
+      }
+      return createCalendarEventForUser({
+        session,
+        suggestion,
+        organizer: profileMap[itin.organizer_id] || { email: '', full_name: 'Organizer' },
+        attendee: { full_name: itin.event_title || 'Group Event', email: '' },
+        itineraryId: itin.id,
+      });
+    });
+
+    const results = await Promise.allSettled(calendarPromises);
+
+    // Log failures
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`[finalize-lock] Calendar write rejected for member ${memberIds[i]}:`, r.reason);
+      }
+    });
+
+    // Collect successes
+    const fulfilled = results
+      .filter(r => r.status === 'fulfilled' && r.value?.id)
+      .map(r => r.value);
+
+    let calendarEventUrl = null;
+    if (fulfilled.length > 0) {
+      const first = fulfilled[0];
+      calendarEventUrl = first.htmlLink || null;
+      await supabase
+        .from('group_itineraries')
+        .update({ calendar_event_id: first.id, calendar_event_url: calendarEventUrl })
+        .eq('id', itin.id);
+    }
+
+    return res.json({
+      message: 'Calendar events created.',
+      successCount: fulfilled.length,
+      totalMembers: memberIds.length,
+      calendar_event_url: calendarEventUrl,
     });
   });
 
