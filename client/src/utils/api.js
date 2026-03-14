@@ -194,6 +194,15 @@ export async function getGroupItinerary(itineraryId) {
 }
 
 /**
+ * Hard-deletes an organizer_draft group itinerary.
+ * Only the organizer may call this, and only while status === 'organizer_draft'.
+ */
+export async function deleteGroupItinerary(itineraryId) {
+  const res = await client.delete(`/group-itineraries/${itineraryId}`);
+  return res.data;
+}
+
+/**
  * Add a comment on a specific suggestion.
  * body is capped at 2000 chars (enforced in UI and server).
  * Returns { comment: { id, suggestion_id, user_id, body, created_at } }.

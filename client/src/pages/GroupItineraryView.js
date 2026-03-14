@@ -25,6 +25,7 @@ import {
   rerollGroupItinerary,
   addGroupComment,
   getGroupComments,
+  deleteGroupItinerary,
 } from '../utils/api';
 import { getSupabaseId } from '../utils/auth';
 
@@ -667,6 +668,11 @@ export default function GroupItineraryView() {
   const [actionError,   setActionError]   = useState('');
   const [sentSuccess,   setSentSuccess]   = useState(false);
 
+  // Delete draft state
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting,          setDeleting]          = useState(false);
+  const [deleteError,       setDeleteError]       = useState('');
+
   // TODO: inline title edit not yet implemented for group itineraries — add parity with ItineraryView handleSaveTitle once built (see FIX 6 in bug fix session, March 14 2026)
 
   /** Fetch (or re-fetch) the itinerary from the server. */
@@ -714,6 +720,19 @@ export default function GroupItineraryView() {
       setActionError(e.message || 'Could not regenerate suggestion.');
     } finally {
       setRerollingCard(null);
+    }
+  }
+
+  /** Hard-deletes the draft. Organizer-only; only valid in organizer_draft status. */
+  async function handleDeleteDraft() {
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await deleteGroupItinerary(id);
+      navigate('/home');
+    } catch (e) {
+      setDeleteError(e.message || 'Could not delete draft.');
+      setDeleting(false);
     }
   }
 
@@ -962,6 +981,52 @@ export default function GroupItineraryView() {
             <div className="alert alert--error" style={{ marginBottom: 16 }}>{actionError}</div>
           )}
 
+          {/* ── Delete draft button (organizer_draft only) ── */}
+          {status === 'organizer_draft' && isOrganizer && (
+            <div style={{ marginBottom: 16 }}>
+              {!showDeleteConfirm ? (
+                <button
+                  className="btn btn--ghost btn--sm"
+                  style={{ color: 'var(--error, #dc2626)' }}
+                  onClick={() => { setShowDeleteConfirm(true); setDeleteError(''); }}
+                >
+                  Delete this draft
+                </button>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '10px 14px',
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}>
+                  <span style={{ fontSize: '0.88rem', color: 'var(--text-2)', flexShrink: 0 }}>
+                    Delete this draft?
+                  </span>
+                  <button
+                    className="btn btn--sm"
+                    style={{ background: 'var(--error, #dc2626)', color: '#fff', border: 'none' }}
+                    disabled={deleting}
+                    onClick={handleDeleteDraft}
+                  >
+                    {deleting ? 'Deleting…' : 'Yes, delete'}
+                  </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    disabled={deleting}
+                    onClick={() => { setShowDeleteConfirm(false); setDeleteError(''); }}
+                  >
+                    Cancel
+                  </button>
+                  {deleteError && (
+                    <span style={{ fontSize: '0.82rem', color: 'var(--error, #dc2626)' }}>{deleteError}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Locked: show winning suggestion prominently ── */}
           {status === 'locked' && winnerSuggestion && (
