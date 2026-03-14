@@ -523,6 +523,21 @@ textarea.form-control { resize: vertical; min-height: 88px; }
 .navbar__logout-btn       { background: none; border: none; color: var(--text-4); font-size: 0.8rem; cursor: pointer; padding: 4px 8px; border-radius: var(--r-sm); transition: all var(--t); }
 .navbar__logout-btn:hover { color: var(--error); background: var(--error-bg); }
 
+/* ── Bug report / feedback floating buttons ───────────────── */
+.bug-report-btns {
+  position: fixed;
+  bottom: 80px; /* clears the mobile bottom tab bar (56px) + 24px breathing room */
+  right: 16px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+@media (min-width: 769px) {
+  .bug-report-btns { bottom: 24px; } /* desktop: no tab bar, sit lower */
+}
+
 /* ── Bottom tab bar (mobile only) ─────────────────────────── */
 .bottom-tab-bar {
   display: none; /* hidden on desktop; shown via media query */

@@ -647,6 +647,7 @@ require('./routes/schedule')(app, supabase, requireAuth, { getSessionBySupabaseI
 require('./routes/notifications')(app, supabase, requireAuth);
 require('./routes/groups')(app, supabase, requireAuth);
 require('./routes/group-itineraries')(app, supabase, requireAuth, { getSessionBySupabaseId });
+require('./routes/bugReport')(app, supabase, requireAuth);
 
 // ---------------------------------------------------------------------------
 // Dev-only: user switcher — impersonate any test user without OAuth

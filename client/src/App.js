@@ -49,6 +49,7 @@ import GroupDetail         from './pages/GroupDetail';
 import NewGroupEvent       from './pages/NewGroupEvent';
 import GroupItineraryView  from './pages/GroupItineraryView';
 import Onboarding          from './pages/Onboarding';
+import BugReportButton     from './components/BugReportButton';
 
 /**
  * Fires a PostHog $pageview event on every route change.
@@ -137,6 +138,8 @@ export default function App() {
       <PageViewTracker />
       {/* Redirects to /onboarding when onboarding_completed_at is null */}
       <OnboardingRedirector />
+      {/* Floating feedback + bug report buttons — renders on all logged-in pages */}
+      <BugReportButton />
       <Routes>
         {/* Public — Login redirects to /home if already authenticated */}
         <Route path="/" element={<Login />} />

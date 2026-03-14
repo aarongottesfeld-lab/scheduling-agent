@@ -648,6 +648,8 @@ export default function ItineraryView() {
     try {
       const res = await client.get(`/schedule/itinerary/${id}`);
       setItin(res.data);
+      // PostHog targeting event — used by in-app tooltip triggers
+      try { posthog.capture('itinerary_view_loaded', { has_suggestions: (res.data?.suggestions || []).length > 0 }); } catch {}
     } catch {
       setError('Could not load this itinerary.');
     } finally {

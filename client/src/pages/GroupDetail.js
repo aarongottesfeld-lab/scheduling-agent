@@ -37,11 +37,12 @@ export default function GroupDetail() {
 
   // Invite flow — friend search dropdown
   const [allFriends,    setAllFriends]    = useState([]);
-  const [inviteQuery,   setInviteQuery]   = useState('');
-  const [inviteResults, setInviteResults] = useState([]);
-  const [inviting,      setInviting]      = useState(false);
-  const [inviteError,   setInviteError]   = useState('');
-  const [inviteSuccess, setInviteSuccess] = useState('');
+  const [inviteQuery,    setInviteQuery]    = useState('');
+  const [inviteResults,  setInviteResults]  = useState([]);
+  const [inviteNoMatch,  setInviteNoMatch]  = useState(false);
+  const [inviting,       setInviting]       = useState(false);
+  const [inviteError,    setInviteError]    = useState('');
+  const [inviteSuccess,  setInviteSuccess]  = useState('');
   const dropRef = useRef(null);
 
   // Per-member spinner: stores the userId currently being acted on
@@ -84,24 +85,36 @@ export default function GroupDetail() {
       .catch(() => {});
   }, [myRole]);
 
-  // Filter invite dropdown results as the query changes
+  // Filter invite dropdown results as the query changes.
+  // Excludes friends who are already active or pending members of this group.
   useEffect(() => {
-    if (!inviteQuery.trim()) { setInviteResults(allFriends); return; }
-    const q = inviteQuery.toLowerCase();
-    setInviteResults(allFriends.filter(f =>
+    const memberIds = new Set(members.map(m => m.user_id));
+    const eligible  = allFriends.filter(f => !memberIds.has(f.id));
+    const q = inviteQuery.trim().toLowerCase();
+    if (!q) {
+      setInviteResults(eligible);
+      setInviteNoMatch(false);
+      return;
+    }
+    const filtered = eligible.filter(f =>
       f.name?.toLowerCase().includes(q) || f.username?.toLowerCase().includes(q)
-    ));
-  }, [inviteQuery, allFriends]);
+    );
+    setInviteResults(filtered);
+    setInviteNoMatch(filtered.length === 0);
+  }, [inviteQuery, allFriends, members]);
 
   // Close invite dropdown on outside click (same pattern as NewEvent friend picker)
   useEffect(() => {
-    if (!inviteResults.length) return;
+    if (!inviteResults.length && !inviteNoMatch) return;
     function handler(e) {
-      if (dropRef.current && !dropRef.current.contains(e.target)) setInviteResults([]);
+      if (dropRef.current && !dropRef.current.contains(e.target)) {
+        setInviteResults([]);
+        setInviteNoMatch(false);
+      }
     }
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [inviteResults.length]);
+  }, [inviteResults.length, inviteNoMatch]);
 
   /**
    * Send an invite to a friend by their userId.
@@ -113,6 +126,7 @@ export default function GroupDetail() {
     setInviteSuccess('');
     setInviteQuery('');
     setInviteResults([]);
+    setInviteNoMatch(false);
     try {
       await inviteMember(id, friendId);
       setInviteSuccess('Invitation sent.');
@@ -419,19 +433,28 @@ export default function GroupDetail() {
                   className="form-control"
                   value={inviteQuery}
                   onChange={e => setInviteQuery(e.target.value)}
-                  onFocus={() => { if (!inviteQuery) setInviteResults(allFriends); }}
+                  onFocus={() => {
+                    if (!inviteQuery.trim()) {
+                      const memberIds = new Set(members.map(m => m.user_id));
+                      setInviteResults(allFriends.filter(f => !memberIds.has(f.id)));
+                    }
+                  }}
                   placeholder={allFriends.length
                     ? `Search ${allFriends.length} friend${allFriends.length !== 1 ? 's' : ''}…`
                     : 'Search your friends…'}
                   disabled={inviting}
                   autoComplete="off"
                 />
-                {inviteResults.length > 0 && (
+                {(inviteResults.length > 0 || inviteNoMatch) && (
                   <div className="card" style={{
                     position: 'absolute', top: '100%', left: 0, right: 0,
                     zIndex: 50, marginTop: 4, maxHeight: 200, overflowY: 'auto',
                   }}>
-                    {inviteResults.map(f => (
+                    {inviteNoMatch ? (
+                      <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: '0.875rem' }}>
+                        No matches
+                      </div>
+                    ) : inviteResults.map(f => (
                       // onMouseDown fires before onBlur so the click registers before the input
                       // loses focus and the dropdown closes
                       <button

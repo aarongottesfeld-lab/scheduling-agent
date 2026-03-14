@@ -7,6 +7,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { getUserName, isOnboardingCompleted } from '../utils/auth';
 import client from '../utils/client';
@@ -206,6 +207,11 @@ export default function Home() {
         if (nudgesRes.status === 'fulfilled')  setNudges(nudgesRes.value.data?.nudges ?? []);
         if (friendsRes.status === 'fulfilled') setFriends(friendsRes.value.data?.friends ?? []);
         if (itinsRes.status === 'fulfilled')   setAllItins(itinsRes.value.data?.itineraries ?? []);
+        // PostHog targeting event — used by in-app tooltip triggers
+        const itins   = itinsRes.status === 'fulfilled' ? (itinsRes.value.data?.itineraries ?? []) : [];
+        const waiting = itins.filter(i => deriveTab(i) === 'waiting_you');
+        const inProg  = itins.filter(i => deriveTab(i) === 'waiting_them');
+        try { posthog.capture('home_view_loaded', { waiting_count: waiting.length, in_progress_count: inProg.length }); } catch {}
       } catch {
         if (mounted) setError('Could not load your dashboard. Please refresh.');
       } finally {

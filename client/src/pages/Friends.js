@@ -51,7 +51,12 @@ export default function Friends() {
           client.get('/users/me'),
         ]);
         if (!mounted) return;
-        if (friendsRes.status === 'fulfilled')  setFriends(friendsRes.value.data?.friends ?? []);
+        if (friendsRes.status === 'fulfilled') {
+          const confirmed = friendsRes.value.data?.friends ?? [];
+          setFriends(confirmed);
+          // PostHog targeting event — used by in-app tooltip triggers
+          try { posthog.capture('friends_view_loaded', { confirmed_friend_count: confirmed.length }); } catch {}
+        }
         if (requestsRes.status === 'fulfilled') setRequests(requestsRes.value.data?.requests ?? []);
         if (meRes.status === 'fulfilled')       setMyProfile(meRes.value.data);
       } catch {

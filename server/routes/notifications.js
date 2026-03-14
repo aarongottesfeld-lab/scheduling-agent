@@ -6,7 +6,7 @@ module.exports = function notificationsRouter(app, supabase, requireAuth) {
     try {
       const { data, error } = await supabase
         .from('notifications')
-        .select('id, type, title, body, read, action_url, ref_id, created_at')
+        .select('id, type, title, body, data, read, action_url, ref_id, created_at')
         .eq('user_id', req.userId)
         .order('created_at', { ascending: false })
         .limit(30);

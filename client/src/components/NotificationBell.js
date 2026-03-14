@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client from '../utils/client';
+import { getSupabaseId } from '../utils/auth';
 
 function timeAgo(ts) {
   const diff = (Date.now() - new Date(ts)) / 1000;
@@ -17,14 +18,18 @@ const TYPE_ICON = {
   itinerary_accepted:  '✅',
   itinerary_declined:  '❌',
   itinerary_reroll:    '🔄',
+  group_invite:        '🎉',
 };
 
 export default function NotificationBell() {
   const navigate = useNavigate();
-  const [open,         setOpen]         = useState(false);
+  const [open,          setOpen]          = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const [unread,       setUnread]       = useState(0);
-  const [loading,      setLoading]      = useState(false);
+  const [unread,        setUnread]        = useState(0);
+  const [loading,       setLoading]       = useState(false);
+  // Per-notification action busy state and error messages
+  const [busyNotifId,   setBusyNotifId]   = useState(null);
+  const [notifErrors,   setNotifErrors]   = useState({});
   const panelRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -75,6 +80,36 @@ export default function NotificationBell() {
     setUnread(0);
   }
 
+  /**
+   * Accept or decline a group invite notification.
+   * Calls PATCH /groups/:groupId/members/:userId, then removes the notification.
+   */
+  async function handleGroupInvite(notif, accept) {
+    const groupId = notif.data?.group_id;
+    const myId    = getSupabaseId();
+    if (!groupId || !myId) return;
+
+    setBusyNotifId(notif.id);
+    setNotifErrors(prev => { const n = { ...prev }; delete n[notif.id]; return n; });
+
+    try {
+      await client.patch(`/groups/${groupId}/members/${myId}`, {
+        status: accept ? 'active' : 'declined',
+      });
+      // Mark read and remove from list
+      await client.post(`/notifications/${notif.id}/read`).catch(() => {});
+      setNotifications(prev => prev.filter(x => x.id !== notif.id));
+      setUnread(u => notif.read ? u : Math.max(0, u - 1));
+    } catch (err) {
+      setNotifErrors(prev => ({
+        ...prev,
+        [notif.id]: err.response?.data?.error || 'Action failed. Try again.',
+      }));
+    } finally {
+      setBusyNotifId(null);
+    }
+  }
+
   return (
     <div style={{ position: 'relative' }} ref={panelRef}>
       <button
@@ -109,21 +144,64 @@ export default function NotificationBell() {
             <div className="notif-panel__empty">You're all caught up.</div>
           ) : (
             <ul className="notif-list">
-              {notifications.map(n => (
-                <li
-                  key={n.id}
-                  className={`notif-item${n.read ? '' : ' notif-item--unread'}`}
-                  onClick={() => handleNotifClick(n)}
-                >
-                  <span className="notif-item__icon">{TYPE_ICON[n.type] || '🔔'}</span>
-                  <div className="notif-item__body">
-                    <div className="notif-item__title">{n.title}</div>
-                    {n.body && <div className="notif-item__sub">{n.body}</div>}
-                    <div className="notif-item__time">{timeAgo(n.created_at)}</div>
-                  </div>
-                  {!n.read && <span className="notif-item__dot" />}
-                </li>
-              ))}
+              {notifications.map(n => {
+                // Group invite — inline Accept / Decline buttons, no row navigation
+                if (n.type === 'group_invite') {
+                  const isBusy = busyNotifId === n.id;
+                  return (
+                    <li
+                      key={n.id}
+                      className={`notif-item${n.read ? '' : ' notif-item--unread'}`}
+                    >
+                      <span className="notif-item__icon">{TYPE_ICON.group_invite}</span>
+                      <div className="notif-item__body">
+                        <div className="notif-item__title">{n.title}</div>
+                        {n.body && <div className="notif-item__sub">{n.body}</div>}
+                        <div className="notif-item__time">{timeAgo(n.created_at)}</div>
+                        {notifErrors[n.id] && (
+                          <div style={{ color: 'var(--error)', fontSize: '0.78rem', marginTop: 4 }}>
+                            {notifErrors[n.id]}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                          <button
+                            className="btn btn--primary btn--sm"
+                            disabled={isBusy}
+                            onClick={e => { e.stopPropagation(); handleGroupInvite(n, true); }}
+                          >
+                            {isBusy ? '…' : 'Accept'}
+                          </button>
+                          <button
+                            className="btn btn--ghost btn--sm"
+                            disabled={isBusy}
+                            onClick={e => { e.stopPropagation(); handleGroupInvite(n, false); }}
+                          >
+                            Decline
+                          </button>
+                        </div>
+                      </div>
+                      {!n.read && <span className="notif-item__dot" />}
+                    </li>
+                  );
+                }
+
+                // Default notification — row click marks read and navigates
+                return (
+                  <li
+                    key={n.id}
+                    className={`notif-item${n.read ? '' : ' notif-item--unread'}`}
+                    onClick={() => handleNotifClick(n)}
+                  >
+                    <span className="notif-item__icon">{TYPE_ICON[n.type] || '🔔'}</span>
+                    <div className="notif-item__body">
+                      <div className="notif-item__title">{n.title}</div>
+                      {n.body && <div className="notif-item__sub">{n.body}</div>}
+                      <div className="notif-item__time">{timeAgo(n.created_at)}</div>
+                    </div>
+                    {!n.read && <span className="notif-item__dot" />}
+                  </li>
+                );
+              })}
             </ul>
           )}
           <div className="notif-panel__footer">
