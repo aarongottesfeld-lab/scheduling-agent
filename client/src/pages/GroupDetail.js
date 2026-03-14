@@ -473,7 +473,7 @@ export default function GroupDetail() {
                     className="form-control"
                     value={inviteQuery}
                     onChange={e => setInviteQuery(e.target.value)}
-                    onFocus={() => {
+                    onClick={() => {
                       if (!inviteQuery.trim()) {
                         const memberIds = new Set(members.map(m => m.user_id));
                         const stagedIds = new Set(selectedFriends.map(f => f.id));
@@ -596,7 +596,17 @@ export default function GroupDetail() {
                     padding: '10px 0', borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  {/* Avatar */}
+                  {/* Avatar + name — clickable for other members to view their profile */}
+                  <button
+                    type="button"
+                    disabled={isMe}
+                    onClick={() => !isMe && navigate(`/friends/${member.user_id}`)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12, flex: 1,
+                      background: 'none', border: 'none', padding: 0, textAlign: 'left',
+                      cursor: isMe ? 'default' : 'pointer',
+                    }}
+                  >
                   {profile?.avatar_url ? (
                     <img
                       src={profile.avatar_url}
@@ -609,7 +619,7 @@ export default function GroupDetail() {
                     </div>
                   )}
 
-                  <div style={{ flex: 1 }}>
+                  <div>
                     <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
                       {name}{isMe ? ' (you)' : ''}
                     </div>
@@ -633,6 +643,7 @@ export default function GroupDetail() {
                       )}
                     </div>
                   </div>
+                  </button>
 
                   {/* Admin-only: remove non-admin, non-self members */}
                   {myRole === 'admin' && !isMe && member.role !== 'admin' && (

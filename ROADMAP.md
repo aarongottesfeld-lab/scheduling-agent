@@ -521,6 +521,20 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - Users need per-type toggles before you have many users
 - See spec below
 
+**User privacy settings (new — added March 14, 2026)**
+- Separate from notification settings — controls who can interact with the user's account
+- Ship alongside notification settings page as a combined Settings screen, or as a distinct tab within it
+- Toggle: **Allow group invites from non-friends** (default: ON)
+  - When OFF: POST /groups/:id/members returns 403 if the invitee has no accepted friendship with the organizer
+  - Server enforcement is required — client-side only is not sufficient (API is accessible directly)
+  - Store as `allow_non_friend_group_invites` boolean on the profiles table (default true)
+  - Check this flag in the group invite route before inserting the membership row
+  - If the invite is blocked, return a clear error the organizer can understand: "This person only accepts group invites from friends."
+  - The invitee should never be notified that a blocked invite was attempted — silent reject on the server
+- Additional privacy toggles to consider for the same screen (placeholder, not yet specced):
+  - Allow friend requests from anyone vs. friends-of-friends only
+  - Profile visibility (anyone with link vs. friends only)
+
 **Email notifications channel**
 - Supplement push with email for users who deny push permission
 - Especially important for: itinerary locked, friend request accepted
