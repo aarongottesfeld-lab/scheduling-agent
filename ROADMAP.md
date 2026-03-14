@@ -511,24 +511,28 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - [ ] Username is the primary find-me mechanism in search — users who change usernames
   should be aware friends will need to re-search for them
 
-### Feature onboarding / tooltips (post-beta, informed by first-user feedback)
+### Feature onboarding / tooltips (beta phase — build before wider rollout)
 > Not profile completion — this is a product tour that teaches users what the app can do.
-> Deploy after beta signal confirms which features users are missing or confused by.
+> Building during beta increases the quality of feedback you get back: testers who never
+> discover a feature can't tell you whether they liked it.
 
 - [ ] Identify the 4–5 moments where users most commonly get lost or don't discover a feature
-  (inform this from PostHog drop-off data + beta feedback form responses)
+  (inform this from PostHog drop-off data + beta feedback form responses — but don't wait
+  for data to build the first pass, the beta itself generates that signal)
 - [ ] Tooltip/spotlight approach: trigger on first visit to a screen, dismiss on interaction,
-  never repeat after dismissed. Key candidates:
-  - Home screen: explain the Waiting / In Progress / Upcoming tabs
-  - ItineraryView: explain Pick this one, New time, New vibe
+  never repeat after dismissed. Priority moments for beta:
+  - Home screen: explain Waiting / In Progress / Upcoming tabs
+  - ItineraryView: spotlight "New time" and "New vibe" buttons — easy to miss, high value
   - GroupItineraryView: explain voting, comment threads, quorum badge
-  - Friends tab: explain the Schedule button on a friend's profile
-- [ ] Implementation options (decide after beta signal):
-  - Option A: PostHog Surveys or In-App Messaging — no custom code, deploys via PostHog UI,
-    A/B testable, analytics built in. Recommended first approach.
-  - Option B: Custom tooltip component — more control over placement and animation,
-    but requires building and maintaining the component
-- [ ] Do NOT build this before beta feedback — risk of over-engineering the wrong moments
+  - Friends tab: surface the Schedule button on a confirmed friend's profile
+- [ ] Implementation: use PostHog In-App Messaging (Surveys feature) — zero custom code,
+  configurable via PostHog UI, A/B testable, analytics built in.
+  Claude can create and configure PostHog surveys directly via the PostHog MCP connection
+  without manual configuration in the PostHog UI. Visual styling/branding adjustments
+  (colors, position) still require the PostHog web UI.
+  Target audience: users who signed up but haven't completed a specific action yet
+  (e.g. show ItineraryView tooltip only to users who haven't triggered itinerary_locked)
+- [ ] Do NOT over-engineer — 3–4 targeted tooltips beats a full product tour wizard
 
 ### Manual busy blocks (organizer + attendee)
 > Users sometimes have informal commitments that aren't on their calendar.
