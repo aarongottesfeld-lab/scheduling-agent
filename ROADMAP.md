@@ -511,7 +511,51 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - [ ] Username is the primary find-me mechanism in search — users who change usernames
   should be aware friends will need to re-search for them
 
-### Maps API Key Split (pre-maps-feature)
+### Feature onboarding / tooltips (post-beta, informed by first-user feedback)
+> Not profile completion — this is a product tour that teaches users what the app can do.
+> Deploy after beta signal confirms which features users are missing or confused by.
+
+- [ ] Identify the 4–5 moments where users most commonly get lost or don't discover a feature
+  (inform this from PostHog drop-off data + beta feedback form responses)
+- [ ] Tooltip/spotlight approach: trigger on first visit to a screen, dismiss on interaction,
+  never repeat after dismissed. Key candidates:
+  - Home screen: explain the Waiting / In Progress / Upcoming tabs
+  - ItineraryView: explain Pick this one, New time, New vibe
+  - GroupItineraryView: explain voting, comment threads, quorum badge
+  - Friends tab: explain the Schedule button on a friend's profile
+- [ ] Implementation options (decide after beta signal):
+  - Option A: PostHog Surveys or In-App Messaging — no custom code, deploys via PostHog UI,
+    A/B testable, analytics built in. Recommended first approach.
+  - Option B: Custom tooltip component — more control over placement and animation,
+    but requires building and maintaining the component
+- [ ] Do NOT build this before beta feedback — risk of over-engineering the wrong moments
+
+### Manual busy blocks (organizer + attendee)
+> Users sometimes have informal commitments that aren't on their calendar.
+> This lets them communicate constraints without polluting their Google Calendar.
+
+**Organizer — at event creation time**
+- [ ] Add a "Block off times" optional section in NewEvent below the date range picker
+- [ ] Allow free-text entry of time ranges to exclude: "Don't book 3/15 9–11 AM"
+- [ ] Parse and inject as an exclusion block in the Claude prompt:
+  EXCLUDED WINDOWS (organizer has blocked these off — do not suggest plans during these times):
+  - March 15, 9:00–11:00 AM
+- [ ] Store as manual_busy_blocks jsonb on the itinerary row (new column, nullable)
+- [ ] Reroll: re-inject the same exclusion block so it persists across rerolls
+
+**Attendee — when declining or suggesting an alternative**
+- [ ] When an attendee declines or hits "Suggest something else", surface an optional
+  text field: "Any times that don't work for you?" (e.g. "I can't do Saturday morning")
+- [ ] Inject this as an additional exclusion signal in the attendee-side reroll prompt
+- [ ] Store as attendee_busy_notes text on the itinerary row (nullable)
+- [ ] Privacy: these notes are visible to the organizer (they're scheduling context),
+  clearly labeled as such in the UI
+
+**DB changes**
+- [ ] Add manual_busy_blocks jsonb (nullable) to itineraries table
+- [ ] Add attendee_busy_notes text (nullable) to itineraries table
+
+
 > Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
 - [ ] Create a second Google Maps API key in Google Cloud Console — restrict to Maps JavaScript API only
 - [ ] Add HTTP referrer restriction to the new browser key: `https://rendezvous-gamma.vercel.app/*`
