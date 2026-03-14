@@ -43,6 +43,7 @@ export default function GroupDetail() {
   const [inviting,       setInviting]       = useState(false);
   const [inviteError,    setInviteError]    = useState('');
   const [inviteSuccess,  setInviteSuccess]  = useState('');
+  const [selectedFriend, setSelectedFriend] = useState(null); // { id, name, username } | null
   const dropRef = useRef(null);
 
   // Per-member spinner: stores the userId currently being acted on
@@ -129,6 +130,7 @@ export default function GroupDetail() {
     setInviteNoMatch(false);
     try {
       await inviteMember(id, friendId);
+      setSelectedFriend(null);
       setInviteSuccess('Invitation sent.');
       setTimeout(() => setInviteSuccess(''), 3000);
       load(); // refresh member list to show the new pending row
@@ -146,21 +148,25 @@ export default function GroupDetail() {
    * If zero matches, show the "No matches" state.
    */
   function handleInviteButton() {
+    // Step 2 of the two-step flow: if a friend is staged, send the invite.
+    if (selectedFriend) {
+      handleInvite(selectedFriend.id);
+      return;
+    }
+    // Nothing staged and nothing typed — prompt them to search first.
+    if (!inviteQuery.trim()) {
+      setInviteError('Search for a friend to invite.');
+      return;
+    }
+    // Something typed but no selection yet — open/refresh the dropdown so they can pick.
     const memberIds = new Set(members.map(m => m.user_id));
     const eligible  = allFriends.filter(f => !memberIds.has(f.id));
     const q = inviteQuery.trim().toLowerCase();
-    const matched = q
-      ? eligible.filter(f => f.name?.toLowerCase().includes(q) || f.username?.toLowerCase().includes(q))
-      : eligible;
-    if (matched.length === 1) {
-      handleInvite(matched[0].id);
-    } else if (matched.length === 0) {
-      setInviteResults([]);
-      setInviteNoMatch(!!inviteQuery.trim());
-    } else {
-      setInviteResults(matched);
-      setInviteNoMatch(false);
-    }
+    const matched = eligible.filter(f =>
+      f.name?.toLowerCase().includes(q) || f.username?.toLowerCase().includes(q)
+    );
+    setInviteResults(matched);
+    setInviteNoMatch(matched.length === 0);
   }
 
   /**
@@ -460,8 +466,9 @@ export default function GroupDetail() {
               {/* Invite input + button — ref covers both so outside-click doesn't
                   close the dropdown when the admin clicks the Invite button */}
               <div ref={dropRef}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                  <div style={{ position: 'relative', flex: 1 }}>
+                {/* Step 1: search input — hidden once a friend is staged */}
+                {!selectedFriend && (
+                  <div style={{ position: 'relative', marginBottom: 8 }}>
                     <input
                       type="text"
                       className="form-control"
@@ -479,48 +486,85 @@ export default function GroupDetail() {
                       disabled={inviting}
                       autoComplete="off"
                     />
-                {(inviteResults.length > 0 || inviteNoMatch) && (
-                  <div className="card" style={{
-                    position: 'absolute', top: '100%', left: 0, right: 0,
-                    zIndex: 50, marginTop: 4, maxHeight: 200, overflowY: 'auto',
-                  }}>
-                    {inviteNoMatch ? (
-                      <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: '0.875rem' }}>
-                        No matches
+                    {(inviteResults.length > 0 || inviteNoMatch) && (
+                      <div className="card" style={{
+                        position: 'absolute', top: '100%', left: 0, right: 0,
+                        zIndex: 50, marginTop: 4, maxHeight: 200, overflowY: 'auto',
+                      }}>
+                        {inviteNoMatch ? (
+                          <div style={{ padding: '12px 14px', color: 'var(--text-3)', fontSize: '0.875rem' }}>
+                            No matches
+                          </div>
+                        ) : inviteResults.map(f => (
+                          // onMouseDown fires before onBlur so selection registers before
+                          // the input loses focus and the dropdown closes
+                          <button
+                            key={f.id}
+                            type="button"
+                            disabled={inviting}
+                            onMouseDown={() => {
+                              setSelectedFriend({ id: f.id, name: f.name, username: f.username });
+                              setInviteQuery('');
+                              setInviteResults([]);
+                              setInviteNoMatch(false);
+                            }}
+                            style={{
+                              width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '10px 14px', background: 'none', border: 'none',
+                              cursor: 'pointer', textAlign: 'left',
+                            }}
+                          >
+                            <div className="avatar avatar--sm">{getInitials(f.name || '')}</div>
+                            <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>{f.name}</span>
+                            {f.username && (
+                              <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>@{f.username}</span>
+                            )}
+                          </button>
+                        ))}
                       </div>
-                    ) : inviteResults.map(f => (
-                      // onMouseDown fires before onBlur so the click registers before the input
-                      // loses focus and the dropdown closes
-                      <button
-                        key={f.id}
-                        type="button"
-                        disabled={inviting}
-                        onMouseDown={() => handleInvite(f.id)}
-                        style={{
-                          width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                          padding: '10px 14px', background: 'none', border: 'none',
-                          cursor: 'pointer', textAlign: 'left',
-                        }}
-                      >
-                        <div className="avatar avatar--sm">{getInitials(f.name || '')}</div>
-                        <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>{f.name}</span>
-                        {f.username && (
-                          <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>@{f.username}</span>
-                        )}
-                      </button>
-                    ))}
+                    )}
                   </div>
                 )}
+
+                {/* Step 2: staged friend pill — shown after selection, before confirm */}
+                {selectedFriend && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px', marginBottom: 8,
+                    background: 'var(--surface-2)', border: '1px solid var(--border)',
+                    borderRadius: 'var(--r)',
+                  }}>
+                    <div className="avatar avatar--sm">{getInitials(selectedFriend.name || '')}</div>
+                    <span style={{ fontSize: '0.875rem', fontWeight: 600, flex: 1 }}>
+                      {selectedFriend.name}
+                      {selectedFriend.username && (
+                        <span style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: 6 }}>
+                          @{selectedFriend.username}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFriend(null)}
+                      disabled={inviting}
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: 'var(--text-3)', fontSize: '1rem', lineHeight: 1, padding: 2,
+                      }}
+                      aria-label="Remove selection"
+                    >
+                      ✕
+                    </button>
                   </div>
-                  <button
-                    className="btn btn--primary btn--sm"
-                    onClick={handleInviteButton}
-                    disabled={inviting}
-                    style={{ flexShrink: 0 }}
-                  >
-                    {inviting ? '…' : 'Invite'}
-                  </button>
-                </div>
+                )}
+
+                <button
+                  className="btn btn--primary btn--sm"
+                  onClick={handleInviteButton}
+                  disabled={inviting}
+                >
+                  {inviting ? '…' : 'Invite'}
+                </button>
               </div>
             </div>
           )}
