@@ -117,7 +117,10 @@ export default function NewGroupEvent() {
   const [destination,        setDestination]        = useState('');
 
   // Voting rules
-  const [quorumMode,      setQuorumMode]      = useState('majority'); // 'majority' | 'unanimous'
+  // quorumMode: 'custom' shows a number input; 'unanimous' locks to total participant count.
+  // customQuorum: string so the <input> stays controlled; validated as integer on submit.
+  const [quorumMode,      setQuorumMode]      = useState('custom');
+  const [customQuorum,    setCustomQuorum]    = useState('');  // '' = not yet set by user
   const [tieBehavior,     setTieBehavior]     = useState('schedule'); // 'schedule' | 'decline'
   const [nudgeAfterHours, setNudgeAfterHours] = useState('48');
 
@@ -169,6 +172,14 @@ export default function NewGroupEvent() {
     if (!startDate)   return 'Choose a start of scheduling window.';
     if (!endDate)     return 'Choose an end of scheduling window.';
     if (endDate < startDate) return 'End date must be on or after start date.';
+    if (quorumMode === 'custom') {
+      const totalParticipants = attendees.length + 1; // attendees + organizer
+      const threshold = parseInt(customQuorum, 10);
+      if (isNaN(threshold) || threshold < 1)
+        return 'Votes needed must be at least 1.';
+      if (threshold > totalParticipants)
+        return `Votes needed cannot exceed total participants (${totalParticipants}).`;
+    }
     return '';
   }
 
@@ -192,10 +203,11 @@ export default function NewGroupEvent() {
         ? { type: 'custom', time: customTime, windowMinutes: customWindow }
         : { type: timeOfDay };
 
-      const attendeeIds = attendees.map(a => a.user_id);
-      const quorumThreshold = quorumMode === 'unanimous'
-        ? attendeeIds.length
-        : Math.ceil(attendeeIds.length / 2);
+      const attendeeIds       = attendees.map(a => a.user_id);
+      const totalParticipants = attendeeIds.length + 1; // attendees + organizer
+      const quorumThreshold   = quorumMode === 'unanimous'
+        ? totalParticipants
+        : parseInt(customQuorum, 10);
 
       const { itineraryId } = await createGroupItinerary({
         group_id:            selectedGroupId,
@@ -566,42 +578,71 @@ export default function NewGroupEvent() {
             {/* ── Voting rules ── */}
             <div className="form-group">
               <label className="form-label">Quorum</label>
-              <div className="radio-group">
-                <label className={`radio-item${quorumMode === 'majority' ? ' radio-item--checked' : ''}`}>
-                  <input
-                    type="radio"
-                    name="quorumMode"
-                    value="majority"
-                    checked={quorumMode === 'majority'}
-                    onChange={() => setQuorumMode('majority')}
-                    disabled={generating}
-                  />
-                  <span>
-                    Simple majority
-                    <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-4)', marginTop: 1 }}>
-                      {attendees.length > 0
-                        ? `${Math.ceil(attendees.length / 2)} of ${attendees.length} votes needed`
-                        : 'Set after adding attendees'}
-                    </span>
-                  </span>
-                </label>
-                <label className={`radio-item${quorumMode === 'unanimous' ? ' radio-item--checked' : ''}`}>
-                  <input
-                    type="radio"
-                    name="quorumMode"
-                    value="unanimous"
-                    checked={quorumMode === 'unanimous'}
-                    onChange={() => setQuorumMode('unanimous')}
-                    disabled={generating}
-                  />
-                  <span>
-                    Unanimous
-                    <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-4)', marginTop: 1 }}>
-                      All attendees must agree
-                    </span>
-                  </span>
-                </label>
-              </div>
+              {(() => {
+                const total = attendees.length + 1; // attendees + organizer
+                return (
+                  <div className="radio-group">
+                    {/* Custom threshold option */}
+                    <label
+                      className={`radio-item${quorumMode === 'custom' ? ' radio-item--checked' : ''}`}
+                      style={{ alignItems: 'center', gap: 10 }}
+                    >
+                      <input
+                        type="radio"
+                        name="quorumMode"
+                        value="custom"
+                        checked={quorumMode === 'custom'}
+                        onChange={() => setQuorumMode('custom')}
+                        disabled={generating}
+                      />
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <input
+                          type="number"
+                          min={1}
+                          max={total}
+                          value={customQuorum}
+                          placeholder={String(Math.ceil(total / 2))}
+                          onChange={e => {
+                            setQuorumMode('custom');
+                            setCustomQuorum(e.target.value);
+                          }}
+                          disabled={generating}
+                          style={{
+                            width: 56,
+                            padding: '2px 6px',
+                            fontSize: '0.9rem',
+                            borderRadius: 6,
+                            border: '1px solid var(--border)',
+                            textAlign: 'center',
+                          }}
+                          onClick={e => e.stopPropagation()}
+                        />
+                        <span style={{ fontSize: '0.88rem' }}>
+                          of {total} vote{total !== 1 ? 's' : ''} needed
+                        </span>
+                      </span>
+                    </label>
+
+                    {/* Unanimous option */}
+                    <label className={`radio-item${quorumMode === 'unanimous' ? ' radio-item--checked' : ''}`}>
+                      <input
+                        type="radio"
+                        name="quorumMode"
+                        value="unanimous"
+                        checked={quorumMode === 'unanimous'}
+                        onChange={() => setQuorumMode('unanimous')}
+                        disabled={generating}
+                      />
+                      <span>
+                        Unanimous
+                        <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-4)', marginTop: 1 }}>
+                          All {total} must agree
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="form-group">
