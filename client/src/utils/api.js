@@ -176,8 +176,8 @@ export async function voteOnGroupItinerary(itineraryId, selectedSuggestionId, vo
  * Appends current suggestions to changelog, resets attendee_statuses to 'pending'.
  * Returns { suggestions: [...] }.
  */
-export async function rerollGroupItinerary(itineraryId) {
-  const res = await client.post(`/group-itineraries/${itineraryId}/reroll`);
+export async function rerollGroupItinerary(itineraryId, rerollType = 'both') {
+  const res = await client.post(`/group-itineraries/${itineraryId}/reroll`, { rerollType });
   return res.data;
 }
 

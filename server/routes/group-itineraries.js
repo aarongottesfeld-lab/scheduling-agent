@@ -168,7 +168,7 @@ async function fetchBusy(session, startISO, endISO, supabase, userId) {
  *   - Aggregates dietary and mobility restrictions across all members as hard constraints
  *   - Injects group size so Claude can reason about venue capacity
  */
-function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null }) {
+function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, rerollNote = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -297,7 +297,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
   ]
 }
 
-Rules:
+${rerollNote ? `\nREROLL INSTRUCTION (highest priority):\n${rerollNote}\n` : ''}Rules:
 - All venues must be real, currently open establishments with sufficient capacity for ${members.length} people
 - Spread suggestions across different vibes (chill, active, social)
 - Use different time windows for each suggestion when possible
@@ -372,7 +372,7 @@ async function insertNotification(supabase, userId, type, tier, title, body, dat
  * @param {object} sessionStore - { getSessionBySupabaseId }
  * @returns {object[]} suggestions array, ready for DB write
  */
-async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore) {
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [] } = {}) {
   const start = itin.date_range_start;
   const end   = itin.date_range_end;
   const startISO = new Date(start + 'T00:00:00').toISOString();
@@ -468,6 +468,15 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
       ? groupDefaultActivities.map(a => sanitizePromptInput(a, 100)).join(', ')
       : '');
 
+  // Build a reroll instruction note so Claude knows what to vary vs. preserve.
+  const existingTitles = existingSuggestions.map(s => s.title).filter(Boolean);
+  const rerollNoteMap = {
+    timing:   `Generate 3 suggestions with DIFFERENT dates/times than before — keep the same activity types and neighborhood vibes but find new time windows. Avoid repeating these previously-shown options: ${existingTitles.join(', ') || 'none'}.`,
+    activity: `Generate 3 suggestions with DIFFERENT activities and venues — keep the same time windows from the availability list but suggest completely different things to do and different neighborhoods. The vibe should be noticeably different from: ${existingTitles.join(', ') || 'none'}.`,
+    both:     existingTitles.length ? `Generate 3 brand-new suggestions completely different from these already-shown options: ${existingTitles.join(', ')}. Different activities, different times, different vibes.` : '',
+  };
+  const rerollNote = rerollNoteMap[rerollType] || '';
+
   const prompt = buildGroupSuggestPrompt({
     groupName,
     groupDescription,
@@ -484,6 +493,7 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
     travelMode:         itin.travel_mode          || 'local',
     tripDurationDays:   itin.trip_duration_days   || 1,
     destination:        itin.destination          || null,
+    rerollNote,
   });
 
   let suggestions;
@@ -858,9 +868,15 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       isOrganizer: p.id === req.userId,
     }));
 
+    const VALID_REROLL_TYPES = new Set(['timing', 'activity', 'both']);
+    const rerollType = VALID_REROLL_TYPES.has(req.body.rerollType) ? req.body.rerollType : 'both';
+
     let newSuggestions;
     try {
-      newSuggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore);
+      newSuggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+        rerollType,
+        existingSuggestions: itin.suggestions || [],
+      });
     } catch (e) {
       console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });

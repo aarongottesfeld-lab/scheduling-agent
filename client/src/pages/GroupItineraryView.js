@@ -434,11 +434,13 @@ export default function GroupItineraryView() {
   const [error,       setError]       = useState('');
 
   // Action states
-  const [sending,     setSending]     = useState(false);
-  const [rerolling,   setRerolling]   = useState(false);
-  const [actingCard,  setActingCard]  = useState(null); // suggestion.id currently voting
-  const [actionError, setActionError] = useState('');
-  const [sentSuccess, setSentSuccess] = useState(false);
+  const [sending,         setSending]         = useState(false);
+  const [rerollingTiming, setRerollingTiming] = useState(false);
+  const [rerollingVibe,   setRerollingVibe]   = useState(false);
+  const [actingCard,      setActingCard]      = useState(null); // suggestion.id currently voting
+  const [actionError,     setActionError]     = useState('');
+  const [sentSuccess,     setSentSuccess]     = useState(false);
+  const rerolling = rerollingTiming || rerollingVibe;
 
   /** Fetch (or re-fetch) the itinerary from the server. */
   const load = useCallback(async () => {
@@ -470,18 +472,20 @@ export default function GroupItineraryView() {
     }
   }
 
-  /** Organizer requests a new set of AI suggestions. */
-  async function handleReroll() {
-    if (!window.confirm('Generate a new set of suggestions? The current ones will be archived.')) return;
-    setRerolling(true);
+  /** Organizer requests new AI suggestions, varying either time or vibe. */
+  async function handleReroll(rerollType) {
+    const label = rerollType === 'timing' ? 'time slots' : 'activity vibes';
+    if (!window.confirm(`Re-roll ${label}? New suggestions will be added to the set.`)) return;
+    const setBusy = rerollType === 'timing' ? setRerollingTiming : setRerollingVibe;
+    setBusy(true);
     setActionError('');
     try {
-      await rerollGroupItinerary(id);
+      await rerollGroupItinerary(id, rerollType);
       load();
     } catch (e) {
       setActionError(e.message || 'Could not regenerate suggestions.');
     } finally {
-      setRerolling(false);
+      setBusy(false);
     }
   }
 
@@ -715,15 +719,22 @@ export default function GroupItineraryView() {
             <div className="alert alert--error" style={{ marginBottom: 16 }}>{actionError}</div>
           )}
 
-          {/* Organizer re-roll button (awaiting_responses) */}
+          {/* Organizer re-roll buttons (awaiting_responses) */}
           {isOrganizer && status === 'awaiting_responses' && (
-            <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+            <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 className="btn btn--ghost btn--sm"
                 disabled={rerolling}
-                onClick={handleReroll}
+                onClick={() => handleReroll('timing')}
               >
-                {rerolling ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Regenerating…</> : '↻ Re-roll suggestions'}
+                {rerollingTiming ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Re-rolling…</> : '🕐 Re-roll time'}
+              </button>
+              <button
+                className="btn btn--ghost btn--sm"
+                disabled={rerolling}
+                onClick={() => handleReroll('activity')}
+              >
+                {rerollingVibe ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Re-rolling…</> : '✨ Re-roll vibe'}
               </button>
             </div>
           )}
@@ -787,15 +798,22 @@ export default function GroupItineraryView() {
             </div>
           )}
 
-          {/* ── Draft: global re-roll control at bottom ── */}
+          {/* ── Draft: re-roll time / vibe controls at bottom ── */}
           {isOrganizer && status === 'organizer_draft' && suggestions.length > 0 && (
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 className="btn btn--ghost"
                 disabled={sending || rerolling}
-                onClick={handleReroll}
+                onClick={() => handleReroll('timing')}
               >
-                {rerolling ? 'Regenerating…' : '↻ Re-roll all suggestions'}
+                {rerollingTiming ? 'Re-rolling…' : '🕐 Re-roll time'}
+              </button>
+              <button
+                className="btn btn--ghost"
+                disabled={sending || rerolling}
+                onClick={() => handleReroll('activity')}
+              >
+                {rerollingVibe ? 'Re-rolling…' : '✨ Re-roll vibe'}
               </button>
             </div>
           )}
