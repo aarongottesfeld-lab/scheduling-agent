@@ -39,6 +39,21 @@ function formatDateTime(dateStr, timeStr) {
 }
 
 /**
+ * Formats a date range for multi-day trips: "Mar 15 – Mar 18, 2026"
+ */
+function formatDateRange(startDateStr, endDateStr) {
+  if (!startDateStr) return '';
+  const [sy, sm, sd] = startDateStr.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  if (!endDateStr) return start.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  const [ey, em, ed] = endDateStr.split('-').map(Number);
+  const end = new Date(ey, em - 1, ed);
+  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endStr   = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${startStr} – ${endStr}`;
+}
+
+/**
  * Builds a Google Calendar "Add to Calendar" deep-link for a confirmed suggestion.
  * Uses the TEMPLATE action so the event pre-fills without requiring Google sign-in.
  * Duration defaults to 2 hours if not specified.
@@ -190,8 +205,10 @@ function SuggestionCard({
   // True when this specific card's async action (reroll or suggest) is in-flight.
   const thisCardBusy = activeCardId === suggestion.id;
 
-  const narrative = suggestion.narrative || '';
-  const truncated = narrative.length > 100 ? narrative.slice(0, 100) + '…' : narrative;
+  const narrative   = suggestion.narrative || '';
+  const truncated   = narrative.length > 100 ? narrative.slice(0, 100) + '…' : narrative;
+  const isMultiDay  = suggestion.days?.length > 1;
+  const lastDayDate = isMultiDay ? suggestion.days[suggestion.days.length - 1]?.date : null;
 
   // ── Visibility flags ──────────────────────────────────────────
   // Organizer pre-send: can pick / swap any card before sending
@@ -222,7 +239,11 @@ function SuggestionCard({
       <div className={`suggestion-card__header${isConfirmed ? ' suggestion-card__header--confirmed' : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div className="suggestion-card__date">{formatDateTime(suggestion.date, suggestion.time)}</div>
+            <div className="suggestion-card__date">
+              {isMultiDay
+                ? formatDateRange(suggestion.days[0]?.date ?? suggestion.date, lastDayDate)
+                : formatDateTime(suggestion.date, suggestion.time)}
+            </div>
             {suggestion.neighborhood && (
               <div className="suggestion-card__neighborhood">📍 {suggestion.neighborhood}</div>
             )}
@@ -281,14 +302,29 @@ function SuggestionCard({
 
       {/* ── Card body (collapsed / expanded) ── */}
       <div className="suggestion-card__body">
-        {!expanded && narrative && <p className="suggestion-card__narrative">{truncated}</p>}
-        {!expanded && suggestion.tags?.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
-            {suggestion.tags.map((tag, i) => (
-              <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
+        {!expanded && (isMultiDay ? (
+          <div style={{ marginTop: 8 }}>
+            {suggestion.days.slice(0, 3).map((day, i) => (
+              <div key={i} style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginBottom: 3 }}>
+                <strong>Day {day.day}</strong>{day.label ? ` — ${day.label}` : ''}
+              </div>
             ))}
+            {suggestion.days.length > 3 && (
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>+ {suggestion.days.length - 3} more</div>
+            )}
           </div>
-        )}
+        ) : (
+          <>
+            {narrative && <p className="suggestion-card__narrative">{truncated}</p>}
+            {suggestion.tags?.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+                {suggestion.tags.map((tag, i) => (
+                  <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
+                ))}
+              </div>
+            )}
+          </>
+        ))}
         <button className="btn btn--ghost btn--sm" style={{ marginTop: 10, padding: '4px 0', fontSize: '0.82rem' }}
           onClick={() => setExpanded(e => !e)}>
           {expanded ? 'Collapse ↑' : 'See details & route ↓'}
@@ -302,7 +338,6 @@ function SuggestionCard({
             // Use days[0].stops when present, fall back to suggestion.venues for pre-migration rows.
             // Multi-day (days.length > 1): render each day with a header and its stops list.
             // Single-day: render stops identically to the previous flat venues render (no header).
-            const isMultiDay = suggestion.days?.length > 1;
             const allDays = isMultiDay
               ? suggestion.days
               : [{ day: 1, label: null, stops: suggestion.days?.[0]?.stops ?? suggestion.venues ?? [] }];
@@ -436,9 +471,10 @@ function SuggestionCard({
               </a>
             </div>
           )}
-          {suggestion.durationMinutes > 0 && (
-            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>~{Math.round(suggestion.durationMinutes / 60)} hrs</div>
-          )}
+          {isMultiDay
+            ? <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>{suggestion.days.length} days</div>
+            : suggestion.durationMinutes > 0 && <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>~{Math.round(suggestion.durationMinutes / 60)} hrs</div>
+          }
           {suggestion.tags?.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 10 }}>
               {suggestion.tags.map((tag, i) => (

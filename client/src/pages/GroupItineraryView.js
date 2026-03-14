@@ -51,6 +51,21 @@ function formatDateTime(dateStr, timeStr) {
 }
 
 /**
+ * Formats a date range for multi-day trips: "Mar 15 – Mar 18, 2026"
+ */
+function formatDateRange(startDateStr, endDateStr) {
+  if (!startDateStr) return '';
+  const [sy, sm, sd] = startDateStr.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  if (!endDateStr) return start.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  const [ey, em, ed] = endDateStr.split('-').map(Number);
+  const end = new Date(ey, em - 1, ed);
+  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endStr   = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${startStr} – ${endStr}`;
+}
+
+/**
  * Builds a Google Calendar "Add to Calendar" deep-link for a locked group suggestion.
  * Same logic as ItineraryView.js but uses group name + event title as the calendar title.
  */
@@ -256,8 +271,10 @@ function GroupSuggestionCard({
   const declineCount   = attendeeEntries.filter(v => v.vote === 'declined').length;
   const respondedCount = attendeeEntries.filter(v => v.vote !== 'pending').length;
 
-  const narrative = suggestion.narrative || '';
-  const truncated = narrative.length > 120 ? narrative.slice(0, 120) + '…' : narrative;
+  const narrative   = suggestion.narrative || '';
+  const truncated   = narrative.length > 120 ? narrative.slice(0, 120) + '…' : narrative;
+  const isMultiDay  = suggestion.days?.length > 1;
+  const lastDayDate = isMultiDay ? suggestion.days[suggestion.days.length - 1]?.date : null;
 
   return (
     <div
@@ -268,7 +285,11 @@ function GroupSuggestionCard({
       <div className={`suggestion-card__header${isWinner ? ' suggestion-card__header--confirmed' : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div className="suggestion-card__date">{formatDateTime(suggestion.date, suggestion.time)}</div>
+            <div className="suggestion-card__date">
+              {isMultiDay
+                ? formatDateRange(suggestion.days[0]?.date ?? suggestion.date, lastDayDate)
+                : formatDateTime(suggestion.date, suggestion.time)}
+            </div>
             {suggestion.neighborhood && (
               <div className="suggestion-card__neighborhood">📍 {suggestion.neighborhood}</div>
             )}
@@ -311,16 +332,29 @@ function GroupSuggestionCard({
 
       {/* ── Card body ── */}
       <div className="suggestion-card__body">
-        {!expanded && narrative && (
-          <p className="suggestion-card__narrative">{truncated}</p>
-        )}
-        {!expanded && suggestion.tags?.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
-            {suggestion.tags.map((tag, i) => (
-              <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
+        {!expanded && (isMultiDay ? (
+          <div style={{ marginTop: 8 }}>
+            {suggestion.days.slice(0, 3).map((day, i) => (
+              <div key={i} style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginBottom: 3 }}>
+                <strong>Day {day.day}</strong>{day.label ? ` — ${day.label}` : ''}
+              </div>
             ))}
+            {suggestion.days.length > 3 && (
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>+ {suggestion.days.length - 3} more</div>
+            )}
           </div>
-        )}
+        ) : (
+          <>
+            {narrative && <p className="suggestion-card__narrative">{truncated}</p>}
+            {suggestion.tags?.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+                {suggestion.tags.map((tag, i) => (
+                  <span key={i} style={{ fontSize: '0.72rem', background: 'var(--surface-2)', color: 'var(--text-2)', borderRadius: 99, padding: '2px 8px' }}>{tag}</span>
+                ))}
+              </div>
+            )}
+          </>
+        ))}
         <button
           className="btn btn--ghost btn--sm"
           style={{ marginTop: 8, padding: '4px 0', fontSize: '0.82rem' }}
@@ -335,7 +369,6 @@ function GroupSuggestionCard({
             <p className="suggestion-card__narrative" style={{ marginTop: 8 }}>{narrative}</p>
           )}
           {(() => {
-            const isMultiDay = suggestion.days?.length > 1;
             const allDays = isMultiDay
               ? suggestion.days
               : [{ day: 1, label: null, stops: suggestion.days?.[0]?.stops ?? suggestion.venues ?? [] }];
@@ -406,11 +439,10 @@ function GroupSuggestionCard({
           })()}
 
           {/* Duration */}
-          {suggestion.durationMinutes > 0 && (
-            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>
-              ~{Math.round(suggestion.durationMinutes / 60)} hrs
-            </div>
-          )}
+          {isMultiDay
+            ? <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>{suggestion.days.length} days</div>
+            : suggestion.durationMinutes > 0 && <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 6 }}>~{Math.round(suggestion.durationMinutes / 60)} hrs</div>
+          }
 
           {/* Tags */}
           {suggestion.tags?.length > 0 && (

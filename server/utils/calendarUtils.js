@@ -84,13 +84,27 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
       return `${dateStr}T${hh}:${min}:00`;
     }
 
-    const startDT = toRFC3339(suggestion.date, suggestion.time);
-    const durMs   = (suggestion.durationMinutes || 120) * 60000;
-    const endDT   = startDT
-      ? new Date(new Date(startDT).getTime() + durMs).toISOString().replace(/\.\d{3}Z$/, '')
-      : null;
-
-    if (!startDT) return null;
+    // For multi-day trips, create an all-day event spanning the full trip.
+    // GCal all-day events use { date: 'YYYY-MM-DD' }; the end date is exclusive.
+    const isMultiDay = suggestion.days?.length > 1;
+    let eventStart, eventEnd;
+    if (isMultiDay) {
+      const startDate = suggestion.days[0]?.date ?? suggestion.date;
+      if (!startDate) return null;
+      const lastDayDate = suggestion.days[suggestion.days.length - 1]?.date ?? startDate;
+      const [ey, em, ed] = lastDayDate.split('-').map(Number);
+      const exclusiveEnd = new Date(ey, em - 1, ed + 1);
+      const endDateStr = `${exclusiveEnd.getFullYear()}-${String(exclusiveEnd.getMonth()+1).padStart(2,'0')}-${String(exclusiveEnd.getDate()).padStart(2,'0')}`;
+      eventStart = { date: startDate };
+      eventEnd   = { date: endDateStr };
+    } else {
+      const startDT = toRFC3339(suggestion.date, suggestion.time);
+      if (!startDT) return null;
+      const durMs = (suggestion.durationMinutes || 120) * 60000;
+      const endDT = new Date(new Date(startDT).getTime() + durMs).toISOString().replace(/\.\d{3}Z$/, '');
+      eventStart = { dateTime: startDT, timeZone: 'America/New_York' };
+      eventEnd   = { dateTime: endDT,   timeZone: 'America/New_York' };
+    }
 
     // Build venue description
     const venueLines = (suggestion.venues || [])
@@ -113,8 +127,8 @@ async function createCalendarEventForUser({ session, suggestion, organizer, atte
         summary: `${venueName} with ${otherFirst}`,
         description,
         location,
-        start: { dateTime: startDT, timeZone: 'America/New_York' },
-        end:   { dateTime: endDT,   timeZone: 'America/New_York' },
+        start: eventStart,
+        end:   eventEnd,
         attendees: [
           { email: organizer.email, displayName: organizer.full_name },
           { email: attendee.email,  displayName: attendee.full_name  },
