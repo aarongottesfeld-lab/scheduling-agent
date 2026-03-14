@@ -430,6 +430,7 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 ### Tier 1 — Before/during first beta wave
 
 - [x] **Bug report + feedback buttons** — DONE March 14. Two pill buttons bottom-right. Feedback → Google Form. Bug → modal → POST /bug-report → bug_reports table. nodemailer removed (DB write only for beta).
+- [ ] **Discord button** — Add a "Join Our Discord" pill button alongside the existing bug report and feedback buttons (bottom-right floating cluster). Opens a Discord invite link in a new tab. No backend needed — just a link. Spin up the Discord server first, then add the invite URL as a constant in BugReportButton.jsx (or wherever the floating button cluster lives). Auth-gated same as the other buttons, excluded from /onboarding. Rationale: gives beta users a shared space for group comms, feedback, and coordination without requiring async back-and-forth.
 - [x] **Group invite notification frontend** — DONE March 14. group_invite type renders inline Accept/Decline in notification center.
 - [x] **Group friend search dropdown** — DONE March 14. Live typeahead in GroupDetail, excludes existing members, "No matches" state.
 - [x] **PostHog targeting events** — DONE March 14. home_view_loaded, itinerary_view_loaded, friends_view_loaded firing with relevant properties.
@@ -546,6 +547,16 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - Additional privacy toggles to consider for the same screen (placeholder, not yet specced):
   - Allow friend requests from anyone vs. friends-of-friends only
   - Profile visibility (anyone with link vs. friends only)
+
+**User travel preferences (consideration — not yet specced, added March 14, 2026)**
+- Users may want to set default constraints for travel itineraries on their profile so they don't have to re-enter them every time
+- Two candidates:
+  - **Max travel distance / budget tier** — e.g. "I prefer trips under 4 hours away" or "keep it budget-friendly"
+  - **Default spend range** — e.g. low / medium / high as a soft signal injected into the suggest prompt
+- Not committed to building this — depends on whether beta users signal that re-entering these constraints per event is friction. If users are creating multiple travel events and always setting the same constraints, profile-level defaults make sense.
+- Design question before building: profile-level default vs. event-level setting. Distance is probably too context-dependent for a profile default (sometimes Catskills, sometimes Nashville). Spend tier is a better fit for profile-level since it tends to be consistent per person. Best approach: profile default with per-event override — cleaner UX but adds form complexity.
+- If built: store as `travel_preferences` jsonb on profiles (max_distance_hours, spend_tier: 'low'|'medium'|'high'). Inject as soft signals (not hard constraints) into buildSuggestPrompt and buildGroupSuggestPrompt alongside dietary/mobility. Do NOT enforce spend as a hard NEVER rule — it's a preference, not a constraint. Spend tier should influence venue tier suggestions, not block anything.
+- Decision gate: wait for beta feedback before speccing further. If multiple users independently mention spend or distance as friction points, build it.
 
 **Email notifications channel**
 - Supplement push with email for users who deny push permission

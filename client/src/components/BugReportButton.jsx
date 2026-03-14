@@ -20,7 +20,8 @@ const CATEGORIES = [
   'Other',
 ];
 
-const FEEDBACK_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSeAk1O_pPiJh376XybMTIWFnj0kKczYOzU2AeRoIsmrJbRFBw/viewform';
+const FEEDBACK_URL    = 'https://docs.google.com/forms/d/e/1FAIpQLSeAk1O_pPiJh376XybMTIWFnj0kKczYOzU2AeRoIsmrJbRFBw/viewform';
+const DISCORD_INVITE_URL = 'https://discord.gg/6xc8ERrDDb';
 
 export default function BugReportButton() {
   const location = useLocation();
@@ -96,6 +97,12 @@ export default function BugReportButton() {
     <>
       {/* Floating button stack */}
       <div className="bug-report-btns">
+        {/* Discord — opens invite in a new tab */}
+        <a href={DISCORD_INVITE_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
+          <span>💬 Discord</span>
+          <span style={subStyle}>Join the community</span>
+        </a>
+
         {/* Feedback — opens Google Form in a new tab */}
         <a href={FEEDBACK_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
           <span>💬 Feedback</span>
