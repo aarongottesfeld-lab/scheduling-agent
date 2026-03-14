@@ -327,9 +327,12 @@ export default function Home() {
                 </section>
               )}
 
-              <div style={{ marginBottom: 24 }}>
+              <div style={{ marginBottom: 24, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button className="btn btn--primary" onClick={() => navigate('/schedule/new')}>
                   + New Event
+                </button>
+                <button className="btn btn--primary" onClick={() => navigate('/group-event/new')}>
+                  + New Group Event
                 </button>
               </div>
 

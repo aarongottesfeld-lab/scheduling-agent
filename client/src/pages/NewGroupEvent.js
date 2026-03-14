@@ -12,7 +12,7 @@
 // The form stays locked (showing a spinner) once suggest is called to prevent
 // duplicate submissions (same pattern as NewEvent.js).
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { getGroups, getGroup, createGroupItinerary, generateGroupSuggestions } from '../utils/api';
@@ -99,6 +99,11 @@ export default function NewGroupEvent() {
   const [groupDetail,     setGroupDetail]     = useState(null); // { group, members, my_role }
   const [loadingGroup,    setLoadingGroup]    = useState(false);
 
+  // Group search picker state (mirrors friend picker in NewEvent.js)
+  const [groupQuery,   setGroupQuery]   = useState('');
+  const [groupResults, setGroupResults] = useState([]);
+  const groupDropRef = useRef(null);
+
   // Attendee list: all active members minus the organizer; organizer can remove individuals
   const [attendees,       setAttendees]       = useState([]); // [{ user_id, profile }]
 
@@ -159,6 +164,37 @@ export default function NewGroupEvent() {
       .catch(() => {})
       .finally(() => setLoadingGroup(false));
   }, [selectedGroupId, myId]);
+
+  // Filter group list whenever the search query changes.
+  useEffect(() => {
+    const q = groupQuery.trim().toLowerCase();
+    if (!q) { setGroupResults(myGroups); return; }
+    setGroupResults(myGroups.filter(g => g.name?.toLowerCase().includes(q)));
+  }, [groupQuery, myGroups]);
+
+  // Close the group dropdown on outside click.
+  useEffect(() => {
+    if (!groupResults.length) return;
+    function handleClickOutside(e) {
+      if (groupDropRef.current && !groupDropRef.current.contains(e.target)) setGroupResults([]);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [groupResults.length]);
+
+  /** Lock in a group selection and close the dropdown. */
+  function selectGroup(g) {
+    setSelectedGroupId(g.id);
+    setGroupQuery('');
+    setGroupResults([]);
+  }
+
+  /** Clear the selected group (only allowed when not pre-filled from URL). */
+  function clearGroup() {
+    setSelectedGroupId('');
+    setGroupDetail(null);
+    setAttendees([]);
+  }
 
   /** Remove an attendee from the list (organizer pre-submission customization). */
   function removeAttendee(userId) {
@@ -265,45 +301,66 @@ export default function NewGroupEvent() {
 
           <form onSubmit={handleSubmit} noValidate>
 
-            {/* ── Group selector — only shown when no groupId in URL ── */}
-            {!urlGroupId && (
-              <div className="form-group">
-                <label className="form-label" htmlFor="group-select">Which group?</label>
-                <select
-                  id="group-select"
-                  className="form-control"
-                  value={selectedGroupId}
-                  onChange={e => setSelectedGroupId(e.target.value)}
-                  disabled={generating}
-                >
-                  <option value="">Select a group…</option>
-                  {myGroups.map(g => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {/* Selected group name (display only when groupId comes from URL) */}
-            {urlGroupId && groupDetail && (
-              <div className="form-group">
-                <label className="form-label">Group</label>
-                <div style={{
-                  padding: '10px 14px',
-                  background: 'var(--surface-2)',
-                  borderRadius: 8,
-                  fontWeight: 600,
-                  fontSize: '0.9rem',
-                }}>
-                  {groupDetail.group?.name}
-                  {groupDetail.group?.description && (
-                    <div style={{ fontWeight: 400, fontSize: '0.82rem', color: 'var(--text-3)', marginTop: 2 }}>
-                      {groupDetail.group.description}
+            {/* ── Group picker — search + dropdown when unselected; confirmation card when selected ── */}
+            <div className="form-group">
+              <label className="form-label">Which group?</label>
+              {selectedGroupId && groupDetail ? (
+                /* Selected state — shows group card with optional Change button */
+                <div className="friend-card" style={{ marginBottom: 0 }}>
+                  <div className="avatar">{getInitials(groupDetail.group?.name || '')}</div>
+                  <div className="friend-card__info">
+                    <div className="friend-card__name">{groupDetail.group?.name}</div>
+                    {groupDetail.group?.description && (
+                      <div className="friend-card__sub">{groupDetail.group.description}</div>
+                    )}
+                  </div>
+                  {!urlGroupId && (
+                    <button type="button" className="btn btn--ghost btn--sm" disabled={generating} onClick={clearGroup}>
+                      Change
+                    </button>
+                  )}
+                </div>
+              ) : (
+                /* Unselected state — live-filter search input with dropdown */
+                <div style={{ position: 'relative' }} ref={groupDropRef}>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={groupQuery}
+                    onChange={e => setGroupQuery(e.target.value)}
+                    onFocus={() => { if (!groupQuery) setGroupResults(myGroups); }}
+                    placeholder={myGroups.length > 0
+                      ? `Choose from ${myGroups.length} group${myGroups.length !== 1 ? 's' : ''}…`
+                      : 'Search your groups…'}
+                    autoComplete="off"
+                    disabled={generating}
+                  />
+                  {groupResults.length > 0 && (
+                    <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, marginTop: 4, maxHeight: 240, overflowY: 'auto' }}>
+                      {groupResults.map(g => (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onMouseDown={() => selectGroup(g)}
+                          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+                        >
+                          <div className="avatar avatar--sm">{getInitials(g.name)}</div>
+                          <div>
+                            <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>{g.name}</div>
+                            {g.description && <div style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>{g.description}</div>}
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+              )}
+              {myGroups.length === 0 && !selectedGroupId && (
+                <p className="form-hint" style={{ marginTop: 6 }}>
+                  You're not in any groups yet. <a href="/groups">Create or join a group</a> first.
+                </p>
+              )}
+            </div>
 
             {/* ── Attendee list — populated once a group is selected ── */}
             {selectedGroupId && (

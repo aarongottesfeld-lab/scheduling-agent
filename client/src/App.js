@@ -184,8 +184,11 @@ export default function App() {
         <Route path="/groups/:id" element={
           <ProtectedRoute><GroupDetail /></ProtectedRoute>
         } />
-        {/* NewGroupEvent receives groupId from URL params (navigated from GroupDetail) */}
+        {/* NewGroupEvent — entry from GroupDetail (groupId pre-filled) or home screen (picker) */}
         <Route path="/groups/:groupId/new-event" element={
+          <ProtectedRoute><NewGroupEvent /></ProtectedRoute>
+        } />
+        <Route path="/group-event/new" element={
           <ProtectedRoute><NewGroupEvent /></ProtectedRoute>
         } />
         <Route path="/group-itineraries/:id" element={
