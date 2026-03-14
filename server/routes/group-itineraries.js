@@ -20,6 +20,7 @@
 
 'use strict';
 
+const { randomUUID } = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
@@ -372,7 +373,7 @@ async function insertNotification(supabase, userId, type, tier, title, body, dat
  * @param {object} sessionStore - { getSessionBySupabaseId }
  * @returns {object[]} suggestions array, ready for DB write
  */
-async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null } = {}) {
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '' } = {}) {
   const start = itin.date_range_start;
   const end   = itin.date_range_end;
   const startISO = new Date(start + 'T00:00:00').toISOString();
@@ -475,12 +476,14 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
     .map(s => s.title).filter(Boolean);
   const avoidClause = existingTitles.length ? ` Avoid repeating these existing options: ${existingTitles.join(', ')}.` : '';
 
+  const vibeAddendum = rerollContextPrompt ? ` User's specific request: "${rerollContextPrompt}".` : '';
+
   let rerollNote;
   if (singleCard && targetSuggestion) {
     const singleCardInstructions = {
       timing:   `Keep the same activity concept and venues as "${targetSuggestion.title || 'this option'}". Only change the date and time — find a different time slot. Do not change the venues, activity type, or narrative theme.`,
-      activity: `Keep the same date and time as "${targetSuggestion.title || 'this option'}" (${targetSuggestion.date || ''} at ${targetSuggestion.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.`,
-      both:     `Replace "${targetSuggestion.title || 'this option'}" with a fresh alternative — different activity and different time.`,
+      activity: `Keep the same date and time as "${targetSuggestion.title || 'this option'}" (${targetSuggestion.date || ''} at ${targetSuggestion.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.${vibeAddendum}`,
+      both:     `Replace "${targetSuggestion.title || 'this option'}" with a fresh alternative — different activity and different time.${vibeAddendum}`,
     };
     rerollNote = `Generate exactly 1 suggestion (not 3). ${singleCardInstructions[rerollType] || singleCardInstructions.both}${avoidClause} Return a JSON object with a "suggestions" array containing exactly 1 item.`;
   } else {
@@ -520,7 +523,7 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
   });
   const raw    = msg.content[0]?.text || '{}';
   const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
-  suggestions  = parsed.suggestions || [];
+  suggestions  = (parsed.suggestions || []).map(s => ({ ...s, id: randomUUID() }));
 
   // Enrich venues via Google Places. Best-effort.
   try {
@@ -734,11 +737,19 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       selectedSuggestionId = suggestion_id;
     }
 
+    // Record the organizer's implied acceptance in attendee_suggestion_map so per-card
+    // vote tallies include their preference. Do NOT add them to attendee_statuses — that
+    // map drives the quorum trigger and the organizer is the planner, not a quorum voter.
+    const currentSuggestionMap  = itin.attendee_suggestion_map || {};
+    const updatedSuggestionMap  = { ...currentSuggestionMap, [req.userId]: selectedSuggestionId };
+
     const { error: updateErr } = await supabase
       .from('group_itineraries')
       .update({
-        itinerary_status:      'awaiting_responses',
-        selected_suggestion_id: selectedSuggestionId,
+        itinerary_status:             'awaiting_responses',
+        selected_suggestion_id:       selectedSuggestionId,
+        organizer_recommendation_id:  selectedSuggestionId, // never overwritten by attendee votes
+        attendee_suggestion_map:      updatedSuggestionMap,
       })
       .eq('id', req.params.id);
 
@@ -789,7 +800,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     const { data: itin } = await supabase
       .from('group_itineraries')
-      .select('organizer_id, itinerary_status, attendee_statuses, suggestions')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title')
       .eq('id', req.params.id)
       .single();
 
@@ -811,21 +822,29 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'selected_suggestion_id does not match any suggestion.' });
     }
 
-    // Update only the caller's key in the attendee_statuses JSONB map.
-    // The DB trigger evaluates quorum after this update.
-    const updatedStatuses = {
-      ...attendeeStatuses,
-      [req.userId]: vote,
-    };
+    // Update attendee_statuses and attendee_suggestion_map.
+    const updatedStatuses = { ...attendeeStatuses, [req.userId]: vote };
+    const updatedSuggestionMap = { ...(itin.attendee_suggestion_map || {}), [req.userId]: selected_suggestion_id };
 
-    const updatePayload = {
-      attendee_statuses:    updatedStatuses,
-      selected_suggestion_id: selected_suggestion_id,
-    };
+    // Compute the most-voted card among accepted attendees so the DB trigger
+    // locks with the correct winner in selected_suggestion_id.
+    const acceptedUids = Object.entries(updatedStatuses).filter(([, v]) => v === 'accepted').map(([uid]) => uid);
+    const voteCounts   = {};
+    acceptedUids.forEach(uid => {
+      const sid = updatedSuggestionMap[uid];
+      if (sid) voteCounts[sid] = (voteCounts[sid] || 0) + 1;
+    });
+    const winnerCard = Object.entries(voteCounts).sort(([, a], [, b]) => b - a)[0]?.[0]
+      || itin.organizer_recommendation_id
+      || selected_suggestion_id;
 
     const { data: updated, error: updateErr } = await supabase
       .from('group_itineraries')
-      .update(updatePayload)
+      .update({
+        attendee_statuses:      updatedStatuses,
+        attendee_suggestion_map: updatedSuggestionMap,
+        selected_suggestion_id:  winnerCard,
+      })
       .eq('id', req.params.id)
       .select('itinerary_status, locked_at')
       .single();
@@ -833,6 +852,29 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     if (updateErr) {
       console.error('[group-itineraries] vote error:', updateErr.message);
       return res.status(500).json({ error: 'Could not record vote.' });
+    }
+
+    // Notify others when attendee counter-proposes (votes for a non-recommendation card).
+    const isCounterProposal = vote === 'accepted' && selected_suggestion_id !== itin.organizer_recommendation_id;
+    if (isCounterProposal) {
+      const counterCard    = (itin.suggestions || []).find(s => s.id === selected_suggestion_id);
+      const counterTitle   = counterCard?.title || 'an alternative';
+      const voterName      = req.userSession?.name || 'Someone';
+      const eventName      = itin.event_title || 'your group event';
+      const notifyIds      = [
+        itin.organizer_id,
+        ...Object.keys(attendeeStatuses).filter(uid => uid !== req.userId),
+      ];
+      await Promise.all(notifyIds.map(uid =>
+        insertNotification(
+          supabase, uid,
+          'group_event_counter_proposal', 2,
+          `${voterName} suggested "${counterTitle}"`,
+          `${voterName} voted for a different option in ${eventName}. Review it and update your vote if you like it.`,
+          { group_itinerary_id: req.params.id },
+          `/group-itineraries/${req.params.id}`,
+        )
+      ));
     }
 
     res.json({
@@ -861,7 +903,13 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       .single();
 
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
-    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
+    const isOrganizerReroll = itin.organizer_id === req.userId;
+    const isAttendeeReroll  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizerReroll && !isAttendeeReroll) return res.status(403).json({ error: 'Not authorized.' });
+    // Attendees may only reroll individual cards (not full sets) in awaiting_responses.
+    if (!isOrganizerReroll && !req.body.replaceSuggestionId) {
+      return res.status(403).json({ error: 'Attendees can only re-roll individual suggestions.' });
+    }
     if (!['organizer_draft', 'awaiting_responses'].includes(itin.itinerary_status)) {
       return res.status(400).json({ error: 'Can only reroll an itinerary in organizer_draft or awaiting_responses status.' });
     }
@@ -885,6 +933,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     const VALID_REROLL_TYPES = new Set(['timing', 'activity', 'both']);
     const rerollType = VALID_REROLL_TYPES.has(req.body.rerollType) ? req.body.rerollType : 'both';
+    const rerollContextPrompt = sanitizePromptInput(req.body.contextPrompt || '', 500);
 
     // Single-card reroll: replace one specific suggestion in-place.
     const { replaceSuggestionId } = req.body;
@@ -904,6 +953,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         existingSuggestions,
         singleCard:       isSingleCard,
         targetSuggestion: targetSuggestion,
+        contextPrompt:    rerollContextPrompt,
       });
     } catch (e) {
       console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
@@ -925,11 +975,12 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     let mergedSuggestions;
     if (isSingleCard) {
-      // Splice the 1 new suggestion in place of the replaced card, preserving order.
-      const replacement = { ...newSuggestions[0], id: newSuggestions[0]?.id || replaceSuggestionId + '_r' };
+      // Splice the 1 new suggestion in-place with a guaranteed-unique UUID.
+      // newSuggestions[0] already has a UUID from generateGroupSuggestions, use it.
+      const replacement = { ...newSuggestions[0] };
       mergedSuggestions = existingSuggestions.map(s => s.id === replaceSuggestionId ? replacement : s);
     } else {
-      // Full reroll: in awaiting_responses append (cap at 6); in draft replace.
+      // Full reroll: in awaiting_responses append (cap at 6); in draft replace entirely.
       const MAX_SUGGESTIONS = 6;
       mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
         ? [...existingSuggestions, ...newSuggestions].slice(0, MAX_SUGGESTIONS)
@@ -937,16 +988,23 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     // Clear selected_suggestion_id only if it pointed to the replaced card (or full reroll).
+    // Always keep organizer_recommendation_id intact — it never changes after send.
     const clearSelected = !isSingleCard || itin.selected_suggestion_id === replaceSuggestionId;
+
+    // Reset attendee_suggestion_map — votes referencing old/replaced cards are stale.
+    const resetSuggestionMap = isSingleCard
+      ? Object.fromEntries(Object.entries(itin.attendee_suggestion_map || {}).filter(([, sid]) => sid !== replaceSuggestionId))
+      : {};
 
     const { error: updateErr } = await supabase
       .from('group_itineraries')
       .update({
-        suggestions:            mergedSuggestions,
-        changelog:              updatedChangelog,
-        reroll_count:           (itin.reroll_count || 0) + 1,
-        attendee_statuses:      resetStatuses,
-        ...(clearSelected ? { selected_suggestion_id: null } : {}),
+        suggestions:             mergedSuggestions,
+        changelog:               updatedChangelog,
+        reroll_count:            (itin.reroll_count || 0) + 1,
+        attendee_statuses:       resetStatuses,
+        attendee_suggestion_map: resetSuggestionMap,
+        ...(clearSelected ? { selected_suggestion_id: itin.organizer_recommendation_id || null } : {}),
       })
       .eq('id', req.params.id);
 
@@ -963,10 +1021,12 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
   // Organizer sees all statuses (organizer_draft, awaiting_responses, locked, cancelled).
   // Attendees only see awaiting_responses, locked (not draft — not sent to them yet).
   app.get('/group-itineraries', requireAuth, async (req, res) => {
+    const SELECT_COLS = 'id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id, group_id';
+
     // Fetch as organizer
     const { data: asOrganizer } = await supabase
       .from('group_itineraries')
-      .select('id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id')
+      .select(SELECT_COLS)
       .eq('organizer_id', req.userId)
       .order('created_at', { ascending: false });
 
@@ -974,7 +1034,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     // then filter in JS for those where the caller's ID is a key in attendee_statuses.
     const { data: potentialAttendee } = await supabase
       .from('group_itineraries')
-      .select('id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id')
+      .select(SELECT_COLS)
       .in('itinerary_status', ['awaiting_responses', 'locked'])
       .neq('organizer_id', req.userId)
       .order('created_at', { ascending: false });
@@ -993,6 +1053,13 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       : { data: [] };
     const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
 
+    // Load group names for display.
+    const groupIds = [...new Set(all.map(r => r.group_id).filter(Boolean))];
+    const { data: groups } = groupIds.length
+      ? await supabase.from('groups').select('id, name').in('id', groupIds)
+      : { data: [] };
+    const groupMap = Object.fromEntries((groups || []).map(g => [g.id, g.name]));
+
     const itineraries = all.map(itin => ({
       ...itin,
       is_organizer: itin.organizer_id === req.userId,
@@ -1002,9 +1069,33 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       my_vote: itin.organizer_id !== req.userId
         ? (itin.attendee_statuses?.[req.userId] || 'pending')
         : null,
+      group_name: itin.group_id ? (groupMap[itin.group_id] || null) : null,
     }));
 
     res.json({ itineraries });
+  });
+
+  /* ── DELETE /group-itineraries/:id ───────────────────────────────────── */
+  // Hard-deletes an organizer_draft itinerary. Organizer-only.
+  // Cannot delete once sent (awaiting_responses) or locked.
+  app.delete('/group-itineraries/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
+    const { data: itin } = await supabase
+      .from('group_itineraries')
+      .select('organizer_id, itinerary_status')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
+    if (itin.itinerary_status !== 'organizer_draft') {
+      return res.status(400).json({ error: 'Only unsent drafts can be deleted.' });
+    }
+
+    const { error } = await supabase.from('group_itineraries').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: 'Could not delete itinerary.' });
+    res.json({ ok: true });
   });
 
   /* ── GET /group-itineraries/:id ───────────────────────────────────────── */
@@ -1030,6 +1121,21 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(403).json({ error: 'Not authorized.' });
     }
 
+    // Normalize suggestion IDs: old rows may have "s1"/"s2"/"s3" or missing IDs from before
+    // the UUID fix was deployed. Assign stable UUIDs in-place and persist back to the DB so
+    // re-roll single-card targeting never silently falls through to a full reroll.
+    const normalizedSuggestions = (itin.suggestions || []).map(s =>
+      (s && s.id && s.id.length > 4) ? s : { ...s, id: randomUUID() }
+    );
+    const hadLegacyIds = (itin.suggestions || []).some(s => !s?.id || s.id.length <= 4);
+    if (hadLegacyIds) {
+      await supabase
+        .from('group_itineraries')
+        .update({ suggestions: normalizedSuggestions })
+        .eq('id', req.params.id);
+      itin.suggestions = normalizedSuggestions;
+    }
+
     // Load minimal member profiles for display.
     const attendeeIds  = Object.keys(itin.attendee_statuses || {});
     const allMemberIds = [...new Set([itin.organizer_id, ...attendeeIds])];
@@ -1041,7 +1147,9 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
 
-    // Build vote status map: { user_id: { status, profile: { id, full_name, avatar_url } } }
+    // Build vote status map: { user_id: { vote, profile, is_organizer? } }
+    // Attendees are sourced from attendee_statuses. The organizer is injected separately
+    // so clients can display their implied acceptance without counting them toward quorum.
     const voteStatus = Object.fromEntries(
       attendeeIds.map(id => [
         id,
@@ -1054,6 +1162,30 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       ])
     );
 
+    // If the organizer has sent their recommendation, include them in vote_status so the
+    // client can show them as having accepted. is_organizer: true lets the UI badge them.
+    if (itin.organizer_recommendation_id) {
+      const orgProfile = profileMap[itin.organizer_id];
+      voteStatus[itin.organizer_id] = {
+        vote:         'accepted',
+        is_organizer: true,
+        profile: orgProfile
+          ? { id: orgProfile.id, full_name: orgProfile.full_name, avatar_url: orgProfile.avatar_url }
+          : { id: itin.organizer_id },
+      };
+    }
+
+    // Fetch the group name so the client can display "[Group Name] — [Event Title]".
+    let groupName = null;
+    if (itin.group_id) {
+      const { data: grp } = await supabase
+        .from('groups')
+        .select('name')
+        .eq('id', itin.group_id)
+        .maybeSingle();
+      if (grp) groupName = grp.name;
+    }
+
     res.json({
       ...itin,
       organizer: profileMap[itin.organizer_id]
@@ -1061,6 +1193,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         : { id: itin.organizer_id },
       vote_status:  voteStatus,
       is_organizer: isOrganizer,
+      group_name:   groupName,
     });
   });
 

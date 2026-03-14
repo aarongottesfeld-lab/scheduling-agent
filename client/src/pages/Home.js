@@ -1,9 +1,9 @@
 // Home.js — tabbed dashboard showing the user's plans and friends.
-// Fetches nudges, friends, and itineraries in parallel on mount.
-// Itineraries are bucketed into four tabs (Drafts, Waiting for them,
-// Waiting for you, Confirmed) using client-side status derivation.
-// Each tab shows the first INITIAL_VISIBLE items; a "Show all" button
-// expands the list without a new API call.
+// Fetches nudges, friends, 1:1 itineraries, and group itineraries in parallel on mount.
+// All events (1:1 and group) are bucketed into four shared tabs:
+//   Waiting for you, Waiting for them, Drafts, Confirmed
+// Group events show a 👥 indicator on the right side of their pill.
+// Each tab shows the first INITIAL_VISIBLE items; a "Load more" button expands the list.
 
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -14,31 +14,20 @@ import client from '../utils/client';
 
 /* ── Constants ──────────────────────────────────────────────── */
 
-// How many itinerary cards to show per tab before the "Show all" button appears.
 const INITIAL_VISIBLE = 3;
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
-/** Produces two-letter uppercase initials from a full name string. */
 function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
-/**
- * Formats a date string for display on an itinerary card.
- * Uses short weekday/month/day — e.g. "Wed, Mar 12".
- */
 function formatDate(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr + 'T00:00:00'); // force local time, not UTC midnight
+  const d = new Date(dateStr + 'T00:00:00');
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-/**
- * Formats a date range for display on pending/draft itinerary cards.
- * If start and end are the same day, shows just that day.
- * Otherwise shows "Mar 10 – Mar 15".
- */
 function formatDateRange(startStr, endStr) {
   if (!startStr) return '';
   const opts = { month: 'short', day: 'numeric' };
@@ -49,46 +38,45 @@ function formatDateRange(startStr, endStr) {
 }
 
 /**
- * Derives which dashboard tab an itinerary belongs to based on its status fields.
- * Returns one of: 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
- * null means the item should not appear on any tab (e.g., declined, or draft not
- * yet sent to the attendee).
- *
- * State machine:
- *   Organizer: pending → drafts
- *              sent/accepted (attendee pending) → waiting_them
- *              attendee accepted (counter-proposal) → waiting_you
- *   Attendee:  organizer pending → null (not visible yet)
- *              organizer sent, attendee pending → waiting_you
- *              attendee accepted → waiting_them
- *   Both:      locked_at set → confirmed
- *              either declined → null
+ * Derives the dashboard tab for a 1:1 itinerary.
+ * Returns 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
  */
 function deriveTab(item) {
   if (item.locked_at) return 'confirmed';
   if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return null;
   if (item.isOrganizer) {
     if (item.organizer_status === 'pending') return 'drafts';
-    // Attendee counter-proposed: org=accepted, att=pending, attendeeSelected flag set.
-    // att stays 'pending' (not 'accepted') to avoid the DB auto-lock trigger.
     const hasAttendeeSelected = (item.suggestions || []).some(s => s.attendeeSelected);
     if (item.organizer_status === 'accepted' && hasAttendeeSelected) return 'waiting_you';
     return 'waiting_them';
   } else {
-    if (item.organizer_status === 'pending') return null; // draft, not visible to attendee yet
+    if (item.organizer_status === 'pending') return null;
     if (item.attendee_status === 'accepted') return 'waiting_them';
-    // org=accepted means organizer has picked and sent — attendee needs to respond
     if (item.organizer_status === 'accepted' && item.attendee_status === 'pending') return 'waiting_you';
     return 'waiting_you';
   }
 }
 
+/**
+ * Derives the dashboard tab for a group itinerary.
+ * Returns 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
+ */
+function deriveGroupTab(gi) {
+  if (gi.itinerary_status === 'locked') return 'confirmed';
+  if (gi.itinerary_status === 'cancelled') return null;
+  if (gi.is_organizer) {
+    if (gi.itinerary_status === 'organizer_draft') return 'drafts';
+    if (gi.itinerary_status === 'awaiting_responses') return 'waiting_them';
+  } else {
+    if (gi.itinerary_status === 'awaiting_responses') {
+      return (gi.my_vote === 'pending') ? 'waiting_you' : 'waiting_them';
+    }
+  }
+  return null;
+}
+
 /* ── Sub-components ─────────────────────────────────────────── */
 
-/**
- * Renders a single AI-generated nudge card with an action CTA and a dismiss button.
- * Nudges are friend-specific prompts suggesting the user reach out and plan something.
- */
 function NudgeCard({ nudge, onDismiss }) {
   return (
     <div className="nudge-card">
@@ -106,42 +94,68 @@ function NudgeCard({ nudge, onDismiss }) {
 }
 
 /**
- * Renders a single itinerary row linking to the itinerary detail page.
- * Shows the friend's name, event title, first suggestion date/neighborhood, and a status badge.
- * Includes a delete button only on draft items (which haven't been sent yet).
+ * Unified event card — handles both 1:1 (item._isGroup falsy) and group (item._isGroup true) items.
+ * Group items show a 👥 indicator on the right; draft items show a delete button.
+ * onDelete(id, isGroup) is called when the trash icon is clicked.
  */
-function ItineraryCard({ item, onDelete }) {
-  const friendName = item.isOrganizer ? item.attendeeName : item.organizerName;
-  const tab = deriveTab(item);
+function EventCard({ item, onDelete }) {
+  const isGroup = !!item._isGroup;
+  const tab     = isGroup ? deriveGroupTab(item) : deriveTab(item);
 
-  // Confirmed: show the specific date both users agreed to.
-  // Pending/draft: show the scheduling window they're choosing from.
+  // For confirmed events, find the locked suggestion for its specific date.
   const confirmedSuggestion = tab === 'confirmed'
-    ? (item.suggestions || []).find(s => s.id === item.selected_suggestion_id)
-      ?? item.suggestions?.[0]  // fallback if selected_suggestion_id is missing
+    ? (item.suggestions || []).find(s => s.id === item.selected_suggestion_id) ?? item.suggestions?.[0]
     : null;
-  const displayDate = confirmedSuggestion
-    ? formatDate(confirmedSuggestion.date)
-    : formatDateRange(item.date_range_start, item.date_range_end)
-      || formatDate(item.suggestions?.[0]?.date); // fallback for itineraries missing date_range fields
 
   const firstSuggestion = item.suggestions?.[0];
 
-  const badgeMap = {
-    drafts:       { cls: 'badge--gray',  label: 'draft' },
-    waiting_them: { cls: 'badge--gray',  label: 'waiting on them' },
-    waiting_you:  { cls: 'badge--amber', label: 'waiting on you' },
-    confirmed:    { cls: 'badge--green', label: 'confirmed' },
-  };
-  const badge = badgeMap[tab] || { cls: 'badge--gray', label: tab || 'pending' };
+  const displayDate = confirmedSuggestion
+    ? formatDate(confirmedSuggestion.date)
+    : isGroup
+      ? (firstSuggestion?.date ? formatDate(firstSuggestion.date) : '')
+      : formatDateRange(item.date_range_start, item.date_range_end)
+        || formatDate(firstSuggestion?.date);
+
+  // Whose initials to show in the avatar.
+  const avatarName = isGroup
+    ? (item.organizer?.full_name || '')
+    : (item.isOrganizer ? item.attendeeName : item.organizerName);
+
+  // Primary title and optional secondary qualifier.
+  const titleMain = isGroup
+    ? ([item.group_name, item.event_title].filter(Boolean).join(' — ') || 'Group Event')
+    : (item.isOrganizer ? item.attendeeName : item.organizerName);
+  const titleSub = isGroup
+    ? (!item.is_organizer && item.organizer?.full_name ? item.organizer.full_name : null)
+    : (item.event_title || null);
+
+  const url = isGroup ? `/group-itineraries/${item.id}` : `/schedule/${item.id}`;
+
+  // Status badge — tab-relative label, more specific for group variants.
+  let badgeCls, badgeLabel;
+  if (tab === 'confirmed') {
+    badgeCls = 'badge--green'; badgeLabel = 'confirmed';
+  } else if (tab === 'drafts') {
+    badgeCls = 'badge--gray';  badgeLabel = 'draft';
+  } else if (tab === 'waiting_you') {
+    badgeCls = 'badge--amber'; badgeLabel = isGroup ? 'vote needed' : 'waiting on you';
+  } else if (tab === 'waiting_them') {
+    badgeCls = 'badge--gray';
+    badgeLabel = isGroup && item.is_organizer ? 'waiting for votes'
+               : isGroup                      ? 'voted'
+               :                                'waiting on them';
+  } else {
+    badgeCls = 'badge--gray'; badgeLabel = tab || 'pending';
+  }
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <Link to={`/schedule/${item.id}`} className="itinerary-card" style={{ flex: 1 }}>
-        <div className="avatar avatar--sm">{getInitials(friendName)}</div>
+      <Link to={url} className="itinerary-card" style={{ flex: 1 }}>
+        <div className="avatar avatar--sm">{getInitials(avatarName)}</div>
         <div className="itinerary-card__body">
           <div className="itinerary-card__title">
-            {friendName}{item.event_title ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {item.event_title}</span> : ''}
+            {titleMain}
+            {titleSub && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {titleSub}</span>}
           </div>
           <div className="itinerary-card__meta">
             {displayDate && <span>{displayDate}</span>}
@@ -152,16 +166,25 @@ function ItineraryCard({ item, onDelete }) {
               </>
             )}
             <span className="itinerary-card__dot" />
-            <span className={`badge ${badge.cls}`}>{badge.label}</span>
+            <span className={`badge ${badgeCls}`}>{badgeLabel}</span>
           </div>
         </div>
       </Link>
-      {/* Delete button is only available on unsent drafts to prevent accidental deletion. */}
+      {/* Group indicator — visible on all group event pills */}
+      {isGroup && (
+        <span
+          title="Group event"
+          style={{ fontSize: '0.8rem', color: 'var(--text-3)', flexShrink: 0, lineHeight: 1 }}
+        >
+          👥
+        </span>
+      )}
+      {/* Delete button — only shown for draft items */}
       {tab === 'drafts' && onDelete && (
         <button
           className="btn btn--ghost btn--sm"
           title="Delete draft"
-          onClick={(e) => { e.preventDefault(); onDelete(item.id); }}
+          onClick={(e) => { e.preventDefault(); onDelete(item.id, isGroup); }}
           style={{ color: 'var(--text-3)', flexShrink: 0 }}
         >
           🗑
@@ -176,9 +199,6 @@ function ItineraryCard({ item, onDelete }) {
 export default function Home() {
   const navigate = useNavigate();
   const name     = getUserName();
-  // Show banner when onboarding hasn't been completed yet.
-  // isOnboardingCompleted() is set by App.js before routes render, so this
-  // value is stable by the time Home mounts.
   const showOnboardingBanner = isOnboardingCompleted() === false;
 
   const [nudges,       setNudges]       = useState([]);
@@ -188,13 +208,8 @@ export default function Home() {
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState('');
   const [activeTab,    setActiveTab]    = useState('waiting_you');
-  // How many items are currently visible in the active tab.
-  // Starts at INITIAL_VISIBLE and grows by INITIAL_VISIBLE on each "Load more" click.
-  // Resets to INITIAL_VISIBLE whenever the user switches tabs.
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
 
-  // Fetch all dashboard data in parallel on mount using Promise.allSettled so a
-  // single failing request doesn't block the rest of the page from rendering.
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -210,7 +225,6 @@ export default function Home() {
         if (friendsRes.status === 'fulfilled')     setFriends(friendsRes.value.data?.friends ?? []);
         if (itinsRes.status === 'fulfilled')       setAllItins(itinsRes.value.data?.itineraries ?? []);
         if (groupItinsRes.status === 'fulfilled')  setGroupItins(groupItinsRes.value.data?.itineraries ?? []);
-        // PostHog targeting event — used by in-app tooltip triggers
         const itins   = itinsRes.status === 'fulfilled' ? (itinsRes.value.data?.itineraries ?? []) : [];
         const waiting = itins.filter(i => deriveTab(i) === 'waiting_you');
         const inProg  = itins.filter(i => deriveTab(i) === 'waiting_them');
@@ -225,38 +239,41 @@ export default function Home() {
     return () => { mounted = false; };
   }, []);
 
-  /**
-   * Optimistically removes the nudge from the list, then fires the dismiss API call.
-   * Best-effort: a failed dismiss won't bring the nudge back.
-   */
   async function dismissNudge(id) {
     setNudges((prev) => prev.filter((n) => n.id !== id));
     try { await client.post(`/nudges/${id}/dismiss`); } catch { /* best-effort */ }
   }
 
   /**
-   * Optimistically removes the draft from the list, then fires the delete API call.
-   * Best-effort: a failed delete won't restore the item in the UI.
+   * Deletes a draft — handles both 1:1 and group itineraries.
+   * Optimistic: item is removed from state immediately, API call is best-effort.
    */
-  async function deleteDraft(id) {
-    setAllItins((prev) => prev.filter((i) => i.id !== id));
-    try { await client.delete(`/schedule/itinerary/${id}`); } catch { /* best-effort */ }
+  async function handleDeleteDraft(id, isGroup) {
+    if (isGroup) {
+      setGroupItins(prev => prev.filter(i => i.id !== id));
+      try { await client.delete(`/group-itineraries/${id}`); } catch { /* best-effort */ }
+    } else {
+      setAllItins(prev => prev.filter(i => i.id !== id));
+      try { await client.delete(`/schedule/itinerary/${id}`); } catch { /* best-effort */ }
+    }
   }
 
-  // Sort itineraries by the first suggestion's date ascending (soonest first).
-  // Falls back to created_at if no suggestion date is present (e.g. reroll in progress).
   function byEventDate(a, b) {
     const dateA = a.suggestions?.[0]?.date || a.created_at || '';
     const dateB = b.suggestions?.[0]?.date || b.created_at || '';
     return dateA < dateB ? -1 : dateA > dateB ? 1 : 0;
   }
 
-  // Bucket all itineraries into their respective tab categories, each sorted chronologically.
+  // Tag group items so EventCard can distinguish them, then merge both lists.
+  const taggedGroupItins = groupItins.map(gi => ({ ...gi, _isGroup: true }));
+  const allItems = [...allItins, ...taggedGroupItins];
+
+  // Bucket into four tabs, sorted chronologically within each.
   const tabs = {
-    drafts:       allItins.filter(i => deriveTab(i) === 'drafts').sort(byEventDate),
-    waiting_them: allItins.filter(i => deriveTab(i) === 'waiting_them').sort(byEventDate),
-    waiting_you:  allItins.filter(i => deriveTab(i) === 'waiting_you').sort(byEventDate),
-    confirmed:    allItins.filter(i => deriveTab(i) === 'confirmed').sort(byEventDate),
+    drafts:       allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'drafts').sort(byEventDate),
+    waiting_them: allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_them').sort(byEventDate),
+    waiting_you:  allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_you').sort(byEventDate),
+    confirmed:    allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'confirmed').sort(byEventDate),
   };
 
   const TAB_CONFIG = [
@@ -266,13 +283,12 @@ export default function Home() {
     { key: 'confirmed',    label: 'Confirmed' },
   ];
 
-  // Show only the first 4 friends as avatar chips; "View all" links to /friends.
   const visibleFriends = friends.slice(0, 4);
-  const firstName = (name || '').split(' ')[0] || 'there';
-  const activeItems = tabs[activeTab] || [];
-  // Show only the first visibleCount items; "Load more" increments this.
+  const firstName      = (name || '').split(' ')[0] || 'there';
+  const activeItems    = tabs[activeTab] || [];
   const displayedItems = activeItems.slice(0, visibleCount);
-  const hasMore = visibleCount < activeItems.length;
+  const hasMore        = visibleCount < activeItems.length;
+  const hasAnyEvents   = allItems.length > 0;
 
   return (
     <>
@@ -286,15 +302,11 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Onboarding completion banner — shown when onboarding_completed_at is null */}
           {showOnboardingBanner && (
             <Link
               to="/onboarding"
               className="alert"
-              style={{
-                display: 'block', marginBottom: 16, cursor: 'pointer',
-                textDecoration: 'none', fontWeight: 500,
-              }}
+              style={{ display: 'block', marginBottom: 16, cursor: 'pointer', textDecoration: 'none', fontWeight: 500 }}
             >
               Finish setting up your profile →
             </Link>
@@ -306,7 +318,6 @@ export default function Home() {
             <div className="loading"><div className="spinner spinner--lg" /><span>Loading your dashboard…</span></div>
           ) : (
             <>
-              {/* AI-generated nudges prompting the user to reach out to friends */}
               {nudges.length > 0 && (
                 <section className="section">
                   <div className="section-title">✨ Suggested plans</div>
@@ -316,14 +327,12 @@ export default function Home() {
                 </section>
               )}
 
-              {/* Primary CTA to start a new event */}
               <div style={{ marginBottom: 24 }}>
                 <button className="btn btn--primary" onClick={() => navigate('/schedule/new')}>
                   + New Event
                 </button>
               </div>
 
-              {/* Friends strip — first 4 friends as tappable avatar chips */}
               {visibleFriends.length > 0 && (
                 <section className="section">
                   <div className="section-title">
@@ -341,61 +350,9 @@ export default function Home() {
                 </section>
               )}
 
-              {/* Group event pills */}
-              {groupItins.length > 0 && (
+              {/* Unified tabbed event list — 1:1 and group events comingled */}
+              {hasAnyEvents && (
                 <section className="section">
-                  <div className="section-title">
-                    Group Events
-                    <Link to="/groups" className="section-link">View groups →</Link>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {groupItins.map(gi => {
-                      const firstSug = gi.suggestions?.[0];
-                      let badge, badgeCls;
-                      if (gi.is_organizer) {
-                        if (gi.itinerary_status === 'organizer_draft') { badge = 'draft'; badgeCls = 'badge--gray'; }
-                        else if (gi.itinerary_status === 'awaiting_responses') { badge = 'waiting for votes'; badgeCls = 'badge--gray'; }
-                        else if (gi.itinerary_status === 'locked') { badge = 'locked'; badgeCls = 'badge--green'; }
-                        else { badge = gi.itinerary_status; badgeCls = 'badge--gray'; }
-                      } else {
-                        if (gi.my_vote === 'pending') { badge = 'vote needed'; badgeCls = 'badge--amber'; }
-                        else if (gi.my_vote === 'accepted') { badge = 'voted'; badgeCls = 'badge--gray'; }
-                        else if (gi.itinerary_status === 'locked') { badge = 'locked'; badgeCls = 'badge--green'; }
-                        else { badge = gi.my_vote || 'pending'; badgeCls = 'badge--gray'; }
-                      }
-                      return (
-                        <Link key={gi.id} to={`/group-itineraries/${gi.id}`} className="itinerary-card">
-                          <div className="avatar avatar--sm">{getInitials(gi.organizer?.full_name || '')}</div>
-                          <div className="itinerary-card__body">
-                            <div className="itinerary-card__title">
-                              {gi.event_title || 'Group Event'}
-                              {!gi.is_organizer && gi.organizer?.full_name && (
-                                <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {gi.organizer.full_name}</span>
-                              )}
-                            </div>
-                            <div className="itinerary-card__meta">
-                              {firstSug?.date && <span>{formatDate(firstSug.date)}</span>}
-                              {firstSug?.neighborhood && (
-                                <>
-                                  <span className="itinerary-card__dot" />
-                                  <span>{firstSug.neighborhood}</span>
-                                </>
-                              )}
-                              <span className="itinerary-card__dot" />
-                              <span className={`badge ${badgeCls}`}>{badge}</span>
-                            </div>
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
-
-              {/* Tabbed itinerary list */}
-              {allItins.length > 0 && (
-                <section className="section">
-                  {/* Tab bar — clicking a tab also resets the "show all" expansion. */}
                   <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
                     {TAB_CONFIG.map(({ key, label }) => {
                       const count = tabs[key]?.length || 0;
@@ -422,7 +379,6 @@ export default function Home() {
                     })}
                   </div>
 
-                  {/* Tab content — shows visibleCount items; "Load more" reveals the next batch */}
                   {activeItems.length === 0 ? (
                     <div style={{ padding: '20px 0', color: 'var(--text-3)', fontSize: '0.88rem', textAlign: 'center' }}>
                       Nothing here yet.
@@ -431,16 +387,14 @@ export default function Home() {
                     <>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {displayedItems.map((item) => (
-                          <ItineraryCard
+                          <EventCard
                             key={item.id}
                             item={item}
-                            onDelete={activeTab === 'drafts' ? deleteDraft : null}
+                            onDelete={activeTab === 'drafts' ? handleDeleteDraft : null}
                           />
                         ))}
                       </div>
 
-                      {/* Load more button — increments visibleCount by INITIAL_VISIBLE each click.
-                          All items are already in state so no extra API call is needed. */}
                       {hasMore && (
                         <button
                           className="btn btn--ghost btn--sm"
@@ -455,8 +409,8 @@ export default function Home() {
                 </section>
               )}
 
-              {/* Empty state — first time the user has no plans, nudges, or friends */}
-              {allItins.length === 0 && groupItins.length === 0 && nudges.length === 0 && friends.length === 0 && (
+              {/* Empty state — no events, nudges, or friends at all */}
+              {!hasAnyEvents && nudges.length === 0 && friends.length === 0 && (
                 <div className="card card-pad">
                   <div className="empty-state">
                     <div className="empty-state__icon">📅</div>
