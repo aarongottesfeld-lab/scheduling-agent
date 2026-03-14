@@ -139,7 +139,55 @@ After changes: git add -A && git commit -m "Add delete draft button for group it
 
 ---
 
-## Notes on parity
+## Multi-day travel itinerary quality fix (prompt engineering only)
+Roadmap ref: Travel Mode — Multi-Day Itinerary Quality
+Status: Ready to run
+
+```
+Improve multi-day travel itinerary output quality in both buildSuggestPrompt and buildGroupSuggestPrompt. Read server/routes/schedule.js and server/routes/group-itineraries.js before starting.
+
+PARITY REQUIREMENT: Every change to buildSuggestPrompt in schedule.js must be mirrored in buildGroupSuggestPrompt in group-itineraries.js.
+
+Problem: when travelMode === 'travel' and tripDurationDays > 1, Claude generates all days in a single call but front-loads Day 1 with real activities and leaves subsequent days thin, generic, or repetitive. The days[] JSONB schema and rendering already support proper multi-day output — this is a prompt fix only.
+
+Find the section in both prompt builders where the multi-day JSON schema is injected (the isMultiDay block that builds venueSchema). Update it with the following changes:
+
+1. Add an explicit per-day instruction block when tripDurationDays > 1. Inject it immediately before the JSON schema in the prompt:
+
+   MULTI-DAY TRIP INSTRUCTIONS (strictly enforced for all ${tripDurationDays} days):
+   - Generate a complete, distinct activity plan for EVERY day — not just Day 1.
+   - Each day must have at least 2 named stops with real venue names and addresses.
+   - Follow a logical day structure: morning activity → afternoon activity → evening/dinner. Not every day needs all three, but each day should feel like a full, considered plan.
+   - Day 1 is typically arrival — keep it lighter (1-2 activities, afternoon/evening only unless the destination is driveable same-day). Last day is typically departure — keep it to morning only.
+   - Every day across the trip must use completely different venues. Do not repeat a venue across days.
+   - Vary the energy level across days — not every day should be the same intensity. Mix active days with relaxed days where appropriate.
+   - The narrative for each day should describe what makes that specific day's plan worth doing, not just list the venues.
+
+2. Update the venueSchema example for multi-day trips to show all days populated, not just Day 1 with ellipsis for the rest. Replace the current example with:
+
+   "days": [
+     { "day": 1, "label": "Arrival afternoon", "stops": [
+         { "name": "Venue Name", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State" },
+         { "name": "Dinner Spot", "type": "restaurant", "address": "456 Oak Ave, City, State" }
+       ]
+     },
+     { "day": 2, "label": "Main day", "stops": [
+         { "name": "Morning Activity", "type": "activity", "address": "789 Park Rd, City, State" },
+         { "name": "Lunch Spot", "type": "restaurant", "address": "321 River St, City, State" },
+         { "name": "Evening Venue", "type": "bar", "address": "654 Main St, City, State" }
+       ]
+     }
+   ]
+   // ... repeat structure for all tripDurationDays days
+
+3. No other changes — do not touch single-day logic, local mode logic, or remote mode logic.
+
+No DB changes. No new routes.
+
+After changes: git add -A && git commit -m "Improve multi-day travel itinerary prompt: full day-by-day instructions, no front-loading — parity across 1:1 and group" && git push origin main.
+```
+
+---
 Any time a feature touches one of these three flows, verify it works in all three:
 - 1:1 itinerary (ItineraryView, schedule.js)
 - Group itinerary (GroupItineraryView, group-itineraries.js)

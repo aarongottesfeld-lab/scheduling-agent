@@ -592,14 +592,31 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
   // per suggestion instead of a flat venues array. Single-day still uses venues
   // (write side wraps to days structure before DB save; read side has backward-compat shim).
   const isMultiDay = tripDurationDays > 1;
+  const multiDayInstructionsBlock = isMultiDay
+    ? `MULTI-DAY TRIP INSTRUCTIONS (strictly enforced for all ${tripDurationDays} days):
+- Generate a complete, distinct activity plan for EVERY day — not just Day 1.
+- Each day must have at least 2 named stops with real venue names and addresses.
+- Follow a logical day structure: morning activity → afternoon activity → evening/dinner. Not every day needs all three, but each day should feel like a full, considered plan.
+- Day 1 is typically arrival — keep it lighter (1-2 activities, afternoon/evening only unless the destination is driveable same-day). Last day is typically departure — keep it to morning only.
+- Every day across the trip must use completely different venues. Do not repeat a venue across days.
+- Vary the energy level across days — not every day should be the same intensity. Mix active days with relaxed days where appropriate.
+- The narrative for each day should describe what makes that specific day's plan worth doing, not just list the venues.`
+    : '';
   const venueSchema = isMultiDay
     ? `"days": [
-        { "day": 1, "label": "Arrival day", "stops": [
-            { "name": "Venue Name", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State" }
+        { "day": 1, "label": "Arrival afternoon", "stops": [
+            { "name": "Venue Name", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State" },
+            { "name": "Dinner Spot", "type": "restaurant", "address": "456 Oak Ave, City, State" }
           ]
         },
-        { "day": 2, "label": "Main day", "stops": [ ... ] }
-      ]`
+        { "day": 2, "label": "Main day", "stops": [
+            { "name": "Morning Activity", "type": "activity", "address": "789 Park Rd, City, State" },
+            { "name": "Lunch Spot", "type": "restaurant", "address": "321 River St, City, State" },
+            { "name": "Evening Venue", "type": "bar", "address": "654 Main St, City, State" }
+          ]
+        }
+      ]
+      // ... repeat structure for all tripDurationDays days`
     : `"venues": [
         { "name": "Venue Name or Person's Home", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State (omit for home)" }
       ]`;
@@ -663,7 +680,7 @@ MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : '
 EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
 
 ${intentBlock}
-${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}
+${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}${multiDayInstructionsBlock ? `\n${multiDayInstructionsBlock}` : ''}
 Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 {
   "suggestions": [

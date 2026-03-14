@@ -279,6 +279,18 @@ event schema we're building is compatible.
   Detection: keyword list in classifyRerollIntent() (new helper alongside classifyIntent)
   returning 'micro_adjust' | 'full_replace' | 'ambiguous'
 
+### Travel Mode — Multi-Day Itinerary Quality (prompt fix, no new infrastructure)
+> Current state: Claude generates all days in a single call but front-loads Day 1 and leaves subsequent days thin. The days[] JSONB schema and ItineraryView day-grouped rendering already support multi-day output — this is purely a prompt improvement.
+>
+> Fix: explicitly tell Claude the total number of days, instruct it to generate a complete and distinct activity plan for each day with morning/afternoon/evening anchors, and enforce that each day has specific named venues — not filler. Apply to both buildSuggestPrompt (schedule.js) and buildGroupSuggestPrompt (group-itineraries.js) with parity. Prompt in CLAUDE_CODE_PROMPTS.md.
+
+### Travel Mode — Day-by-Day Planning Wizard (future sprint, post-beta signal)
+> Alternative to all-at-once generation: user plans one day at a time, with each day's generation informed by what was already selected for prior days. Significantly better quality per day for longer trips, natural iteration, each day feels considered rather than bulk-generated.
+>
+> Deferred until: real user feedback shows multi-day output quality is a pain point. Four beta users are unlikely to be booking 7-day trips in the first few weeks — need usage signal before investing in the more complex wizard state machine.
+>
+> When building: new state machine (partial trip state between wizard steps), multiple Claude calls per itinerary (one per day), UI flow for day-by-day review and selection, prior days injected as context for each subsequent call. Backend: itinerary row needs to store per-day status independently. This is a meaningful rewrite of the suggestion flow — do not start until Option 1 (prompt fix) has been validated with real users.
+
 ### Location Awareness & Travel Mode
 > ✅ DONE — March 13, 2026. location_preference, travel_mode, trip_duration_days, destination columns added to itineraries and group_itineraries. NewEvent UI updated with Local/Travel toggle, where-to-meet selector, duration picker, destination input. buildSuggestPrompt updated with location anchoring and travel mode blocks. Multi-day JSONB schema (days array) shipped. ItineraryView day-grouped rendering done. Backward-compat shim for pre-migration rows in place.
 >
@@ -697,7 +709,7 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [x] Vercel deployment — DONE March 12
 - [x] Session persistence (Supabase sessions table) — DONE March 12
 - [x] OAuth handoff → HTTP-only cookies — DONE March 12
-- [ ] HTTP referrer restriction on Maps API key — still outstanding; requires splitting into two keys before applying (see Maps JS section in beta backlog)
+- [ ] HTTP referrer restriction on Maps API key — **PARTIALLY DONE (March 14, 2026).** New browser-specific key created, referrer restriction applied to `https://rendezvous-gamma.vercel.app/*`, added to Vercel as `REACT_APP_GOOGLE_MAPS_JS_KEY` (prod only). No client wiring needed yet — Maps JS API is not loaded in the client (existing maps links are plain `maps.google.com` deep-links, no API key required). `REACT_APP_GOOGLE_MAPS_JS_KEY` will be wired in during the route visualization sprint (Tier 2 / Embedded Views). Server-side key unchanged.
 - [ ] Tighten notifications RLS — `notifications_service_role_all` USING(true); verify if fixed in Audit 2 or still outstanding
 - [ ] PWA config — manifest.json + service worker (needed before push notifications)
 - [ ] Push notifications (PWA web push) — push_subscriptions infrastructure exists, delivery not built (Tier 2)

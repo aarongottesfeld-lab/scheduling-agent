@@ -31,6 +31,41 @@ Confirmed done by audit (44/56 items):
 
 ---
 
+## March 14, 2026 — Group calendar write path commit 3e029d7
+SHA: 3e029d7
+
+Shipped:
+- server/utils/calendarUtils.js (new): createOAuth2Client and createCalendarEventForUser extracted from schedule.js into shared utility. schedule.js now imports from it — zero behavior change for 1:1.
+- POST /group-itineraries/:id/finalize-lock: idempotent, Promise.allSettled per member, persists calendar_event_id + calendar_event_url on first success
+- GroupItineraryView.js: calls finalize-lock after vote triggers lock (best-effort, never blocks UI), then reloads. TODO comment replaced with real calendar button using calendar_event_url.
+- Home screen: no changes needed — "📅 On your calendar" already gates on calendar_event_id, now fires for group events too
+- Vercel build passed (buildGCalUrl unused variable resolved as part of this commit)
+
+Group scheduling now at full parity with 1:1 on calendar event creation.
+
+---
+
+## March 14, 2026 — Calendar confirmation UX commit 06cb301
+SHA: 06cb301
+
+Shipped:
+- createCalendarEventForUser returns { id, htmlLink }; htmlLink stored as calendar_event_url on itineraries (new column, DB migration applied)
+- ItineraryView: "📅 View in Google Calendar" uses direct event URL when available; falls back to TEMPLATE URL only when no write happened
+- GroupItineraryView: calendar button removed with TODO comment (group write path not built yet)
+- Home EventCard: "📅 On your calendar" line on confirmed pills when calendar_event_id present; group items ready for when write path is built
+- New itinerary_locked notification type with personalized copy sent to both users
+- Group lock notification: honest "add manually" note until group calendar write is built
+- NotificationBell: itinerary_locked: '📅' added to TYPE_ICON
+- calendar_event_url cached in client state on confirm — no page refresh needed
+
+Also shipped this session (separate commits):
+- Remote mode b9fe605: full parity, DB constraints updated on both tables
+- Trip duration stepper b9fe605: static presets replaced with 1–14 day numeric stepper
+- Google OAuth flipped to Production mode
+- Browser-specific Maps JS API key created with HTTP referrer restriction
+
+---
+
 ## March 14, 2026 — Group invite + misc bug sprint (commits 726e649 → e520022)
 
 726e649 — Backfill window-filtered suggestions to always return 3
