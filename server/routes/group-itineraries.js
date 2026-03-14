@@ -288,7 +288,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "time": "7:00 PM",
       "durationMinutes": 120,
       "location_type": "home|venue|mixed",
-      "neighborhood": "Neighborhood name",
+      "neighborhood": "Neighborhood extracted from the first venue's address (e.g. 'Williamsburg' not 'Brooklyn', 'Flatiron' not 'Manhattan') — must match where the primary venue actually is",
       ${venueSchema},
       "narrative": "2-3 sentences. Be specific — name the actual activity and why the spot works for this group. No marketing language. Just what they're doing and why it makes sense.",
       "estimatedTravelA": "15 min",
@@ -303,7 +303,8 @@ Rules:
 - Use different time windows for each suggestion when possible
 - Venue variety: mix well-known places with neighborhood spots
 - Free and public options are valid: parks, public courts, plazas, beaches, trails
-- No venue should appear in more than one suggestion in the same set`;
+- No venue should appear in more than one suggestion in the same set
+- The neighborhood field must be derived from the first venue's actual address — never from a different area`;
 }
 
 /**

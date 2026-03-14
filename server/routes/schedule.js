@@ -647,7 +647,7 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "time": "7:00 PM",
       "durationMinutes": 120,
       "location_type": "home|venue|mixed",
-      "neighborhood": "Neighborhood name",
+      "neighborhood": "Neighborhood extracted from the first venue's address (e.g. 'Williamsburg' not 'Brooklyn', 'Flatiron' not 'Manhattan') — must match where the primary venue actually is",
       ${venueSchema},
       "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
       "estimatedTravelA": "15 min",
