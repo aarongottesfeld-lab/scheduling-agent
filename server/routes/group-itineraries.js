@@ -372,7 +372,7 @@ async function insertNotification(supabase, userId, type, tier, title, body, dat
  * @param {object} sessionStore - { getSessionBySupabaseId }
  * @returns {object[]} suggestions array, ready for DB write
  */
-async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [] } = {}) {
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null } = {}) {
   const start = itin.date_range_start;
   const end   = itin.date_range_end;
   const startISO = new Date(start + 'T00:00:00').toISOString();
@@ -469,13 +469,28 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
       : '');
 
   // Build a reroll instruction note so Claude knows what to vary vs. preserve.
-  const existingTitles = existingSuggestions.map(s => s.title).filter(Boolean);
-  const rerollNoteMap = {
-    timing:   `Generate 3 suggestions with DIFFERENT dates/times than before — keep the same activity types and neighborhood vibes but find new time windows. Avoid repeating these previously-shown options: ${existingTitles.join(', ') || 'none'}.`,
-    activity: `Generate 3 suggestions with DIFFERENT activities and venues — keep the same time windows from the availability list but suggest completely different things to do and different neighborhoods. The vibe should be noticeably different from: ${existingTitles.join(', ') || 'none'}.`,
-    both:     existingTitles.length ? `Generate 3 brand-new suggestions completely different from these already-shown options: ${existingTitles.join(', ')}. Different activities, different times, different vibes.` : '',
-  };
-  const rerollNote = rerollNoteMap[rerollType] || '';
+  // For single-card reroll, exclude the target from existingTitles so dedup ignores it.
+  const existingTitles = existingSuggestions
+    .filter(s => !targetSuggestion || s.id !== targetSuggestion.id)
+    .map(s => s.title).filter(Boolean);
+  const avoidClause = existingTitles.length ? ` Avoid repeating these existing options: ${existingTitles.join(', ')}.` : '';
+
+  let rerollNote;
+  if (singleCard && targetSuggestion) {
+    const singleCardInstructions = {
+      timing:   `Keep the same activity concept and venues as "${targetSuggestion.title || 'this option'}". Only change the date and time — find a different time slot. Do not change the venues, activity type, or narrative theme.`,
+      activity: `Keep the same date and time as "${targetSuggestion.title || 'this option'}" (${targetSuggestion.date || ''} at ${targetSuggestion.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.`,
+      both:     `Replace "${targetSuggestion.title || 'this option'}" with a fresh alternative — different activity and different time.`,
+    };
+    rerollNote = `Generate exactly 1 suggestion (not 3). ${singleCardInstructions[rerollType] || singleCardInstructions.both}${avoidClause} Return a JSON object with a "suggestions" array containing exactly 1 item.`;
+  } else {
+    const rerollNoteMap = {
+      timing:   `Generate 3 suggestions with DIFFERENT dates/times than before — keep the same activity types and neighborhood vibes but find new time windows.${avoidClause}`,
+      activity: `Generate 3 suggestions with DIFFERENT activities and venues — keep the same time windows from the availability list but suggest completely different things to do and different neighborhoods. The vibe should be noticeably different.${avoidClause}`,
+      both:     existingTitles.length ? `Generate 3 brand-new suggestions completely different from these already-shown options: ${existingTitles.join(', ')}. Different activities, different times, different vibes.` : '',
+    };
+    rerollNote = rerollNoteMap[rerollType] || '';
+  }
 
   const prompt = buildGroupSuggestPrompt({
     groupName,
@@ -871,11 +886,24 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const VALID_REROLL_TYPES = new Set(['timing', 'activity', 'both']);
     const rerollType = VALID_REROLL_TYPES.has(req.body.rerollType) ? req.body.rerollType : 'both';
 
+    // Single-card reroll: replace one specific suggestion in-place.
+    const { replaceSuggestionId } = req.body;
+    const existingSuggestions = itin.suggestions || [];
+    const targetSuggestion = replaceSuggestionId
+      ? existingSuggestions.find(s => s.id === replaceSuggestionId) || null
+      : null;
+    if (replaceSuggestionId && !targetSuggestion) {
+      return res.status(400).json({ error: 'replaceSuggestionId does not match any suggestion.' });
+    }
+    const isSingleCard = !!targetSuggestion;
+
     let newSuggestions;
     try {
       newSuggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
         rerollType,
-        existingSuggestions: itin.suggestions || [],
+        existingSuggestions,
+        singleCard:       isSingleCard,
+        targetSuggestion: targetSuggestion,
       });
     } catch (e) {
       console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
@@ -886,22 +914,30 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const changelogEntry = {
       reroll_number: (itin.reroll_count || 0) + 1,
       timestamp:     new Date().toISOString(),
-      suggestions:   itin.suggestions || [],
+      suggestions:   isSingleCard ? [targetSuggestion] : existingSuggestions,
     };
     const updatedChangelog = [...(itin.changelog || []), changelogEntry];
 
-    // Reset all attendee_statuses back to 'pending' for the new round of voting.
+    // Reset all attendee_statuses back to 'pending' — votes referenced the old card(s).
     const resetStatuses = Object.fromEntries(
       Object.keys(itin.attendee_statuses || {}).map(id => [id, 'pending'])
     );
 
-    // When already awaiting_responses, APPEND new suggestions to the existing set
-    // (capped at 6 total) so suggestions attendees have already seen are preserved.
-    // In organizer_draft, replace entirely — nothing has been sent yet.
-    const MAX_SUGGESTIONS = 6;
-    const mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
-      ? [...(itin.suggestions || []), ...newSuggestions].slice(0, MAX_SUGGESTIONS)
-      : newSuggestions;
+    let mergedSuggestions;
+    if (isSingleCard) {
+      // Splice the 1 new suggestion in place of the replaced card, preserving order.
+      const replacement = { ...newSuggestions[0], id: newSuggestions[0]?.id || replaceSuggestionId + '_r' };
+      mergedSuggestions = existingSuggestions.map(s => s.id === replaceSuggestionId ? replacement : s);
+    } else {
+      // Full reroll: in awaiting_responses append (cap at 6); in draft replace.
+      const MAX_SUGGESTIONS = 6;
+      mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
+        ? [...existingSuggestions, ...newSuggestions].slice(0, MAX_SUGGESTIONS)
+        : newSuggestions;
+    }
+
+    // Clear selected_suggestion_id only if it pointed to the replaced card (or full reroll).
+    const clearSelected = !isSingleCard || itin.selected_suggestion_id === replaceSuggestionId;
 
     const { error: updateErr } = await supabase
       .from('group_itineraries')
@@ -910,9 +946,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         changelog:              updatedChangelog,
         reroll_count:           (itin.reroll_count || 0) + 1,
         attendee_statuses:      resetStatuses,
-        selected_suggestion_id: null,
-        // If already awaiting_responses, keep it there. If in draft, keep draft.
-        // Do NOT transition backward to organizer_draft on a reroll.
+        ...(clearSelected ? { selected_suggestion_id: null } : {}),
       })
       .eq('id', req.params.id);
 
@@ -921,7 +955,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(500).json({ error: 'Could not save reroll.' });
     }
 
-    res.json({ suggestions: newSuggestions });
+    res.json({ suggestions: mergedSuggestions });
   });
 
   /* ── GET /group-itineraries ───────────────────────────────────────────── */

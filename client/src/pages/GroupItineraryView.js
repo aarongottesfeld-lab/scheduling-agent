@@ -182,9 +182,9 @@ function GroupSuggestionCard({
   selectedSuggestionId, // organizer's recommended suggestion (set on send)
   onVote,               // (suggestionId, vote) => void — attendee action
   onSend,               // (suggestionId) => void — organizer sends draft
-  onReroll,             // () => void — organizer rerolls
+  onReroll,             // (suggestionId, rerollType) => void — organizer rerolls this card
   sending,
-  rerolling,
+  rerollingCard,        // { id, type } | null — which card is currently being rerolled
   actingCardId,         // which card currently has a pending vote action
 }) {
   const [expanded,        setExpanded]        = useState(false);
@@ -195,6 +195,8 @@ function GroupSuggestionCard({
   const isOrganizerPick = status === 'awaiting_responses' && selectedSuggestionId === suggestion.id;
   const myVote          = voteStatus?.[myId]?.vote; // the current user's own vote (attendees only)
   const isBusy          = actingCardId === suggestion.id;
+  const isThisRerolling = rerollingCard?.id === suggestion.id;
+  const isAnyRerolling  = !!rerollingCard;
   const isDraft         = status === 'organizer_draft';
   const isAwaiting      = status === 'awaiting_responses';
 
@@ -384,15 +386,35 @@ function GroupSuggestionCard({
           );
         })()}
 
-        {/* ── Organizer draft card actions ── */}
-        {isOrganizer && isDraft && (
-          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {/* ── Organizer card actions (draft + awaiting) ── */}
+        {isOrganizer && (isDraft || isAwaiting) && !isLocked && (
+          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {isDraft && (
+              <button
+                className="btn btn--primary btn--sm"
+                disabled={sending || isAnyRerolling}
+                onClick={() => onSend(suggestion.id)}
+              >
+                {sending ? 'Sending…' : '📤 Send this to group'}
+              </button>
+            )}
             <button
-              className="btn btn--primary btn--sm"
-              disabled={sending || rerolling}
-              onClick={() => onSend(suggestion.id)}
+              className="btn btn--ghost btn--sm"
+              disabled={isAnyRerolling || sending}
+              onClick={() => onReroll(suggestion.id, 'timing')}
             >
-              {sending ? 'Sending…' : '📤 Send this to group'}
+              {isThisRerolling && rerollingCard?.type === 'timing'
+                ? <><span className="spinner spinner--sm" style={{ marginRight: 4 }} />Re-rolling…</>
+                : '🕐 Re-roll time'}
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              disabled={isAnyRerolling || sending}
+              onClick={() => onReroll(suggestion.id, 'activity')}
+            >
+              {isThisRerolling && rerollingCard?.type === 'activity'
+                ? <><span className="spinner spinner--sm" style={{ marginRight: 4 }} />Re-rolling…</>
+                : '✨ Re-roll vibe'}
             </button>
           </div>
         )}
@@ -434,13 +456,12 @@ export default function GroupItineraryView() {
   const [error,       setError]       = useState('');
 
   // Action states
-  const [sending,         setSending]         = useState(false);
-  const [rerollingTiming, setRerollingTiming] = useState(false);
-  const [rerollingVibe,   setRerollingVibe]   = useState(false);
-  const [actingCard,      setActingCard]      = useState(null); // suggestion.id currently voting
-  const [actionError,     setActionError]     = useState('');
-  const [sentSuccess,     setSentSuccess]     = useState(false);
-  const rerolling = rerollingTiming || rerollingVibe;
+  const [sending,       setSending]       = useState(false);
+  const [rerollingCard, setRerollingCard] = useState(null); // { id, type } | null
+  const [actingCard,    setActingCard]    = useState(null); // suggestion.id currently voting
+  const [actionError,   setActionError]   = useState('');
+  const [sentSuccess,   setSentSuccess]   = useState(false);
+  const rerolling = !!rerollingCard;
 
   /** Fetch (or re-fetch) the itinerary from the server. */
   const load = useCallback(async () => {
@@ -472,20 +493,17 @@ export default function GroupItineraryView() {
     }
   }
 
-  /** Organizer requests new AI suggestions, varying either time or vibe. */
-  async function handleReroll(rerollType) {
-    const label = rerollType === 'timing' ? 'time slots' : 'activity vibes';
-    if (!window.confirm(`Re-roll ${label}? New suggestions will be added to the set.`)) return;
-    const setBusy = rerollType === 'timing' ? setRerollingTiming : setRerollingVibe;
-    setBusy(true);
+  /** Organizer re-rolls a single suggestion card (time slot or activity vibe). */
+  async function handleReroll(suggestionId, rerollType) {
+    setRerollingCard({ id: suggestionId, type: rerollType });
     setActionError('');
     try {
-      await rerollGroupItinerary(id, rerollType);
+      await rerollGroupItinerary(id, rerollType, suggestionId);
       load();
     } catch (e) {
-      setActionError(e.message || 'Could not regenerate suggestions.');
+      setActionError(e.message || 'Could not regenerate suggestion.');
     } finally {
-      setBusy(false);
+      setRerollingCard(null);
     }
   }
 
@@ -719,25 +737,6 @@ export default function GroupItineraryView() {
             <div className="alert alert--error" style={{ marginBottom: 16 }}>{actionError}</div>
           )}
 
-          {/* Organizer re-roll buttons (awaiting_responses) */}
-          {isOrganizer && status === 'awaiting_responses' && (
-            <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                className="btn btn--ghost btn--sm"
-                disabled={rerolling}
-                onClick={() => handleReroll('timing')}
-              >
-                {rerollingTiming ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Re-rolling…</> : '🕐 Re-roll time'}
-              </button>
-              <button
-                className="btn btn--ghost btn--sm"
-                disabled={rerolling}
-                onClick={() => handleReroll('activity')}
-              >
-                {rerollingVibe ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Re-rolling…</> : '✨ Re-roll vibe'}
-              </button>
-            </div>
-          )}
 
           {/* ── Locked: show winning suggestion prominently ── */}
           {status === 'locked' && winnerSuggestion && (
@@ -760,7 +759,7 @@ export default function GroupItineraryView() {
                 onSend={handleSend}
                 onReroll={handleReroll}
                 sending={sending}
-                rerolling={rerolling}
+                rerollingCard={rerollingCard}
                 actingCardId={actingCard}
               />
             </div>
@@ -798,25 +797,6 @@ export default function GroupItineraryView() {
             </div>
           )}
 
-          {/* ── Draft: re-roll time / vibe controls at bottom ── */}
-          {isOrganizer && status === 'organizer_draft' && suggestions.length > 0 && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                className="btn btn--ghost"
-                disabled={sending || rerolling}
-                onClick={() => handleReroll('timing')}
-              >
-                {rerollingTiming ? 'Re-rolling…' : '🕐 Re-roll time'}
-              </button>
-              <button
-                className="btn btn--ghost"
-                disabled={sending || rerolling}
-                onClick={() => handleReroll('activity')}
-              >
-                {rerollingVibe ? 'Re-rolling…' : '✨ Re-roll vibe'}
-              </button>
-            </div>
-          )}
 
           {/* Empty suggestions state */}
           {suggestions.length === 0 && status === 'organizer_draft' && (
