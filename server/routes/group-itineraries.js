@@ -220,12 +220,15 @@ function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWin
     : '';
 
   // Location anchoring block — mirrors schedule.js pattern.
+  // Remote mode: skip entirely — no physical location is relevant.
   const organizerLocation = members.find(m => m.isOrganizer)?.location?.trim();
   let locationAnchorBlock = '';
-  if (locationPreference === 'closer_to_organizer' && organizerLocation) {
-    locationAnchorBlock = `\nLOCATION ANCHORING\nSuggest venues in or near ${organizerLocation}. The organizer wants plans closer to their area.`;
-  } else if (geoContext) {
-    locationAnchorBlock = `\nLOCATION ANCHORING\n${geoContext} Suggest venues in a convenient area for the group — consider neighborhoods that are roughly equidistant or well-connected by transit.`;
+  if (travelMode !== 'remote') {
+    if (locationPreference === 'closer_to_organizer' && organizerLocation) {
+      locationAnchorBlock = `\nLOCATION ANCHORING\nSuggest venues in or near ${organizerLocation}. The organizer wants plans closer to their area.`;
+    } else if (geoContext) {
+      locationAnchorBlock = `\nLOCATION ANCHORING\n${geoContext} Suggest venues in a convenient area for the group — consider neighborhoods that are roughly equidistant or well-connected by transit.`;
+    }
   }
 
   // Travel mode block — mirrors schedule.js pattern.
@@ -279,6 +282,10 @@ function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWin
   ).join('\n');
 
   // Group events default to venue-based when contextPrompt is empty — intentional, no classifyIntent() call here.
+  // Remote mode: override with virtual-only instruction.
+  const groupIntentBlock = travelMode === 'remote'
+    ? `REMOTE MODE: This group is not meeting in person. Suggest virtual/remote activities only — video calls with a shared activity (cooking the same recipe, watching a film simultaneously, playing an online game together), multiplayer game sessions, collaborative playlists, watch parties, etc. Do NOT suggest any physical venues, restaurants, bars, or activities that require being in the same location. All 3 suggestions should be remote-friendly. Set location_type to "home" for all suggestions since no venue is involved.`
+    : `HOME VS. VENUE SPLIT: For a group event, prefer venue-based suggestions unless the group context strongly implies a home setting. Set location_type to "venue" or "home" accordingly.`;
 
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for a group of ${members.length} people.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
@@ -310,7 +317,7 @@ ${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
 EVENT DURATION: Set durationMinutes based on the actual activity planned (coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360).
 
-HOME VS. VENUE SPLIT: For a group event, prefer venue-based suggestions unless the group context strongly implies a home setting. Set location_type to "venue" or "home" accordingly.
+${groupIntentBlock}
 ${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}
 Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
 {
@@ -615,7 +622,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice', 'destination']);
-    const VALID_TRAVEL_MODES   = new Set(['local', 'travel']);
+    const VALID_TRAVEL_MODES   = new Set(['local', 'travel', 'remote']);
     const VALID_TIE_BEHAVIORS  = new Set(['schedule', 'decline']);
     const VALID_NUDGE_HOURS    = new Set([24, 48, 72, 168]);
 

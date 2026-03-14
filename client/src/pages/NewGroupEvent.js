@@ -48,13 +48,8 @@ const TIME_OPTIONS = [
 
 const TRAVEL_MODE_OPTIONS = [
   { value: 'local',  label: 'Local' },
+  { value: 'remote', label: 'Remote' },
   { value: 'travel', label: 'Travel' },
-];
-
-const TRIP_DURATION_OPTIONS = [
-  { value: 1, label: '1 day' },
-  { value: 2, label: 'Weekend' },
-  { value: 5, label: 'Longer' },
 ];
 
 const LOCATION_OPTIONS = [
@@ -255,14 +250,16 @@ export default function NewGroupEvent() {
         date_range_start:    startDate,
         date_range_end:      endDate,
         time_of_day:         timePayload,
-        max_travel_minutes:  maxTravel || null,
+        max_travel_minutes:  travelMode === 'remote' ? null : (maxTravel || null),
         context_prompt:      context || null,
         event_title:         eventTitle.trim() || null,
         travel_mode:         travelMode,
-        location_preference: locationPreference,
-        destination:         (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
-          ? destination.trim()
-          : null,
+        location_preference: travelMode === 'remote' ? null : locationPreference,
+        destination:         travelMode === 'remote'
+          ? null
+          : (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
+            ? destination.trim()
+            : null,
         trip_duration_days:  tripDurationDays,
         quorum_threshold:    quorumThreshold,
         tie_behavior:        tieBehavior,
@@ -528,6 +525,11 @@ export default function NewGroupEvent() {
                           setTripDurationDays(1);
                           setLocationPreference(prev => prev === 'destination' ? 'system_choice' : prev);
                         }
+                        if (opt.value === 'remote') {
+                          setDestination('');
+                          setTripDurationDays(1);
+                          setLocationPreference('system_choice');
+                        }
                       }}
                     />
                     <span>{opt.label}</span>
@@ -536,6 +538,7 @@ export default function NewGroupEvent() {
               </div>
               <p className="form-hint" style={{ marginTop: 8 }}>
                 {travelMode === 'local'  && 'Suggestions in your city area.'}
+                {travelMode === 'remote' && 'Suggestions for hanging out virtually — no travel needed.'}
                 {travelMode === 'travel' && 'Multi-day trip — suggestions at a destination.'}
               </p>
             </div>
@@ -544,62 +547,62 @@ export default function NewGroupEvent() {
             {travelMode === 'travel' && (
               <div className="form-group">
                 <label className="form-label">Trip length</label>
-                <div className="radio-group">
-                  {TRIP_DURATION_OPTIONS.map(opt => (
-                    <label
-                      key={opt.value}
-                      className={`radio-item${tripDurationDays === opt.value ? ' radio-item--checked' : ''}`}
-                    >
-                      <input
-                        type="radio"
-                        name="tripDurationDays"
-                        value={opt.value}
-                        checked={tripDurationDays === opt.value}
-                        disabled={generating}
-                        onChange={() => setTripDurationDays(opt.value)}
-                      />
-                      <span>{opt.label}</span>
-                    </label>
-                  ))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <input
+                    type="number"
+                    className="form-control"
+                    style={{ width: 80 }}
+                    min={1}
+                    max={14}
+                    step={1}
+                    value={tripDurationDays}
+                    onChange={e => setTripDurationDays(Math.min(14, Math.max(1, parseInt(e.target.value) || 1)))}
+                    disabled={generating}
+                  />
+                  <span style={{ color: 'var(--text-2)', fontSize: '0.9rem' }}>
+                    {tripDurationDays === 1 ? 'day' : 'days'}
+                  </span>
                 </div>
               </div>
             )}
 
-            {/* ── Where to meet ── */}
-            <div className="form-group">
-              <label className="form-label">Where should you meet?</label>
-              <div className="radio-group">
-                {LOCATION_OPTIONS.map(opt => (
-                  <label
-                    key={opt.value}
-                    className={`radio-item${locationPreference === opt.value ? ' radio-item--checked' : ''}`}
-                  >
-                    <input
-                      type="radio"
-                      name="locationPreference"
-                      value={opt.value}
-                      checked={locationPreference === opt.value}
-                      disabled={generating}
-                      onChange={() => setLocationPreference(opt.value)}
-                    />
-                    <span>{opt.label}</span>
-                  </label>
-                ))}
-                {travelMode === 'travel' && (
-                  <label className={`radio-item${locationPreference === 'destination' ? ' radio-item--checked' : ''}`}>
-                    <input
-                      type="radio"
-                      name="locationPreference"
-                      value="destination"
-                      checked={locationPreference === 'destination'}
-                      disabled={generating}
-                      onChange={() => setLocationPreference('destination')}
-                    />
-                    <span>📍 Somewhere specific</span>
-                  </label>
-                )}
+            {/* ── Where to meet — hidden in remote mode (no physical venue involved) ── */}
+            {travelMode !== 'remote' && (
+              <div className="form-group">
+                <label className="form-label">Where should you meet?</label>
+                <div className="radio-group">
+                  {LOCATION_OPTIONS.map(opt => (
+                    <label
+                      key={opt.value}
+                      className={`radio-item${locationPreference === opt.value ? ' radio-item--checked' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="locationPreference"
+                        value={opt.value}
+                        checked={locationPreference === opt.value}
+                        disabled={generating}
+                        onChange={() => setLocationPreference(opt.value)}
+                      />
+                      <span>{opt.label}</span>
+                    </label>
+                  ))}
+                  {travelMode === 'travel' && (
+                    <label className={`radio-item${locationPreference === 'destination' ? ' radio-item--checked' : ''}`}>
+                      <input
+                        type="radio"
+                        name="locationPreference"
+                        value="destination"
+                        checked={locationPreference === 'destination'}
+                        disabled={generating}
+                        onChange={() => setLocationPreference('destination')}
+                      />
+                      <span>📍 Somewhere specific</span>
+                    </label>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Destination input — only when Travel + destination */}
             {travelMode === 'travel' && locationPreference === 'destination' && (
@@ -620,21 +623,23 @@ export default function NewGroupEvent() {
               </div>
             )}
 
-            {/* ── Max travel time ── */}
-            <div className="form-group">
-              <label className="form-label" htmlFor="max-travel">Max travel time</label>
-              <select
-                id="max-travel"
-                className="form-control"
-                value={maxTravel}
-                onChange={e => setMaxTravel(e.target.value)}
-                disabled={generating}
-              >
-                {TRAVEL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
+            {/* ── Max travel time — hidden in remote mode (no travel involved) ── */}
+            {travelMode !== 'remote' && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="max-travel">Max travel time</label>
+                <select
+                  id="max-travel"
+                  className="form-control"
+                  value={maxTravel}
+                  onChange={e => setMaxTravel(e.target.value)}
+                  disabled={generating}
+                >
+                  {TRAVEL_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* ── Voting rules ── */}
             <div className="form-group">

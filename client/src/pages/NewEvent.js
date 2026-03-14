@@ -50,17 +50,11 @@ const LOCATION_OPTIONS = [
   { value: 'closer_to_attendee',   label: '📍 Closer to them' },
 ];
 
-// Travel mode — Local stays in your city area; Travel is for overnight/destination trips.
+// Travel mode — Local stays in your city area; Remote is virtual; Travel is for overnight/destination trips.
 const TRAVEL_MODE_OPTIONS = [
   { value: 'local',   label: 'Local' },
+  { value: 'remote',  label: 'Remote' },
   { value: 'travel',  label: 'Travel' },
-];
-
-// Duration options for travel mode (1 day / weekend / longer → 1 / 2 / 5 days).
-const TRIP_DURATION_OPTIONS = [
-  { value: 1,  label: '1 day' },
-  { value: 2,  label: 'Weekend' },
-  { value: 5,  label: 'Longer' },
 ];
 
 // Max-travel time cap options sent to the suggestion engine.
@@ -222,17 +216,19 @@ export default function NewEvent() {
         targetUserId: selectedFriend.id,
         daysAhead, startDate, endDate,
         timeOfDay: timePayload,
-        maxTravelMinutes: maxTravel || null,
+        maxTravelMinutes: travelMode === 'remote' ? null : (maxTravel || null),
         contextPrompt: context,
         eventTitle: eventTitle.trim() || null,
         timezoneOffsetMinutes: new Date().getTimezoneOffset(),
         confirmedOrganizerConflict,
-        locationPreference,
+        locationPreference: travelMode === 'remote' ? null : locationPreference,
         travel_mode: travelMode,
         trip_duration_days: tripDurationDays,
-        destination: (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
-          ? destination.trim()
-          : null,
+        destination: travelMode === 'remote'
+          ? null
+          : (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
+            ? destination.trim()
+            : null,
       });
       // Server found a conflict on the organizer's calendar — ask before generating.
       if (data?.needsConfirmation) {
@@ -398,13 +394,18 @@ export default function NewEvent() {
                       checked={travelMode === opt.value}
                       onChange={() => {
                         setTravelMode(opt.value);
-                        // Reset destination and duration when switching back to local.
+                        // Reset destination and duration when switching back to local or remote.
                         // Also reset locationPreference if it was 'destination' — that option
-                        // is only available in travel mode and is meaningless in local mode.
+                        // is only available in travel mode and is meaningless in local/remote mode.
                         if (opt.value === 'local') {
                           setDestination('');
                           setTripDurationDays(1);
                           setLocationPreference(prev => prev === 'destination' ? 'system_choice' : prev);
+                        }
+                        if (opt.value === 'remote') {
+                          setDestination('');
+                          setTripDurationDays(1);
+                          setLocationPreference('system_choice');
                         }
                       }} />
                     <span>{opt.label}</span>
@@ -413,6 +414,7 @@ export default function NewEvent() {
               </div>
               <p className="form-hint" style={{ marginTop: 8 }}>
                 {travelMode === 'local'  && "Suggestions in your city area."}
+                {travelMode === 'remote' && "Suggestions for hanging out virtually — no travel needed."}
                 {travelMode === 'travel' && "Multi-day trip — suggestions at a destination."}
               </p>
             </div>
@@ -421,55 +423,64 @@ export default function NewEvent() {
             {travelMode === 'travel' && (
               <div className="form-group">
                 <label className="form-label">Trip length</label>
-                <div className="radio-group">
-                  {TRIP_DURATION_OPTIONS.map((opt) => (
-                    <label key={opt.value} className={`radio-item${tripDurationDays === opt.value ? ' radio-item--checked' : ''}`}>
-                      <input type="radio" name="tripDurationDays" value={opt.value}
-                        checked={tripDurationDays === opt.value}
-                        onChange={() => setTripDurationDays(opt.value)} />
-                      <span>{opt.label}</span>
-                    </label>
-                  ))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <input
+                    type="number"
+                    className="form-control"
+                    style={{ width: 80 }}
+                    min={1}
+                    max={14}
+                    step={1}
+                    value={tripDurationDays}
+                    onChange={e => setTripDurationDays(Math.min(14, Math.max(1, parseInt(e.target.value) || 1)))}
+                    disabled={generating}
+                  />
+                  <span style={{ color: 'var(--text-2)', fontSize: '0.9rem' }}>
+                    {tripDurationDays === 1 ? 'day' : 'days'}
+                  </span>
                 </div>
               </div>
             )}
 
             {/* Where to meet — controls which user's location Claude anchors suggestions to.
                 Defaults to 'system_choice' (equidistant / best fit) so the form works
-                without any extra interaction. Styled to match the time-of-day selector. */}
-            <div className="form-group">
-              <label className="form-label">Where should you meet?</label>
-              <div className="radio-group">
-                {LOCATION_OPTIONS.map((opt) => (
-                  <label key={opt.value} className={`radio-item${locationPreference === opt.value ? ' radio-item--checked' : ''}`}>
-                    <input type="radio" name="locationPreference" value={opt.value}
-                      checked={locationPreference === opt.value}
-                      onChange={() => setLocationPreference(opt.value)} />
-                    <span>{opt.label}</span>
-                  </label>
-                ))}
-                {/* Destination option — only shown when Travel mode is selected. */}
-                {travelMode === 'travel' && (
-                  <label className={`radio-item${locationPreference === 'destination' ? ' radio-item--checked' : ''}`}>
-                    <input type="radio" name="locationPreference" value="destination"
-                      checked={locationPreference === 'destination'}
-                      onChange={() => setLocationPreference('destination')} />
-                    <span>📍 Somewhere specific</span>
-                  </label>
-                )}
+                without any extra interaction. Styled to match the time-of-day selector.
+                Hidden in remote mode — no physical venue is involved. */}
+            {travelMode !== 'remote' && (
+              <div className="form-group">
+                <label className="form-label">Where should you meet?</label>
+                <div className="radio-group">
+                  {LOCATION_OPTIONS.map((opt) => (
+                    <label key={opt.value} className={`radio-item${locationPreference === opt.value ? ' radio-item--checked' : ''}`}>
+                      <input type="radio" name="locationPreference" value={opt.value}
+                        checked={locationPreference === opt.value}
+                        onChange={() => setLocationPreference(opt.value)} />
+                      <span>{opt.label}</span>
+                    </label>
+                  ))}
+                  {/* Destination option — only shown when Travel mode is selected. */}
+                  {travelMode === 'travel' && (
+                    <label className={`radio-item${locationPreference === 'destination' ? ' radio-item--checked' : ''}`}>
+                      <input type="radio" name="locationPreference" value="destination"
+                        checked={locationPreference === 'destination'}
+                        onChange={() => setLocationPreference('destination')} />
+                      <span>📍 Somewhere specific</span>
+                    </label>
+                  )}
+                </div>
+                {/* Helper text — updates based on selection to explain what Claude will do. */}
+                <p className="form-hint" style={{ marginTop: 8 }}>
+                  {locationPreference === 'closer_to_organizer' &&
+                    `We'll suggest venues near ${organizerFirstName ? `${organizerFirstName}'s` : 'your'} location.`}
+                  {locationPreference === 'closer_to_attendee' &&
+                    `We'll suggest venues near ${selectedFriend ? `${selectedFriend.name.split(' ')[0]}'s` : "your friend's"} location.`}
+                  {locationPreference === 'system_choice' &&
+                    "We'll find the best spot between you both."}
+                  {locationPreference === 'destination' &&
+                    "Tell us where you're headed."}
+                </p>
               </div>
-              {/* Helper text — updates based on selection to explain what Claude will do. */}
-              <p className="form-hint" style={{ marginTop: 8 }}>
-                {locationPreference === 'closer_to_organizer' &&
-                  `We'll suggest venues near ${organizerFirstName ? `${organizerFirstName}'s` : 'your'} location.`}
-                {locationPreference === 'closer_to_attendee' &&
-                  `We'll suggest venues near ${selectedFriend ? `${selectedFriend.name.split(' ')[0]}'s` : "your friend's"} location.`}
-                {locationPreference === 'system_choice' &&
-                  "We'll find the best spot between you both."}
-                {locationPreference === 'destination' &&
-                  "Tell us where you're headed."}
-              </p>
-            </div>
+            )}
 
             {/* Destination input — only shown when Travel + destination preference. */}
             {travelMode === 'travel' && locationPreference === 'destination' && (
@@ -485,13 +496,16 @@ export default function NewEvent() {
               </div>
             )}
 
-            {/* Max travel time — passed to the AI to filter out venues too far away. */}
-            <div className="form-group">
-              <label className="form-label" htmlFor="max-travel">Max travel time</label>
-              <select id="max-travel" className="form-control" value={maxTravel} onChange={(e) => setMaxTravel(e.target.value)}>
-                {TRAVEL_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-              </select>
-            </div>
+            {/* Max travel time — passed to the AI to filter out venues too far away.
+                Hidden in remote mode — no travel is involved. */}
+            {travelMode !== 'remote' && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="max-travel">Max travel time</label>
+                <select id="max-travel" className="form-control" value={maxTravel} onChange={(e) => setMaxTravel(e.target.value)}>
+                  {TRAVEL_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+              </div>
+            )}
 
             {/* Event title — optional label that appears in the plans list. */}
             <div className="form-group">

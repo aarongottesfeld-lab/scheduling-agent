@@ -506,14 +506,21 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
 
   // Classify the organizer's intent so Claude knows how many home vs. venue plans to generate.
   // The first names are interpolated into the instruction so Claude can say "at Aaron's place".
-  const intent = classifyIntent(contextPrompt);
   const orgFirst = organizerFirstName || userA.name?.split(' ')[0] || 'the organizer';
   const attFirst = attendeeFirstName  || userB.name?.split(' ')[0] || 'the attendee';
-  const intentBlock = intent === 'home_likely'
-    ? `HOME VS. VENUE SPLIT: Generate 2 of the 3 itineraries as home-based plans — one at ${orgFirst}'s place and one at ${attFirst}'s place. Include what they'd do (cook together, watch a game, jam, play games, etc.) based on their shared interests. The 3rd itinerary should be a venue-based option as an alternative. Do not suggest restaurants or bars as the primary activity for home-based agendas. Set location_type to "home" for home plans and "venue" for the venue option.`
-    : intent === 'ambiguous'
-    ? `HOME VS. VENUE SPLIT: Generate at least 1 of the 3 itineraries as a home-based plan. The others may be venue-based. Set location_type accordingly.`
-    : `HOME VS. VENUE SPLIT: All 3 itineraries should be venue-based. Focus on the specific activity requested. Set location_type to "venue" for all.`;
+
+  // Remote mode: skip classifyIntent entirely and override with a virtual-only instruction.
+  let intentBlock;
+  if (travelMode === 'remote') {
+    intentBlock = `REMOTE MODE: These people are not meeting in person. Suggest virtual/remote activities only — video calls with a shared activity (cooking the same recipe, watching a film simultaneously, playing an online game together), multiplayer game sessions, collaborative playlists, watch parties, etc. Do NOT suggest any physical venues, restaurants, bars, or activities that require being in the same location. All 3 suggestions should be remote-friendly. Set location_type to "home" for all suggestions since no venue is involved.`;
+  } else {
+    const intent = classifyIntent(contextPrompt);
+    intentBlock = intent === 'home_likely'
+      ? `HOME VS. VENUE SPLIT: Generate 2 of the 3 itineraries as home-based plans — one at ${orgFirst}'s place and one at ${attFirst}'s place. Include what they'd do (cook together, watch a game, jam, play games, etc.) based on their shared interests. The 3rd itinerary should be a venue-based option as an alternative. Do not suggest restaurants or bars as the primary activity for home-based agendas. Set location_type to "home" for home plans and "venue" for the venue option.`
+      : intent === 'ambiguous'
+      ? `HOME VS. VENUE SPLIT: Generate at least 1 of the 3 itineraries as a home-based plan. The others may be venue-based. Set location_type accordingly.`
+      : `HOME VS. VENUE SPLIT: All 3 itineraries should be venue-based. Focus on the specific activity requested. Set location_type to "venue" for all.`;
+  }
 
   // Dietary restrictions as hard NEVER constraints, one per person.
   // Filtered to non-empty, non-"none" values so we only emit real restrictions.
@@ -540,11 +547,14 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
   //   If that location is missing, fall through to system_choice silently.
   // system_choice: use the derived geo context (equidistant / best connected area).
   // orgFirst / attFirst are already declared above (intent block) — reused here.
+  // Remote mode: skip entirely — no physical location is relevant.
   const orgLocation = userA.location?.trim();
   const attLocation = userB.location?.trim();
 
   let locationAnchorBlock;
-  if (locationPreference === 'closer_to_organizer' && orgLocation) {
+  if (travelMode === 'remote') {
+    locationAnchorBlock = '';
+  } else if (locationPreference === 'closer_to_organizer' && orgLocation) {
     locationAnchorBlock =
       `\nLOCATION ANCHORING\nSuggest venues in or near ${orgLocation}. ` +
       `${orgFirst} wants plans closer to their side of the city.`;
@@ -905,8 +915,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const locationPreference = VALID_LOCATION_PREFS.has(rawLocationPreference)
       ? rawLocationPreference
       : 'system_choice';
-    // travel_mode: 'local' | 'travel'. Default 'local'.
-    const travelMode = rawTravelMode === 'travel' ? 'travel' : 'local';
+    // travel_mode: 'local' | 'travel' | 'remote'. Default 'local'.
+    const travelMode = ['travel', 'remote'].includes(rawTravelMode) ? rawTravelMode : 'local';
     // trip_duration_days: int 1–30. Default 1. Client sends 1 / 2 / 5 via the duration picker.
     const tripDurationDays = Math.max(1, Math.min(30, parseInt(rawTripDurationDays) || 1));
     // destination: free text. Only relevant when travel_mode='travel'. Sanitize and cap at 100 chars.
