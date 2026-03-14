@@ -116,6 +116,11 @@ export default function NewGroupEvent() {
   const [tripDurationDays,   setTripDurationDays]   = useState(1);
   const [destination,        setDestination]        = useState('');
 
+  // Voting rules
+  const [quorumMode,      setQuorumMode]      = useState('majority'); // 'majority' | 'unanimous'
+  const [tieBehavior,     setTieBehavior]     = useState('schedule'); // 'schedule' | 'decline'
+  const [nudgeAfterHours, setNudgeAfterHours] = useState('48');
+
   // UI state
   const [generating, setGenerating] = useState(false);
   const [error,      setError]      = useState('');
@@ -187,9 +192,14 @@ export default function NewGroupEvent() {
         ? { type: 'custom', time: customTime, windowMinutes: customWindow }
         : { type: timeOfDay };
 
+      const attendeeIds = attendees.map(a => a.user_id);
+      const quorumThreshold = quorumMode === 'unanimous'
+        ? attendeeIds.length
+        : Math.ceil(attendeeIds.length / 2);
+
       const { itineraryId } = await createGroupItinerary({
         group_id:            selectedGroupId,
-        attendee_user_ids:   attendees.map(a => a.user_id),
+        attendee_user_ids:   attendeeIds,
         date_range_start:    startDate,
         date_range_end:      endDate,
         time_of_day:         timePayload,
@@ -202,6 +212,9 @@ export default function NewGroupEvent() {
           ? destination.trim()
           : null,
         trip_duration_days:  tripDurationDays,
+        quorum_threshold:    quorumThreshold,
+        tie_behavior:        tieBehavior,
+        nudge_after_hours:   parseInt(nudgeAfterHours),
         timezoneOffsetMinutes: new Date().getTimezoneOffset(),
       });
 
@@ -547,6 +560,91 @@ export default function NewGroupEvent() {
                 {TRAVEL_OPTIONS.map(opt => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
+              </select>
+            </div>
+
+            {/* ── Voting rules ── */}
+            <div className="form-group">
+              <label className="form-label">Quorum</label>
+              <div className="radio-group">
+                <label className={`radio-item${quorumMode === 'majority' ? ' radio-item--checked' : ''}`}>
+                  <input
+                    type="radio"
+                    name="quorumMode"
+                    value="majority"
+                    checked={quorumMode === 'majority'}
+                    onChange={() => setQuorumMode('majority')}
+                    disabled={generating}
+                  />
+                  <span>
+                    Simple majority
+                    <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-4)', marginTop: 1 }}>
+                      {attendees.length > 0
+                        ? `${Math.ceil(attendees.length / 2)} of ${attendees.length} votes needed`
+                        : 'Set after adding attendees'}
+                    </span>
+                  </span>
+                </label>
+                <label className={`radio-item${quorumMode === 'unanimous' ? ' radio-item--checked' : ''}`}>
+                  <input
+                    type="radio"
+                    name="quorumMode"
+                    value="unanimous"
+                    checked={quorumMode === 'unanimous'}
+                    onChange={() => setQuorumMode('unanimous')}
+                    disabled={generating}
+                  />
+                  <span>
+                    Unanimous
+                    <span style={{ display: 'block', fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-4)', marginTop: 1 }}>
+                      All attendees must agree
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">If there's a tie</label>
+              <div className="radio-group">
+                <label className={`radio-item${tieBehavior === 'schedule' ? ' radio-item--checked' : ''}`}>
+                  <input
+                    type="radio"
+                    name="tieBehavior"
+                    value="schedule"
+                    checked={tieBehavior === 'schedule'}
+                    onChange={() => setTieBehavior('schedule')}
+                    disabled={generating}
+                  />
+                  <span>Lock it in anyway</span>
+                </label>
+                <label className={`radio-item${tieBehavior === 'decline' ? ' radio-item--checked' : ''}`}>
+                  <input
+                    type="radio"
+                    name="tieBehavior"
+                    value="decline"
+                    checked={tieBehavior === 'decline'}
+                    onChange={() => setTieBehavior('decline')}
+                    disabled={generating}
+                  />
+                  <span>Skip the suggestion</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="nudge-hours">Remind attendees after</label>
+              <select
+                id="nudge-hours"
+                className="form-control"
+                value={nudgeAfterHours}
+                onChange={e => setNudgeAfterHours(e.target.value)}
+                disabled={generating}
+              >
+                <option value="24">24 hours</option>
+                <option value="48">48 hours</option>
+                <option value="72">72 hours</option>
+                <option value="168">1 week</option>
               </select>
             </div>
 
