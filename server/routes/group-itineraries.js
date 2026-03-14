@@ -344,16 +344,17 @@ async function fetchGroupHistory(groupId, supabase, limit = 3) {
 /**
  * Insert a notification row. Best-effort — failures never block the primary action.
  */
-async function insertNotification(supabase, userId, type, tier, title, body, data) {
+async function insertNotification(supabase, userId, type, tier, title, body, data, actionUrl) {
   try {
     await supabase.from('notifications').insert({
-      user_id: userId,
+      user_id:    userId,
       type,
       tier,
       title,
       body,
-      data: data || null,
-      read: false,
+      data:       data || null,
+      action_url: actionUrl || null,
+      read:       false,
     });
   } catch (e) {
     console.warn('[group-itineraries] insertNotification failed:', e.message);
@@ -720,6 +721,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         `${organizerName} wants to plan ${eventName}`,
         `${organizerName} sent you some plans to review. Tap to vote.`,
         { group_itinerary_id: req.params.id },
+        `/group-itineraries/${req.params.id}`,
       )
     ));
 
@@ -862,13 +864,21 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       Object.keys(itin.attendee_statuses || {}).map(id => [id, 'pending'])
     );
 
+    // When already awaiting_responses, APPEND new suggestions to the existing set
+    // (capped at 6 total) so suggestions attendees have already seen are preserved.
+    // In organizer_draft, replace entirely — nothing has been sent yet.
+    const MAX_SUGGESTIONS = 6;
+    const mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
+      ? [...(itin.suggestions || []), ...newSuggestions].slice(0, MAX_SUGGESTIONS)
+      : newSuggestions;
+
     const { error: updateErr } = await supabase
       .from('group_itineraries')
       .update({
-        suggestions:          newSuggestions,
-        changelog:            updatedChangelog,
-        reroll_count:         (itin.reroll_count || 0) + 1,
-        attendee_statuses:    resetStatuses,
+        suggestions:            mergedSuggestions,
+        changelog:              updatedChangelog,
+        reroll_count:           (itin.reroll_count || 0) + 1,
+        attendee_statuses:      resetStatuses,
         selected_suggestion_id: null,
         // If already awaiting_responses, keep it there. If in draft, keep draft.
         // Do NOT transition backward to organizer_draft on a reroll.
@@ -881,6 +891,55 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     res.json({ suggestions: newSuggestions });
+  });
+
+  /* ── GET /group-itineraries ───────────────────────────────────────────── */
+  // Returns all group itineraries where the caller is organizer OR attendee.
+  // Organizer sees all statuses (organizer_draft, awaiting_responses, locked, cancelled).
+  // Attendees only see awaiting_responses, locked (not draft — not sent to them yet).
+  app.get('/group-itineraries', requireAuth, async (req, res) => {
+    // Fetch as organizer
+    const { data: asOrganizer } = await supabase
+      .from('group_itineraries')
+      .select('id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id')
+      .eq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+
+    // Fetch as attendee — fetch all rows in relevant statuses not organized by this user,
+    // then filter in JS for those where the caller's ID is a key in attendee_statuses.
+    const { data: potentialAttendee } = await supabase
+      .from('group_itineraries')
+      .select('id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id')
+      .in('itinerary_status', ['awaiting_responses', 'locked'])
+      .neq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+    const asAttendee = (potentialAttendee || []).filter(r => req.userId in (r.attendee_statuses || {}));
+
+    // Merge and deduplicate (shouldn't overlap but be safe).
+    const all = [...(asOrganizer || [])];
+    for (const row of (asAttendee || [])) {
+      if (!all.find(r => r.id === row.id)) all.push(row);
+    }
+
+    // Load organizer profiles for display.
+    const organizerIds = [...new Set(all.map(r => r.organizer_id))];
+    const { data: profiles } = organizerIds.length
+      ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', organizerIds)
+      : { data: [] };
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    const itineraries = all.map(itin => ({
+      ...itin,
+      is_organizer: itin.organizer_id === req.userId,
+      organizer: profileMap[itin.organizer_id]
+        ? { id: profileMap[itin.organizer_id].id, full_name: profileMap[itin.organizer_id].full_name }
+        : { id: itin.organizer_id },
+      my_vote: itin.organizer_id !== req.userId
+        ? (itin.attendee_statuses?.[req.userId] || 'pending')
+        : null,
+    }));
+
+    res.json({ itineraries });
   });
 
   /* ── GET /group-itineraries/:id ───────────────────────────────────────── */

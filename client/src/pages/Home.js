@@ -181,11 +181,12 @@ export default function Home() {
   // value is stable by the time Home mounts.
   const showOnboardingBanner = isOnboardingCompleted() === false;
 
-  const [nudges,    setNudges]    = useState([]);
-  const [friends,   setFriends]   = useState([]);
-  const [allItins,  setAllItins]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [error,     setError]     = useState('');
+  const [nudges,       setNudges]       = useState([]);
+  const [friends,      setFriends]      = useState([]);
+  const [allItins,     setAllItins]     = useState([]);
+  const [groupItins,   setGroupItins]   = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState('');
   const [activeTab,    setActiveTab]    = useState('waiting_you');
   // How many items are currently visible in the active tab.
   // Starts at INITIAL_VISIBLE and grows by INITIAL_VISIBLE on each "Load more" click.
@@ -198,15 +199,17 @@ export default function Home() {
     let mounted = true;
     async function load() {
       try {
-        const [nudgesRes, friendsRes, itinsRes] = await Promise.allSettled([
+        const [nudgesRes, friendsRes, itinsRes, groupItinsRes] = await Promise.allSettled([
           client.get('/nudges/pending'),
           client.get('/friends'),
           client.get('/schedule/itineraries'),
+          client.get('/group-itineraries'),
         ]);
         if (!mounted) return;
-        if (nudgesRes.status === 'fulfilled')  setNudges(nudgesRes.value.data?.nudges ?? []);
-        if (friendsRes.status === 'fulfilled') setFriends(friendsRes.value.data?.friends ?? []);
-        if (itinsRes.status === 'fulfilled')   setAllItins(itinsRes.value.data?.itineraries ?? []);
+        if (nudgesRes.status === 'fulfilled')      setNudges(nudgesRes.value.data?.nudges ?? []);
+        if (friendsRes.status === 'fulfilled')     setFriends(friendsRes.value.data?.friends ?? []);
+        if (itinsRes.status === 'fulfilled')       setAllItins(itinsRes.value.data?.itineraries ?? []);
+        if (groupItinsRes.status === 'fulfilled')  setGroupItins(groupItinsRes.value.data?.itineraries ?? []);
         // PostHog targeting event — used by in-app tooltip triggers
         const itins   = itinsRes.status === 'fulfilled' ? (itinsRes.value.data?.itineraries ?? []) : [];
         const waiting = itins.filter(i => deriveTab(i) === 'waiting_you');
@@ -338,6 +341,57 @@ export default function Home() {
                 </section>
               )}
 
+              {/* Group event pills */}
+              {groupItins.length > 0 && (
+                <section className="section">
+                  <div className="section-title">
+                    Group Events
+                    <Link to="/groups" className="section-link">View groups →</Link>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {groupItins.map(gi => {
+                      const firstSug = gi.suggestions?.[0];
+                      let badge, badgeCls;
+                      if (gi.is_organizer) {
+                        if (gi.itinerary_status === 'organizer_draft') { badge = 'draft'; badgeCls = 'badge--gray'; }
+                        else if (gi.itinerary_status === 'awaiting_responses') { badge = 'waiting for votes'; badgeCls = 'badge--gray'; }
+                        else if (gi.itinerary_status === 'locked') { badge = 'locked'; badgeCls = 'badge--green'; }
+                        else { badge = gi.itinerary_status; badgeCls = 'badge--gray'; }
+                      } else {
+                        if (gi.my_vote === 'pending') { badge = 'vote needed'; badgeCls = 'badge--amber'; }
+                        else if (gi.my_vote === 'accepted') { badge = 'voted'; badgeCls = 'badge--gray'; }
+                        else if (gi.itinerary_status === 'locked') { badge = 'locked'; badgeCls = 'badge--green'; }
+                        else { badge = gi.my_vote || 'pending'; badgeCls = 'badge--gray'; }
+                      }
+                      return (
+                        <Link key={gi.id} to={`/group-itineraries/${gi.id}`} className="itinerary-card">
+                          <div className="avatar avatar--sm">{getInitials(gi.organizer?.full_name || '')}</div>
+                          <div className="itinerary-card__body">
+                            <div className="itinerary-card__title">
+                              {gi.event_title || 'Group Event'}
+                              {!gi.is_organizer && gi.organizer?.full_name && (
+                                <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> · {gi.organizer.full_name}</span>
+                              )}
+                            </div>
+                            <div className="itinerary-card__meta">
+                              {firstSug?.date && <span>{formatDate(firstSug.date)}</span>}
+                              {firstSug?.neighborhood && (
+                                <>
+                                  <span className="itinerary-card__dot" />
+                                  <span>{firstSug.neighborhood}</span>
+                                </>
+                              )}
+                              <span className="itinerary-card__dot" />
+                              <span className={`badge ${badgeCls}`}>{badge}</span>
+                            </div>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               {/* Tabbed itinerary list */}
               {allItins.length > 0 && (
                 <section className="section">
@@ -402,7 +456,7 @@ export default function Home() {
               )}
 
               {/* Empty state — first time the user has no plans, nudges, or friends */}
-              {allItins.length === 0 && nudges.length === 0 && friends.length === 0 && (
+              {allItins.length === 0 && groupItins.length === 0 && nudges.length === 0 && friends.length === 0 && (
                 <div className="card card-pad">
                   <div className="empty-state">
                     <div className="empty-state__icon">📅</div>

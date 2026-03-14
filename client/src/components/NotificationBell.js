@@ -19,6 +19,7 @@ const TYPE_ICON = {
   itinerary_declined:  '❌',
   itinerary_reroll:    '🔄',
   group_invite:        '🎉',
+  group_event_invite:  '📅',
 };
 
 export default function NotificationBell() {

@@ -422,6 +422,7 @@ export default function GroupItineraryView() {
   const [rerolling,   setRerolling]   = useState(false);
   const [actingCard,  setActingCard]  = useState(null); // suggestion.id currently voting
   const [actionError, setActionError] = useState('');
+  const [sentSuccess, setSentSuccess] = useState(false);
 
   /** Fetch (or re-fetch) the itinerary from the server. */
   const load = useCallback(async () => {
@@ -443,6 +444,8 @@ export default function GroupItineraryView() {
     setActionError('');
     try {
       await sendGroupItinerary(id);
+      setSentSuccess(true);
+      setTimeout(() => setSentSuccess(false), 4000);
       load();
     } catch (e) {
       setActionError(e.message || 'Could not send itinerary.');
@@ -676,6 +679,21 @@ export default function GroupItineraryView() {
 
           {/* Status banner */}
           <StatusBanner />
+
+          {sentSuccess && (
+            <div
+              className="alert"
+              style={{
+                background: 'var(--success-bg, #d1fae5)',
+                border: '1px solid var(--success, #059669)',
+                color: 'var(--success-text, #065f46)',
+                marginBottom: 16,
+                fontWeight: 500,
+              }}
+            >
+              Sent to group! Waiting for votes.
+            </div>
+          )}
 
           {actionError && (
             <div className="alert alert--error" style={{ marginBottom: 16 }}>{actionError}</div>
