@@ -1,4 +1,204 @@
-## Session Notes (March 12–13, 2026 — output quality sprint)
+## Status & Session Notes
+
+Updated at the end of every significant session. Two parallel systems:
+1. Google Calendar all-day event: "Rendezvous Save State — [description]" with git SHA + summary
+2. Entry appended here with the same information
+
+GCal is the mobile fallback when STATUS.md can't be updated directly. At the start of each session, check GCal for save states newer than the last STATUS.md entry and backfill here before proceeding.
+
+ROADMAP.md is the source of truth for prioritization. STATUS.md is the historical log — if they conflict, ROADMAP.md wins.
+
+---
+
+## March 14, 2026 — 56-item audit results received
+SHA: pending (changes deployed, commit pending)
+
+Audit corrections vs. what ROADMAP previously said:
+- Route path typos: already fixed before audit ran — both routes correct in current code
+- SharedProfile /u/:username: DONE (App.js:149) — was incorrectly listed as outstanding
+- No-duplicate-venues: confirmed NOT in either prompt builder — STATUS.md was wrong
+- classifyIntent(''): confirmed returns home_likely not ambiguous — fix needed
+- GCal event UUID: confirmed missing from createCalendarEventForUser — fix needed
+- Delete draft in ItineraryView (1:1): confirmed NOT DONE — only on Home screen
+- Title PATCH: route reachable (typo fixed), but catch block swallows errors silently — PARTIAL
+
+Confirmed done by audit (44/56 items):
+- All output quality / prompt engineering items (contextPrompt position, shared interests, persona, dietary/mobility constraints, deriveGeoContext, exactMatchBlock, buildVenueSubstitutionBlock, fetchAcceptedPairHistory, themeMatchesContextPrompt, structured telemetry)
+- All venue enrichment items (enrichVenues, enrichment wired in suggest + reroll, verified badge, tooltip, formatted_address, server-side key)
+- All group mode items (GET includes group_name, DELETE with guards, deriveGroupTab, 👥 indicator, handleDeleteDraft routing, [group] — [title] format, responses visible to all, vote labels, re-roll visibility, /group-event/new route, live-search group picker, + New Group Event button)
+- Auth/session items (initSessionFromUrl before /auth/me, OnboardingRedirector, setOnboardingCompleted)
+- QoL items (BugReportButton, + Generate More, inline title edit, SharedProfile route, onboarding route, PostHog init + identify, PageViewTracker, visibleCount/load more, attendee_suggestion_map)
+
+---
+
+## March 14, 2026 — Delete draft button commit 6d89f8d
+SHA: 6d89f8d
+
+Fixed:
+- GroupItineraryView.js: inline delete confirmation row (3 state vars, handleDeleteDraft, no modal)
+- Server: DELETE /group-itineraries/:id already existed with correct guards — no changes needed
+- Both 1:1 and group delete now live inside the itinerary detail view, consistent behavior across modes
+
+Remaining active bugs:
+- Group invite search submit button + confirmation still missing
+
+---
+
+## March 14, 2026 — Bug batch commit 5eaeed2
+SHA: 5eaeed2
+
+Fixed (all 6 confirmed shipped):
+- findFreeWindows date clustering — 3-bucket sampling in both findFreeWindows and findFreeWindowsForGroup
+- No-duplicate-venues instruction — added to both prompt builders; single-card rerolls explicitly exempted
+- classifyIntent('') — now returns ambiguous (was home_likely)
+- GCal event description — itinerary UUID appended at all createCalendarEventForUser call sites
+- Suggestion count fallback — "exactly 3" + window-reuse instruction in both prompt builders
+- ItineraryView title save error handling — input stays open, inline error shown, console.error added; GroupItineraryView TODO comment added
+
+Remaining active bugs:
+- Delete draft button not in ItineraryView (1:1 view) — prompt in CLAUDE_CODE_PROMPTS.md
+- Group invite search submit button + confirmation still missing
+
+---
+
+## March 14, 2026 — 56-item audit results reconciled
+SHA: d476b21
+GCal event: "Rendezvous Save State — Beta Launch + 56-Item Audit"
+
+56-item audit confirmed status (44 DONE · 4 PARTIAL/UNCLEAR · 8 NOT DONE):
+
+Confirmed fixed (previously thought to be bugs):
+- Route path typos in schedule.js — both already correct in code
+- /u/:username route — already registered in App.js:149
+
+Confirmed NOT DONE (fix these next, in priority order):
+- findFreeWindows date clustering — sequential fill, no date spread
+- No-duplicate-venues instruction — absent from both buildSuggestPrompt and buildGroupSuggestPrompt (STATUS.md was wrong)
+- classifyIntent('') → home_likely, should be ambiguous
+- Google Calendar event description missing itinerary UUID
+- Delete draft button not in ItineraryView (1:1) — Home screen only
+- 1:1 suggestions returning fewer than 3
+- Event title PATCH silent catch — route reachable but errors swallowed
+- Group invite search submit/confirmation still missing
+- Dev switcher onboarding drop — unverified (can't confirm from code alone)
+
+New items shipped in this session (second Claude Code run):
+- Group member vote responses visible to all (not gated on isOrganizer)
+- Group + 1:1 events comingled on home screen (4-tab layout, 👥 badge)
+- DELETE /group-itineraries/:id route
+- + New Group Event home screen button with live-search group picker
+- Attendee re-roll button visibility fix
+
+---
+
+## March 14, 2026 — Second Claude Code session + 56-item audit
+SHA: pending commit
+Production: https://rendezvous-gamma.vercel.app
+
+Shipped:
+- Group member vote responses visible to all (removed isOrganizer gate)
+- Group + 1:1 events comingled on home screen (same 4-tab layout, 👥 badge)
+- DELETE /group-itineraries/:id (organizer-only, draft-only)
+- + New Group Event button on home screen with live-search group picker
+- Attendee re-roll button visibility fix
+- ROADMAP.md updated: MCP note added to manual busy blocks, Tier 2 #9 (home screen sorting) added
+- 56-item status audit completed
+
+Audit findings — confirmed bugs not yet fixed:
+- Route path typo (HIGH): /schedule/itinerary:id missing slash — PATCH title and DELETE are unreachable
+- findFreeWindows date clustering (all suggestions near start of window)
+- No-duplicate-venues instruction confirmed missing from both prompt builders (STATUS.md was wrong)
+- classifyIntent('') returns home_likely not ambiguous
+- GCal event description missing itinerary UUID
+- Group invite search: no submit button, no confirmation
+- /u/:username → 404 (route and endpoint both missing)
+- Dev switcher + onboarding drop + PATCH /users/location 404
+
+---
+
+## March 14, 2026 — Tier 1 review, docs restructure, roadmap updates
+SHA: not yet committed (session in progress)
+Production: https://rendezvous-gamma.vercel.app
+
+Completed:
+- Reviewed Claude Code Tier 1 output: bug report button, group invite notification, group friend search, PostHog targeting events — all approved
+- Removed nodemailer from bugReport.js (DB write only for beta)
+- Identified 3 bugs from beta testing: group invite search UX, shared profile link 404, dev switcher onboarding drop
+- Wrote Claude Code prompts for all 3 bugs
+- Created CLAUDE_CODE_PROMPTS.md with saved prompts for: remote mode, delete draft (1:1), delete draft (group)
+- Added Audit 4 (parity/consistency audit before wider rollout) to ROADMAP.md
+- Rebuilt README.md as a proper file map and reference index
+- Added GCal/STATUS sync protocol to STATUS.md header
+- Backfilled STATUS.md entries from GCal save states (Pre-Audit 3, Pre-Launch, Tier 1 Beta Start)
+
+Next: Claude Code finishes bug fixes → commit/push → Vercel verify → save state → Tier 2
+
+---
+
+## March 14, 2026 — Pre-Launch / Share with Real Users
+SHA: 5ab29a1
+GCal event: "Rendezvous Save State — Pre-Launch (Share with Real Users)"
+
+Completed:
+- Audit 3: 2 HIGH (prompt injection) + 1 WARN (ghost votes) fixed
+- New-user onboarding: 3-step flow (profile, location, notifications)
+  - PATCH /users/onboarding-complete, PATCH /users/location
+  - OnboardingRedirector in App.js
+  - onboarding_completed PostHog event
+  - Finish setup banner in Home.js
+- All 10 release gate steps complete
+- App shared with real users
+
+Post-launch WARN items (non-blocking, logged in ROADMAP):
+- RATE_LIMIT_EXEMPT → move to env var
+- INJECTION_RE multiline coverage
+- tags field cleanup
+- Promise.all parallelization
+- schedule.js file split
+
+Next: Tier 1 beta work (bug report, group invite UI, PostHog events)
+
+---
+
+## March 14, 2026 — Tier 1 Beta Work Starting
+SHA: b9b912a
+GCal event: "Rendezvous Save State — Tier 1 Beta Work Starting"
+
+Completed:
+- Mobile responsiveness: bottom tab bar, overflow-x fixes
+- ROADMAP restructured into Tier 1/2/3 priority order
+- BETA_TESTING.md created with tester process, feedback links, bug bash plan
+- Group mode UX gaps logged (friend search dropdown, voting rules, ad-hoc attendees, group invite notification)
+- Micro-adjustment reroll spec added
+- Manual busy blocks spec added
+- Live events moved to Tier 2, email notifications added to Tier 3
+- Travel duration picker gap logged
+
+Tier 1 Claude Code prompt submitted (4 items):
+1. Bug report + feedback floating buttons
+2. Group invite notification frontend
+3. Group friend search dropdown
+4. PostHog targeting events (home_view_loaded, itinerary_view_loaded, friends_view_loaded)
+
+Next: Tier 1 output review → Tier 2 (travel duration picker, voting rules UI)
+
+---
+
+## March 14, 2026 — Pre-Audit 3
+SHA: ed5c605
+GCal event: "Rendezvous Save State — Pre-Audit 3"
+
+Completed:
+- Group mode frontend: Groups tab, GroupDetail, NewGroupEvent, GroupItineraryView
+- Voting UI, draft→send flow, group edit + default_activities
+- Automated QA: 14/14 passing (server/tests/qa-automated.js), classifyIntent bug fixed
+- PostHog: SDK wired, identify() on auth, 4 core events instrumented
+
+Next: Audit 3 (full pre-launch security/privacy/DR audit)
+
+---
+
+## March 12–13, 2026 — Output quality sprint
 
 ### Completed this session
 

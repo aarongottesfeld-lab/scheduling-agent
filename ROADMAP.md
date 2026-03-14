@@ -1,5 +1,5 @@
 # Rendezvous — Product Roadmap
-Last updated: March 14, 2026
+Last updated: March 14, 2026 — reconciled against GCal save states and STATUS.md backfill
 
 Full product roadmap: audit schedule, release gating, and the complete feature backlog
 in priority order. For detailed design specs on each sprint (architecture, data model,
@@ -89,7 +89,19 @@ standard security/privacy/DR categories, Claude Code should evaluate:
     - Competitive analysis for alternative tools (Mixpanel, Amplitude, etc.) deferred to
       post-launch — PostHog free tier is sufficient for early signal gathering
 
-**Audit 4 — Before App Store submission**
+**Audit 4 — Before wider rollout (>20–30 users)**
+Trigger: before expanding beyond the initial beta group. By this point group mode, remote mode, and 1:1 mode will all be live and diverging. The primary focus of this audit is feature parity and behavioral consistency across planning modes — not security (covered in Audit 3).
+
+Parity sweep scope:
+- Enumerate every user-facing feature across 1:1 (ItineraryView / schedule.js), group (GroupItineraryView / group-itineraries.js), and remote mode
+- For each feature, verify behavior is consistent: same UX patterns, same inline confirmation flows, same error handling, same telemetry events
+- Known parity surface area to check at minimum: delete draft button, reroll UX, send flow, status banners, PostHog events, travel/location mode options
+- Flag any feature that exists in one mode but is absent or degraded in another — each gap should be a deliberate decision, not an oversight
+- Review CLAUDE_CODE_PROMPTS.md to confirm all saved prompts include parity instructions before they are executed
+
+Secondary scope: prompt consistency audit — verify that buildSuggestPrompt (schedule.js) and buildGroupSuggestPrompt (group-itineraries.js) are structurally in sync. New prompt features (remote mode block, cultural moment anchoring, activity venue injection, etc.) should exist in both or have an explicit reason for the asymmetry.
+
+**Audit 5 — Before App Store submission**
 Trigger: when React Native migration is complete and App Store submission is being
 prepared. Scope shifts to include Apple's data privacy requirements, privacy nutrition
 label accuracy, ATT (App Tracking Transparency) if applicable, deep link security, and
@@ -157,35 +169,24 @@ event schema we're building is compatible.
 
 ---
 
-## 🔴 Next Up (after current testing pass)
+## 🔴 Next Up (current beta phase)
 
-- [x] **Session persistence** — Supabase sessions table, HTTP-only cookie, requireAuth DB lookup. DONE March 12.
-- [x] **Switch OAuth handoff** from URL params to HTTP-only cookie. DONE March 12 (combined with session persistence).
-- [ ] **friends.js:186** — privacy fix before sharing with anyone new (High / Privacy) ← START HERE
-- [ ] **Vercel deployment** — connect GitHub repo, set env vars, verify all routes
-- [ ] **HTTP referrer restriction** on Google Maps API key (needs live Vercel URL)
-- [ ] **Tighten RLS** — `notifications_service_role_all` currently `USING(true)`, fix before deploy
-- [x] **Switch OAuth handoff** from URL params to HTTP-only cookie. DONE March 12.
+- [x] **Session persistence** — DONE March 12.
+- [x] **Switch OAuth handoff** — HTTP-only cookie. DONE March 12.
+- [x] **friends.js:186** — privacy fix. DONE March 12 (Audit 2).
+- [x] **Vercel deployment** — DONE March 12.
+- [x] **Tighten RLS** — notifications_service_role_all fixed. DONE March 12 (Audit 2).
+- [ ] **HTTP referrer restriction** on Maps API key — still outstanding. Requires splitting into two keys (server-side key stays unrestricted; new browser key gets referrer lock). Full spec in Maps JS section of beta backlog below.
+- [ ] **Active bugs — see "Active bugs — confirmed by 56-item audit" section in Testing Needed below for the full prioritized list.**
 
 ---
 
 ## 🟡 Feature Backlog (prioritized)
 
 ### Group Planning
-> ⚠️ BEFORE STARTING THIS SECTION: Bring ROADMAP.md and SPRINT_SPECS.md into a Claude.ai session and ask for a full scoping review. Group planning is the most complex item on the roadmap — new DB tables, three decision modes, vote logic, batched notifications, and significant ItineraryView changes. Confirm requirements, surface hidden complexity, and agree on implementation sequencing BEFORE handing anything to Claude Code.
+> ✅ DONE — March 14, 2026. Implemented using a separate `group_itineraries` table (not the `itinerary_participants` approach originally specced — see GROUP_MODE_SCHEMA.md for the final schema and rationale). Groups tab, GroupDetail, NewGroupEvent, GroupItineraryView, voting UI, draft→send flow, comment threads, quorum logic, tie-breaking, ghost vote cleanup all shipped. 14/14 automated QA tests passing.
 >
-> One organizer, N participants. Everyone sees the same suggestion set. Decision mode set at creation.
-- [ ] DB: add `itinerary_participants` table (id, itinerary_id, user_id, role, status, voted_for, joined_at, responded_at)
-- [ ] DB: add to `itineraries`: group_size, decision_mode (organizer_picks | majority_vote | unanimous), vote_deadline, voting_closed_at
-- [ ] NewEvent: multi-friend selector (up to 6)
-- [ ] NewEvent: decision mode radio cards — "Organizer picks" / "Majority vote" / "Everyone must agree"
-- [ ] NewEvent: vote-by deadline picker (shown for vote/unanimous modes)
-- [ ] Suggestion engine: support N user profiles in prompt
-- [ ] ItineraryView — organizer_picks mode: identical to 1:1, only organizer's pick triggers lock
-- [ ] ItineraryView — majority_vote mode: live vote tally per card, "Vote for this" button, organizer can close early, deadline countdown badge
-- [ ] ItineraryView — unanimous mode: per-person accept/decline chips per card, locks when all green, any decline reopens for reroll
-- [ ] Reroll in group context: any participant can propose reroll on non-winning card; vote mode resets votes; unanimous mode resets all statuses on that card
-- [ ] Notifications: batched responses (don't ping organizer once per person), deadline reminders to non-responders only, unresolved flag on deadline pass
+> Known UX gaps logged below in "Group mode — UX gaps" section.
 
 ### Output Quality & Suggestion Depth
 > Full spec in SPRINT_SPECS.md. Suggestion and route quality are the primary retention driver — a technically working app with mediocre plans gets abandoned. Target: user reads the first suggestion on the first try and thinks "yeah, that actually sounds like us."
@@ -200,7 +201,7 @@ event schema we're building is compatible.
 - [x] Reroll: ensure `singleCardNote` and `contextPrompt` are treated as highest-priority carry-forward. DONE — single-card reroll treated as near-literal instruction via exactMatchBlock.
 - [x] Home-based itinerary support — `classifyIntent()` routes home_likely / activity_specific / ambiguous. Home split: 2 home + 1 venue for home_likely. 🏠 badge on home cards. DONE.
 - [x] Venue substitution — `buildVenueSubstitutionBlock()` instructs Claude to find closest match when named venue unavailable, with honest note field. DONE.
-- [x] No duplicate venues rule added to buildSuggestPrompt. DONE.
+- [x] No duplicate venues rule added to buildSuggestPrompt. **NOTE: 56-item audit (March 14) confirmed this is NOT present in either prompt builder. STATUS.md was wrong. Fix is in the active bugs list above.**
 - [x] **Feed past accepted itineraries as context** — `fetchAcceptedPairHistory()` queries locked itineraries for the pair (both directions), injects top 3 as "WHAT HAS WORKED FOR THIS PAIR BEFORE" block in prompt. Used as taste signal only — explicit instruction to not repeat venues or plans. Called in both suggest and reroll routes. DONE.
 - [x] **Short-circuit validation** — `themeMatchesContextPrompt()` checks keyword match against title+narrative+tags. If `activity_specific` intent and no match, retries once with a hard RETRY instruction block. Applies to both suggest and reroll routes. Reroll uses stored `context_prompt` as fallback match target. Comment fences mark retry points for telemetry wiring. DONE.
 - [ ] **Haiku vs Sonnet QA pass** — test a set of real prompts (empty, vague, specific, home-based, named venue) in both dev (Haiku) and prod (Sonnet) and document quality delta.
@@ -279,68 +280,12 @@ event schema we're building is compatible.
   returning 'micro_adjust' | 'full_replace' | 'ambiguous'
 
 ### Location Awareness & Travel Mode
-> Full spec in SPRINT_SPECS.md. Core design principle: intent over distance sensing. 8 miles means different things in NYC vs Buffalo. The organizer declares the mode — the system never tries to infer it from coordinates.
-
-**Local mode — where to meet (applies to all itineraries, not just long-distance)**
-- [ ] Add `location_preference` column to `itineraries` table — enum: `closer_to_organizer | closer_to_attendee | system_choice | destination`
-- [ ] NewEvent: add "Where should you meet?" step with 3-button selector (Closer to me / Closer to them / Up to the system)
-- [ ] Update `buildSuggestPrompt` to anchor Places API search to the correct location based on `location_preference`
-- [ ] System choice: compute midpoint between profile locations using Geocoding API (already enabled), anchor to that
-
-**Travel mode — destination planning**
-- [ ] Add `travel_mode` column to `itineraries` — enum: `local | travel`, default `local`
-- [ ] Add `destination` column — text, nullable
-- [ ] Add `trip_duration_days` column — int, default 1
-- [ ] NewEvent: add Local | Travel toggle; Travel mode shows same 3-button selector + duration picker
-      KNOWN GAP: duration picker currently shows "1 day / Weekend / Longer" as static options.
-      Needs to allow user to specify an exact number of days or a day range (e.g. 3 days, 4–5 days).
-      Options: numeric stepper (1–14), or a range picker (min days / max days). Resolve UX before building.
-- [ ] "Closer to me / Closer to them" in travel mode: anchor Places API to organizer's or attendee's city
-- [ ] "Somewhere new": 2-step generation flow — first prompt asks Claude to suggest 3 destination options with rationale; organizer picks one; second prompt generates full itinerary for that destination
-- [ ] Update suggestions JSONB to support day grouping for multi-day trips: `{ days: [{ day, label, stops: [...] }] }` — single-day trips use one-entry array for schema consistency
-- [ ] ItineraryView: day-grouped rendering for multi-day itineraries
-- [ ] Multi-day itinerary prompts: include travel logistics awareness (fly vs drive, realistic arrival/departure on day 1 and last day), accommodation area suggestions (links only, no booking)
-
-**Cost estimates (paired with travel mode)**
-- [ ] Trip mode: detect when `travel_mode = 'travel'` — add flight/train/lodging cost estimates to suggestion output
-- [ ] See Cost Estimates section below for full spec
+> ✅ DONE — March 13, 2026. location_preference, travel_mode, trip_duration_days, destination columns added to itineraries and group_itineraries. NewEvent UI updated with Local/Travel toggle, where-to-meet selector, duration picker, destination input. buildSuggestPrompt updated with location anchoring and travel mode blocks. Multi-day JSONB schema (days array) shipped. ItineraryView day-grouped rendering done. Backward-compat shim for pre-migration rows in place.
+>
+> Known gap: trip duration picker uses static presets (1 day / Weekend / Longer). Needs exact day count or range input — logged in Tier 2 below.
 
 ### New-User Onboarding Flow
-> First-time users who skip profile setup produce worse itineraries and are more likely to churn. The onboarding flow gates the core experience on three things: profile customization, location, and notification permission. All three directly affect suggestion quality or engagement — this isn't vanity onboarding, it's functional.
->
-> Build before sharing with real users. The flow should feel fast — 3 steps, no walls of text.
-
-**Step 1 — Profile setup**
-- [ ] Detect first login (no `bio`, `activity_preferences`, or `favorite_places` on profile row)
-- [ ] Redirect to `/onboarding` after OAuth if profile is incomplete
-- [ ] Step 1 UI: name (pre-filled from Google), activity preference pills (multi-select from a curated list), dietary restrictions (optional), bio (optional)
-- [ ] Persist to `profiles` table on continue — partial saves OK, user can skip optional fields
-
-**Step 2 — Location**
-- [ ] Request browser geolocation (`navigator.geolocation.getCurrentPosition`)
-- [ ] On grant: reverse-geocode via Geocoding API → populate `profiles.location` with neighborhood/city string
-- [ ] On deny: show manual text input fallback — "Where are you based? (e.g. Upper West Side, NYC)"
-- [ ] Location is required to proceed — without it, suggestions have no geographic anchor
-- [ ] Privacy note inline: "Used only to suggest nearby venues. Never shared with other users."
-
-**Step 3 — Notifications**
-- [ ] Request Web Push notification permission (`Notification.requestPermission()`)
-- [ ] On grant: register service worker push subscription, store endpoint in `push_subscriptions` table
-  - New table: `push_subscriptions` — id, user_id (FK → profiles), endpoint, keys (jsonb: p256dh + auth), created_at. RLS: users can only access their own subscriptions.
-- [ ] On deny: show non-blocking message — "You can enable notifications later in your browser settings"
-- [ ] Do not block progression on deny — notification permission is opt-in, not a gate
-- [ ] Privacy note inline: "Only used for itinerary updates and friend activity."
-
-**Completion + re-entry**
-- [ ] On completion: set `onboarding_completed_at` timestamp on profiles row (new column)
-- [ ] PostHog event: `onboarding_completed` with properties: `location_granted` (bool), `notification_granted` (bool), `preferences_count` (int)
-- [ ] If user navigates away mid-flow: resume from last completed step on next login
-- [ ] Skip link available on steps 1 and 3 (not step 2 — location is required)
-- [ ] Returning users who never completed onboarding: surface a non-intrusive banner on Home with "Finish setting up your profile →" link
-
-**DB changes**
-- [ ] Add `onboarding_completed_at` (timestamptz, nullable) to `profiles` table
-- [ ] Add `push_subscriptions` table with RLS (users can insert/select/delete their own rows only)
+> ✅ DONE — March 14, 2026. 3-step flow (profile, location, notifications) shipped. PATCH /users/onboarding-complete, PATCH /users/location routes added. OnboardingRedirector in App.js. onboarding_completed PostHog event. Finish setup banner in Home.js. push_subscriptions table created (permission granted path stores subscription; delivery is a separate sprint). onboarding_completed_at column added to profiles.
 
 ### Turn-based Iteration + Mutual Planning
 - [ ] Add `current_turn` field (organizer | attendee) to itineraries
@@ -428,14 +373,7 @@ require a CASA Tier 2 third-party security assessment (~$75–150 one-time cost)
 
 **Prerequisites — complete all before submitting:**
 
-1. **Privacy policy** — must be a publicly accessible URL. Minimum required content:
-   - What data you collect (Google account info, calendar availability, profile preferences)
-   - Why you collect it (scheduling suggestions, calendar event creation)
-   - How it's used (AI suggestion generation, not sold or shared with third parties)
-   - How users can request deletion (email address or in-app mechanism)
-   - Disclose PostHog analytics usage
-   - Disclose that dietary/mobility data may be sent to an AI model (Anthropic)
-   Host at rendezvous-gamma.vercel.app/privacy or a custom domain page.
+1. **Privacy policy** — must be a publicly accessible URL. See "Privacy policy" item in Tier 3 above for full required content. Host at rendezvous-gamma.vercel.app/privacy. Complete this before submitting for verification.
 
 2. **Terms of service** — recommended, sometimes required. Can be minimal for early stage.
 
@@ -479,43 +417,105 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 
 ### Tier 1 — Before/during first beta wave
 
-**Bug report button** — see spec in Testing Needed section below
-**Feature tooltips (PostHog)** — see spec below
-**Group invite notification** — frontend gap, backend already fires it
-**Group friend search dropdown** — quick fix, reuse existing typeahead pattern
+- [x] **Bug report + feedback buttons** — DONE March 14. Two pill buttons bottom-right. Feedback → Google Form. Bug → modal → POST /bug-report → bug_reports table. nodemailer removed (DB write only for beta).
+- [x] **Group invite notification frontend** — DONE March 14. group_invite type renders inline Accept/Decline in notification center.
+- [x] **Group friend search dropdown** — DONE March 14. Live typeahead in GroupDetail, excludes existing members, "No matches" state.
+- [x] **PostHog targeting events** — DONE March 14. home_view_loaded, itinerary_view_loaded, friends_view_loaded firing with relevant properties.
+- [ ] **Feature tooltips (PostHog)** — deferred to Tier 2/3, needs PostHog drop-off data to prioritize moments
 
 ---
 
-### Tier 2 — Build after first wave of feedback (signal-dependent except items 1-2)
+### Tier 2 — Build after first wave of feedback (signal-dependent except items 1-4)
 
 **1. Travel duration picker fix (HIGH — confirmed UX gap)**
-- See travel mode section below for full spec
+- Duration picker currently shows static presets (1 day / Weekend / Longer)
+- Needs exact day count or range input (e.g. 3 days, 4–5 days)
+- Options: numeric stepper (1–14) or range picker (min days / max days)
+- Resolve UX choice before building; full prompt in CLAUDE_CODE_PROMPTS.md
 
 **2. Voting rules in group event planning UI (HIGH — confirmed missing)**
-- See group mode UX gaps section below for full spec
+- Quorum threshold and tie_behavior set server-side but never shown to organizer in NewGroupEvent
+- Add collapsible "Voting settings" section: quorum (simple majority vs custom) + tie behavior toggle
+- Hide or default-lock for 2-person groups
+- Full prompt in CLAUDE_CODE_PROMPTS.md
 
-**3. Micro-adjustment reroll support**
+**3. Remote mode (new planning mode — no travel required)**
+- Third mode alongside Local and Travel for virtual hangouts
+- Suggests at-home/remote activities (video calls, multiplayer games, watch parties, etc.)
+- No venue suggestions, no travel specs, no location preference needed
+- Toggle button next to Local/Travel on NewEvent and NewGroupEvent
+- Full prompt with parity instructions in CLAUDE_CODE_PROMPTS.md
+
+**4. Delete draft button — 1:1 and group itinerary views**
+- Inline confirmation (no modal) in ItineraryView and GroupItineraryView
+- Organizer only, unsent drafts only, navigate home on confirm
+- Server route already exists for 1:1; new DELETE /group-itineraries/:id needed for group
+- Full prompt with parity instructions in CLAUDE_CODE_PROMPTS.md
+
+**5. Micro-adjustment reroll support**
 - See re-roll experience section below
 
-**4. Manual busy blocks (organizer + attendee)**
+**6. Manual busy blocks (organizer + attendee)**
 - See manual busy blocks section below
 
-**5. Web push notifications**
-- Users need real-time push notifications for itinerary updates and friend activity
-- Requires completing push_subscriptions infrastructure (table exists, delivery not built)
+**7. Web push notifications**
+- push_subscriptions table and permission grant path exist; delivery not built
 - Full spec: server-side web push via web-push npm package, VAPID keys in .env
-- Client: service worker registration, store subscription in push_subscriptions table
 - Triggers: friend request received, group invite, itinerary sent to you, itinerary locked
-- See notification tiers in SPRINT_SPECS.md — Tier 1 events only get push
+- See notification tiers in SPRINT_SPECS.md
 
-**6. Live events integration (Ticketmaster + Eventbrite)**
-- See full spec in output quality section below
-- Deprioritized from post-launch to Tier 2 — meaningful differentiator worth having
-  before wider rollout, not just for power users
+**8. Live events integration (Ticketmaster + Eventbrite)**
+- See full spec in output quality section above
+- Meaningful differentiator worth having before wider rollout
+
+**9. Home screen sorting options (added March 14, 2026)**
+- Currently, event pills on the home screen appear in whatever order the API returns them (no explicit sort)
+- Add sort controls so users can reorder pills within each tab (Waiting for you / Waiting for them / Drafts / Confirmed)
+- Sort options to support:
+  - **By date** (soonest first / latest first) — the most natural default; uses the scheduling window start date
+  - **By recency** (most recently created or updated) — useful for finding what's newest
+  - **By status** (e.g. within a tab, surface items with unread activity or recent votes at top)
+- UI placement: a small sort control above the tab list (affects all tabs) or inline per tab (more control, more chrome)
+- Sort choice should persist across sessions (localStorage) so the user doesn't have to re-select on every load
+- Group events comingled with 1:1 events — sort applies uniformly across both types within a tab
+- Default sort for initial release: by date (soonest first) within each tab
 
 ---
 
 ### Tier 3 — Pre-wider-rollout (before >20-30 users)
+
+**Pre-login home page (marketing/landing page)**
+- The current login screen tells users nothing about what Rendezvous is or why they should connect their calendar
+- Build a proper pre-auth landing page at `/` that communicates the value prop before asking for Google sign-in
+- Content: one-line hook, 2–3 benefit statements, sample itinerary card (static, illustrative), "Sign in with Google" CTA
+- Keep it fast and lightweight — not a full marketing site, just enough context that a friend sending someone the link doesn't need to pre-explain what it is
+- Privacy note visible before OAuth: what data is requested and why
+- Existing `/` route is the Login component — either split into a landing + login page or make Login smarter (show marketing content when not authenticated, redirect to /home when already authenticated)
+
+**Help page (`/help`)**
+- Accessible from nav (logged in and logged out) and from onboarding
+- Four sections:
+  1. **How it works** — brief walkthrough of the core flow (connect calendar → add friends → create event → get itinerary → lock plans)
+  2. **FAQ** — anticipated questions: "What does Rendezvous do with my calendar?", "Can my friends see my events?", "What if I don't have Google Calendar?", "How do group events work?", "What's Remote mode?"
+  3. **What's coming** — lightweight roadmap/vision section: group trip planning, booking integrations, MCP/AI chat interface. Keep it honest and high-level — not a commitment, just a direction
+  4. **Privacy policy** — full text inline (not a separate page, but anchor-linkable as `/help#privacy`) — see privacy policy item below
+- Static page, no backend. Can be built as a simple React component.
+- The FAQ should be seeded from beta feedback — update it as real questions come in
+
+**Privacy policy (external-facing, required for Google OAuth verification)**
+- Must be publicly accessible at a stable URL before Google OAuth verification can be submitted
+- Host at `rendezvous-gamma.vercel.app/privacy` (or `/help#privacy` with a canonical URL)
+- Minimum required content per Google's requirements:
+  - What data is collected: Google account info (name, email, profile picture), calendar availability (free/busy windows only — not event titles or descriptions), user-entered profile data (location, activity preferences, dietary/mobility restrictions), itinerary history
+  - Why it's collected: scheduling suggestions, calendar event creation on plan lock
+  - How it's used: AI suggestion generation via Anthropic API (dietary/mobility data may be included in prompts — disclose this explicitly), not sold or shared with third parties
+  - Data retention: calendar availability data is not stored; itinerary data retained until user deletes account
+  - How users can request deletion: email address or in-app mechanism
+  - PostHog analytics disclosure: anonymized usage data collected via PostHog, no PII
+  - Third-party services: Google Calendar API, Anthropic API, Google Maps Platform, PostHog
+- Link the privacy policy URL on the OAuth consent screen in Google Cloud Console
+- Link it from the pre-login landing page and from the Help page
+- This is a blocker for Google OAuth verification — do before submitting
 
 **Notification settings page**
 - Users need per-type toggles before you have many users
@@ -537,40 +537,29 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 ### Group mode — UX gaps (post-beta, pre-wider-rollout)
 
 **Friend search dropdown in GroupDetail invite flow**
-- [ ] The invite input currently filters statically — it should show a live dropdown as
-  the admin types, previewing matching friends before selection
-- [ ] Same typeahead pattern as the NewEvent friend picker — reuse that component or extract
-  a shared FriendSearch component used by both
+- [x] Live typeahead dropdown with friend search — DONE March 14 (Tier 1)
+- [ ] No visible submit trigger — user can't tell when an invite is sent. Fix: add explicit Invite button + prominent green confirmation banner (auto-dismiss after 3s). Claude Code prompt in progress.
 
 **Group invite notification**
-- [ ] When a user is invited to a group, they should receive a notification pill/badge
-  identical in behavior to a friend request (Tier 1 — action required)
-- [ ] Notification center should show the group name and an Accept/Decline inline action
-- [ ] The notification insert already exists in the invite route — this is primarily a
-  frontend rendering gap (notification center doesn't surface group_invite type yet)
+- [x] Backend fires the notification insert — DONE (already existed)
+- [x] Frontend renders group_invite type with inline Accept/Decline — DONE March 14 (Tier 1)
 
 **Voting rules visible in group event planning screen**
-- [ ] Quorum threshold and tie_behavior are set server-side but never surfaced to the
-  organizer in the NewGroupEvent UI
-- [ ] Add a collapsible "Voting settings" section to NewGroupEvent:
-  - Quorum: "Simple majority (default)" vs custom threshold
-  - Tie behavior: "Schedule on tie (default)" vs "Decline on tie"
-- [ ] Note: only meaningful for groups with 3+ members — hide or default-lock for 2-person groups
-- [ ] Confirmed: voting rules are absent even with 3+ person groups, not a group size issue
+- [ ] Quorum threshold and tie_behavior never shown to organizer in NewGroupEvent UI — Tier 2, see above
 
-**Ad-hoc attendee addition in group planning screen**
-- [ ] NewGroupEvent currently pre-fills members from the saved group but has no way to
-  add users who aren't in the group for a one-off event
-- [ ] Add a "Add someone else" search input below the attendee list — same friend search
-  pattern, appends to attendee_user_ids without modifying the saved group membership
-- [ ] Make clear in the UI that adding someone here doesn't add them to the group permanently
+**Group event creation entry points (UX gap)**
+- Currently the only way to create a group event is from a saved group's detail page — there's no way to start a group event from the Home screen's "+ New Event" button or from a friend's profile
+- This is a meaningful friction point: users who want to plan something with multiple friends have to navigate to Groups first, find the right group, then start the event
+- Two paths to consider:
+  1. **NewEvent multi-friend selector**: allow the organizer to add more than one friend in the standard NewEvent flow. If more than one friend is selected, the event automatically routes to the group itinerary path. This is the lowest-friction fix and avoids users needing to pre-create a saved group.
+  2. **Home screen "+ New Event" group option**: add a mode selector at the top of NewEvent — "1:1" / "Group" / "Remote" — where Group mode shows the multi-friend selector and optionally lets the user save the assembled list as a new group inline.
+- The inline group creation toggle ("Save this group for later") from SPRINT_SPECS.md applies here: if the user assembles a group for a one-off event, give them the option to save it without requiring it
+- Decision to make before building: does group event creation always require a pre-existing saved group, or should ad-hoc group events (no group_id) be a first-class supported path? The DB already supports null group_id on group_itineraries — the UX just needs to match.
+- [ ] NewGroupEvent has no way to add users not in the saved group for a one-off event
+- [ ] Add "Add someone else" search input below attendee list — same friend search pattern, doesn't modify saved group membership
 
 **Username change behavior (minor, informational)**
-- [ ] Username changes are safe — all core data uses UUIDs as primary identifiers
-- [ ] Known minor nuisance: notifications already stored in DB will show old username text
-  (cosmetic only, not a data integrity issue)
-- [ ] Username is the primary find-me mechanism in search — users who change usernames
-  should be aware friends will need to re-search for them
+- [ ] Notifications already stored in DB will show old username text (cosmetic only, not a data integrity issue)
 
 ### Feature onboarding / tooltips (beta phase — build before wider rollout)
 > Not profile completion — this is a product tour that teaches users what the app can do.
@@ -598,6 +587,14 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 ### Manual busy blocks (organizer + attendee)
 > Users sometimes have informal commitments that aren't on their calendar.
 > This lets them communicate constraints without polluting their Google Calendar.
+>
+> **MCP / conversational scheduling note (added March 14, 2026):** Manual busy blocks become
+> especially critical once the MCP server is live. A conversational user saying "I'm busy
+> Thursday morning" or "skip anything before noon" needs that constraint honored without
+> requiring them to open Google Calendar. The free-text parsing infrastructure built here
+> should be the same path the MCP `create_itinerary_proposal` tool uses when a
+> `conversation_context` param includes time constraints — not a separate code path.
+> Design the input format and injection block to be callable from both the UI and the MCP layer.
 
 **Organizer — at event creation time**
 - [ ] Add a "Block off times" optional section in NewEvent below the date range picker
@@ -681,13 +678,15 @@ Revisit after sharing with first users and collecting signal on what actually ma
 
 ---
 
-- [ ] Vercel deployment
-- [ ] HTTP referrer restriction on Maps API key
-- [ ] Tighten notifications RLS
-- [ ] Session persistence (Supabase sessions table)
-- [ ] OAuth handoff → HTTP-only cookies
-- [ ] PWA config — manifest.json + service worker
-- [ ] Push notifications (PWA web push) — needed to close MCP loop
+## Outstanding pre-deploy items (status as of March 14, 2026)
+
+- [x] Vercel deployment — DONE March 12
+- [x] Session persistence (Supabase sessions table) — DONE March 12
+- [x] OAuth handoff → HTTP-only cookies — DONE March 12
+- [ ] HTTP referrer restriction on Maps API key — still outstanding; requires splitting into two keys before applying (see Maps JS section in beta backlog)
+- [ ] Tighten notifications RLS — `notifications_service_role_all` USING(true); verify if fixed in Audit 2 or still outstanding
+- [ ] PWA config — manifest.json + service worker (needed before push notifications)
+- [ ] Push notifications (PWA web push) — push_subscriptions infrastructure exists, delivery not built (Tier 2)
 
 ---
 
@@ -812,14 +811,40 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [ ] Verify granted/denied/dismissed paths all handled correctly — no crash, no block on progression
 - [ ] Note: push_subscriptions table and actual push delivery are a separate sprint
 
-### Bug report button
-- [ ] Floating button (bottom corner, all pages, logged-in users only) opens a modal with category picker + freeform text field
-  - Categories: "Something broke" / "Wrong info in itinerary" / "Bad suggestion quality" / "Other"
-  - Auto-attaches: current page URL + supabaseId + timestamp on submit
-- [ ] On submit: write to `bug_reports` Supabase table AND send email to Aaron via POST /bug-report server route
-- [ ] DB migration: `bug_reports` table — id (uuid), user_id (uuid FK → profiles), category (text), message (text), page_url (text), created_at (timestamptz). RLS: users can insert own reports only, service role reads all.
-- [ ] Email: nodemailer + Gmail SMTP (lightweight, no new services). Subject: "Rendezvous bug: [category]". Body: message, page URL, user ID, timestamp.
-- [ ] Create BugReportButton.jsx as a standalone reusable component — import once into App.js so it renders on every route automatically
+### Bug report + feedback buttons
+- [x] BugReportButton.jsx — two pill-shaped floating buttons, auth-gated, excluded from /onboarding. DONE March 14.
+- [x] POST /bug-report route — validates category, inserts to bug_reports, returns success. DONE March 14.
+- [x] bug_reports DB table with RLS. DONE March 14.
+- [x] nodemailer removed — DB write only for beta (deliberate decision March 14).
+
+### Shipped March 14, 2026 (second Claude Code session)
+- [x] Group member vote responses visible to all members (not gated on isOrganizer)
+- [x] Group + 1:1 events comingled on home screen — same 4-tab layout, 👥 badge on group cards, [Group Name] — [Event Title] format
+- [x] DELETE /group-itineraries/:id — organizer-only, draft-only; client routes to correct endpoint via handleDeleteDraft(id, isGroup)
+- [x] + New Group Event button on home screen — routes to /group-event/new; group picker is now live-search + dropdown (same UX as friend picker in NewEvent.js)
+- [x] Attendee re-roll button visibility fix — on non-organizer-pick cards all 3 buttons visible before voting; hidden after "suggest this card" is clicked
+
+### Active bugs — confirmed by 56-item audit (March 14, 2026)
+
+**Confirmed fixed (audit found these already resolved):**
+- [x] Route path typos — `/schedule/itinerary:id/title` and `/schedule/itinerary:id` — both correct in current code (schedule.js:2048, 2090)
+- [x] Shared profile link `/u/:username` — route registered in App.js (line 149)
+
+**Confirmed FIXED — commit 5eaeed2 (March 14, 2026):**
+- [x] **findFreeWindows date clustering** — collect up to 100 windows, bucket into 3 equal date ranges, sample 7 from each, trim to 20. Applied to both findFreeWindows (schedule.js) and findFreeWindowsForGroup (group-itineraries.js).
+- [x] **No-duplicate-venues instruction** — explicit hard rule added to both buildSuggestPrompt and buildGroupSuggestPrompt. Single-card reroll explicitly exempted — user may intentionally reference a venue from another card. **Watch item:** exemption relies on Claude inferring the venue reference from the reroll prompt. If users report single-card rerolls ignoring venue references or wrongly refusing a venue they named, iterate on the rerollNote wording before considering a structural fix. See CLAUDE_CODE_PROMPTS.md for detail.
+- [x] **classifyIntent('') returns ambiguous** — empty/blank guard now returns 'ambiguous'. ambiguous branch in intentBlock confirmed correct.
+- [x] **Google Calendar event description missing itinerary UUID** — itineraryId param added to createCalendarEventForUser, appended to description at all call sites.
+- [x] **1:1 suggestions returning fewer than 3** — "exactly 3" instruction + window-reuse fallback added to both prompt builders.
+- [x] **Event title PATCH: silent catch** — input stays open on error, inline error shown, console.error added in ItineraryView.js. GroupItineraryView has no title edit yet — TODO comment added.
+
+**Still outstanding:**
+- [x] **Delete draft button** — commit 6d89f8d. Group server route already existed with correct guards (no changes needed). GroupItineraryView.js now has inline confirmation row matching ItineraryView.js pattern. Note: both 1:1 and group delete are only surfaced from within their respective itinerary views — not from the Home screen pill. This is consistent behavior across both modes.
+- [ ] **Group invite search** — typeahead dropdown done. Submit button and send confirmation still missing.
+
+**Still unverified (needs manual testing, can't confirm from code alone):**
+- [ ] Dev switcher drops test users into onboarding — PATCH /users/location 404 in onboarding step 2
+- [ ] Rerolled suggestions constrained to original date window — clamping exists but edge case behavior unverified
 
 ---
 

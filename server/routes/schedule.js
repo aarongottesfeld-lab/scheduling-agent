@@ -1178,6 +1178,9 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Claude occasionally picks times that weren't in the provided window list.
     // We reject any suggestion whose local date+time (converted to UTC via the client's
     // timezone offset) doesn't overlap with at least one computed free window.
+    //
+    // Pre-filter snapshot: saved so we can backfill below if the filter drops us under 3.
+    const suggestionsBeforeWindowFilter = suggestions.slice();
     suggestions = suggestions.filter(s => {
       if (!s.date || !s.time) return true; // can't validate, keep it
       const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
@@ -1203,6 +1206,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       }
       return inWindow;
     });
+
+    // ── Window-filter fallback (suggest) ─────────────────────────────────────
+    // If the window filter dropped suggestions below 3, backfill from the pre-filter
+    // set rather than returning fewer cards to the user. Root cause: Claude occasionally
+    // picks times slightly outside computed free windows due to timezone edge cases or
+    // prompt interpretation. A slightly imprecise time is a better UX than 1 suggestion.
+    // This mirrors the single-card reroll fallback already in the reroll route.
+    if (suggestions.length < 3 && suggestionsBeforeWindowFilter.length > suggestions.length) {
+      const keptTitles = new Set(suggestions.map(s => s.title));
+      const dropped = suggestionsBeforeWindowFilter.filter(s => !keptTitles.has(s.title));
+      for (const fb of dropped) {
+        if (suggestions.length >= 3) break;
+        console.warn(`[suggest] Backfilling window-filtered suggestion to reach 3: ${fb.date} ${fb.time}`);
+        suggestions.push(fb);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Venue enrichment (suggest) ────────────────────────────────────────────
     // Attach Places API data (place_id, formatted_address, rating, price_level)
