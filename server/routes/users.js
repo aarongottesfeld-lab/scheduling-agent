@@ -208,6 +208,33 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     });
   });
 
+  // GET /users/by-username/:username — public profile lookup for shareable /u/:username links.
+  // requireAuth: keeps profile data off unauthenticated scrapers; shared links are meant for
+  // logged-in users. Returns the target profile + caller's friendship status with that user.
+  app.get('/users/by-username/:username', requireAuth, async (req, res) => {
+    const username = (req.params.username || '').toLowerCase().trim();
+    if (!username || !/^[a-z0-9._-]{3,30}$/.test(username)) {
+      return res.status(400).json({ error: 'Invalid username.' });
+    }
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('id, full_name, username, location, avatar_url, bio, activity_preferences')
+      .eq('username', username)
+      .maybeSingle();
+
+    if (!profile) return res.status(404).json({ error: 'User not found.' });
+
+    // Friendship status: check both directions (outgoing and incoming)
+    const [outRes, inRes] = await Promise.all([
+      supabase.from('friendships').select('status').eq('user_id', req.userId).eq('friend_id', profile.id).maybeSingle(),
+      supabase.from('friendships').select('status').eq('user_id', profile.id).eq('friend_id', req.userId).maybeSingle(),
+    ]);
+    const friendshipStatus = outRes.data?.status || inRes.data?.status || null;
+
+    res.json({ ...profile, friendshipStatus });
+  });
+
   // GET /geocode?lat=&lng=
   // Issue 2: lat/lng validated as numbers in range before being interpolated
   // into the Google Maps URL — prevents URL injection via crafted query params.

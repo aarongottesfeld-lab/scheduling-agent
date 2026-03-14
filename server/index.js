@@ -691,6 +691,12 @@ if (!IS_PROD) {
       tokens:  null,
     });
 
+    // Mark onboarding complete for dev users (they're pre-seeded, not onboarded)
+    await supabase.from('profiles')
+      .update({ onboarding_completed_at: new Date().toISOString() })
+      .eq('id', supabaseId)
+      .is('onboarding_completed_at', null);
+
     // Short-lived dev cookie — no HTTPS requirement (dev only)
     res.cookie('rendezvous_session', sessionToken, cookieOptions(24 * 60 * 60 * 1000));
 

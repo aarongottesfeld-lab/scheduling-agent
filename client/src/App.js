@@ -49,6 +49,7 @@ import GroupDetail         from './pages/GroupDetail';
 import NewGroupEvent       from './pages/NewGroupEvent';
 import GroupItineraryView  from './pages/GroupItineraryView';
 import Onboarding          from './pages/Onboarding';
+import SharedProfile       from './pages/SharedProfile';
 import BugReportButton     from './components/BugReportButton';
 
 /**
@@ -143,6 +144,9 @@ export default function App() {
       <Routes>
         {/* Public — Login redirects to /home if already authenticated */}
         <Route path="/" element={<Login />} />
+
+        {/* Public shareable profile — not ProtectedRoute; auth check is inside SharedProfile */}
+        <Route path="/u/:username" element={<SharedProfile />} />
 
         {/* Onboarding — not wrapped in ProtectedRoute; Onboarding.js handles its own
             auth redirect. Part of the auth completion flow, not a protected feature. */}

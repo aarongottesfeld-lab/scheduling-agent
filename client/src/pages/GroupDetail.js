@@ -130,11 +130,36 @@ export default function GroupDetail() {
     try {
       await inviteMember(id, friendId);
       setInviteSuccess('Invitation sent.');
+      setTimeout(() => setInviteSuccess(''), 3000);
       load(); // refresh member list to show the new pending row
     } catch (e) {
       setInviteError(e.message || 'Could not send invitation.');
     } finally {
       setInviting(false);
+    }
+  }
+
+  /**
+   * Invite button click handler.
+   * If query matches exactly one eligible friend, invite directly.
+   * If multiple matches, ensure the dropdown is visible.
+   * If zero matches, show the "No matches" state.
+   */
+  function handleInviteButton() {
+    const memberIds = new Set(members.map(m => m.user_id));
+    const eligible  = allFriends.filter(f => !memberIds.has(f.id));
+    const q = inviteQuery.trim().toLowerCase();
+    const matched = q
+      ? eligible.filter(f => f.name?.toLowerCase().includes(q) || f.username?.toLowerCase().includes(q))
+      : eligible;
+    if (matched.length === 1) {
+      handleInvite(matched[0].id);
+    } else if (matched.length === 0) {
+      setInviteResults([]);
+      setInviteNoMatch(!!inviteQuery.trim());
+    } else {
+      setInviteResults(matched);
+      setInviteNoMatch(false);
     }
   }
 
@@ -423,28 +448,37 @@ export default function GroupDetail() {
                 </div>
               )}
               {inviteSuccess && (
-                <div className="alert" style={{ marginBottom: 8, padding: '8px 12px', fontSize: '0.84rem', background: 'var(--surface-2)' }}>
-                  {inviteSuccess}
+                <div style={{
+                  marginBottom: 10, padding: '10px 14px',
+                  background: 'var(--success-bg)', color: 'var(--success)',
+                  border: '1px solid var(--success)', borderRadius: 'var(--r)',
+                  fontWeight: 600, fontSize: '0.88rem',
+                }}>
+                  ✓ {inviteSuccess}
                 </div>
               )}
-              <div style={{ position: 'relative' }} ref={dropRef}>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={inviteQuery}
-                  onChange={e => setInviteQuery(e.target.value)}
-                  onFocus={() => {
-                    if (!inviteQuery.trim()) {
-                      const memberIds = new Set(members.map(m => m.user_id));
-                      setInviteResults(allFriends.filter(f => !memberIds.has(f.id)));
-                    }
-                  }}
-                  placeholder={allFriends.length
-                    ? `Search ${allFriends.length} friend${allFriends.length !== 1 ? 's' : ''}…`
-                    : 'Search your friends…'}
-                  disabled={inviting}
-                  autoComplete="off"
-                />
+              {/* Invite input + button — ref covers both so outside-click doesn't
+                  close the dropdown when the admin clicks the Invite button */}
+              <div ref={dropRef}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <input
+                      type="text"
+                      className="form-control"
+                      value={inviteQuery}
+                      onChange={e => setInviteQuery(e.target.value)}
+                      onFocus={() => {
+                        if (!inviteQuery.trim()) {
+                          const memberIds = new Set(members.map(m => m.user_id));
+                          setInviteResults(allFriends.filter(f => !memberIds.has(f.id)));
+                        }
+                      }}
+                      placeholder={allFriends.length
+                        ? `Search ${allFriends.length} friend${allFriends.length !== 1 ? 's' : ''}…`
+                        : 'Search your friends…'}
+                      disabled={inviting}
+                      autoComplete="off"
+                    />
                 {(inviteResults.length > 0 || inviteNoMatch) && (
                   <div className="card" style={{
                     position: 'absolute', top: '100%', left: 0, right: 0,
@@ -477,6 +511,16 @@ export default function GroupDetail() {
                     ))}
                   </div>
                 )}
+                  </div>
+                  <button
+                    className="btn btn--primary btn--sm"
+                    onClick={handleInviteButton}
+                    disabled={inviting}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {inviting ? '…' : 'Invite'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
