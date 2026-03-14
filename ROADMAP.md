@@ -473,6 +473,67 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 
 ---
 
+---
+
+## 🟡 Beta Backlog (prioritized)
+
+### Tier 1 — Before/during first beta wave
+
+**Bug report button** — see spec in Testing Needed section below
+**Feature tooltips (PostHog)** — see spec below
+**Group invite notification** — frontend gap, backend already fires it
+**Group friend search dropdown** — quick fix, reuse existing typeahead pattern
+
+---
+
+### Tier 2 — Build after first wave of feedback (signal-dependent except items 1-2)
+
+**1. Travel duration picker fix (HIGH — confirmed UX gap)**
+- See travel mode section below for full spec
+
+**2. Voting rules in group event planning UI (HIGH — confirmed missing)**
+- See group mode UX gaps section below for full spec
+
+**3. Micro-adjustment reroll support**
+- See re-roll experience section below
+
+**4. Manual busy blocks (organizer + attendee)**
+- See manual busy blocks section below
+
+**5. Web push notifications**
+- Users need real-time push notifications for itinerary updates and friend activity
+- Requires completing push_subscriptions infrastructure (table exists, delivery not built)
+- Full spec: server-side web push via web-push npm package, VAPID keys in .env
+- Client: service worker registration, store subscription in push_subscriptions table
+- Triggers: friend request received, group invite, itinerary sent to you, itinerary locked
+- See notification tiers in SPRINT_SPECS.md — Tier 1 events only get push
+
+**6. Live events integration (Ticketmaster + Eventbrite)**
+- See full spec in output quality section below
+- Deprioritized from post-launch to Tier 2 — meaningful differentiator worth having
+  before wider rollout, not just for power users
+
+---
+
+### Tier 3 — Pre-wider-rollout (before >20-30 users)
+
+**Notification settings page**
+- Users need per-type toggles before you have many users
+- See spec below
+
+**Email notifications channel**
+- Supplement push with email for users who deny push permission
+- Especially important for: itinerary locked, friend request accepted
+- Use nodemailer + Gmail SMTP (same setup as bug report email)
+- Respect notification preferences per type and per channel
+
+**Google OAuth verification**
+- Needed before 100-user cap becomes a problem
+- Start CASA Tier 2 assessment early — it takes the longest
+- See full prerequisites checklist below
+
+---
+
 ### Group mode — UX gaps (post-beta, pre-wider-rollout)
 
 **Friend search dropdown in GroupDetail invite flow**
