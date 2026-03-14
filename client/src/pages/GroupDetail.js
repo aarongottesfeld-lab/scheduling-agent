@@ -95,7 +95,9 @@ export default function GroupDetail() {
     const eligible    = allFriends.filter(f => !memberIds.has(f.id) && !stagedIds.has(f.id));
     const q = inviteQuery.trim().toLowerCase();
     if (!q) {
-      setInviteResults(eligible);
+      // Don't auto-populate — wait for the user to click the input (onClick handler).
+      // Clearing here ensures results close when the user deletes their query.
+      setInviteResults([]);
       setInviteNoMatch(false);
       return;
     }

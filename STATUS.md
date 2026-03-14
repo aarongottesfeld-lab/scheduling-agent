@@ -31,6 +31,39 @@ Confirmed done by audit (44/56 items):
 
 ---
 
+## March 14, 2026 — Group invite + misc bug sprint (commits 726e649 → e520022)
+
+726e649 — Backfill window-filtered suggestions to always return 3
+- Root cause found: Claude was generating 3 suggestions correctly, but a post-generation window filter was silently dropping suggestions whose times didn't match computed free windows. Fix: snapshot pre-filter suggestions, backfill if count drops below 3. Mirrors single-card reroll fallback pattern already in reroll route. Group itineraries has no window filter — no parity change needed.
+
+42e3b09 — Group invite dropdown clipped by card overflow
+- overflow: visible added to invite card container. One line.
+
+f599165 — Two-step invite select → confirm flow in GroupDetail.js
+- Clicking a friend in dropdown now stages them as a pill, does not immediately send invite
+- Invite button only fires when someone is staged
+- Auto-fire on single match removed
+
+c117696 — Group list query missing .in(groupIds) filter
+- GET /groups was fetching all groups in DB with no filter, defaulting non-member groups to role='member'
+- Users clicking those groups got 403. Fix: .in('id', groupIds) scopes query to user's actual memberships
+
+9e132bc — Multi-select staged friends + bulk invite
+- selectedFriend → selectedFriends array
+- Search bar stays open after each pick so admin can keep adding
+- Already-staged friends excluded from dropdown
+- Button label: "Invite" / "Invite 3" etc.
+- Promise.allSettled — partial failure keeps failed entries staged for retry
+
+e520022 — Invite dropdown opens on click not focus; member rows navigate to friend profile
+- onFocus → onClick prevents browser auto-focus from opening dropdown on page load
+- Non-self member rows wrapped in button navigating to /friends/:userId
+
+No active bugs remaining from the original list. New items added to ROADMAP:
+- User privacy settings (allow_non_friend_group_invites toggle)
+
+---
+
 ## March 14, 2026 — Delete draft button commit 6d89f8d
 SHA: 6d89f8d
 

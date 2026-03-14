@@ -854,7 +854,9 @@ Revisit after sharing with first users and collecting signal on what actually ma
 
 **Still outstanding:**
 - [x] **Delete draft button** — commit 6d89f8d. Group server route already existed with correct guards (no changes needed). GroupItineraryView.js now has inline confirmation row matching ItineraryView.js pattern. Note: both 1:1 and group delete are only surfaced from within their respective itinerary views — not from the Home screen pill. This is consistent behavior across both modes.
-- [ ] **Group invite search** — typeahead dropdown done. Submit button and send confirmation still missing.
+- [x] **1:1 suggestions always returning 3** — commit 726e649. Root cause was a post-generation window filter silently dropping suggestions whose times didn't exactly match free windows. Fix: snapshot pre-filter set, backfill to 3 if count drops. Prompt fix (FIX 2) was correct — Claude was generating 3, the filter was trimming them.
+- [x] **Group invite search submit + confirmation** — commits f599165, 9e132bc, e520022. Two-step select → confirm flow, multi-select with bulk invite, overflow fix, dropdown opens on click not focus, member rows navigate to friend profile.
+- [x] **Group list 403 on click** — commit c117696. GET /groups was fetching all groups in DB with no filter, non-member groups defaulted to role='member', 403 on detail click. Fix: .in('id', groupIds).
 
 **Still unverified (needs manual testing, can't confirm from code alone):**
 - [ ] Dev switcher drops test users into onboarding — PATCH /users/location 404 in onboarding step 2
