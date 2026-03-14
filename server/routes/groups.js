@@ -115,6 +115,7 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
       supabase
         .from('groups')
         .select('id, name, description, default_activities, created_by, created_at')
+        .in('id', groupIds)
         .order('created_at', { ascending: false }),
       supabase
         .from('group_members')
