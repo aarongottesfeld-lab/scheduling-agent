@@ -174,11 +174,14 @@ export default function NewGroupEvent() {
     if (endDate < startDate) return 'End date must be on or after start date.';
     if (quorumMode === 'custom') {
       const totalParticipants = attendees.length + 1; // attendees + organizer
-      const threshold = parseInt(customQuorum, 10);
-      if (isNaN(threshold) || threshold < 1)
-        return 'Votes needed must be at least 1.';
-      if (threshold > totalParticipants)
-        return `Votes needed cannot exceed total participants (${totalParticipants}).`;
+      // Empty field is valid — treated as the majority default on submit.
+      if (customQuorum !== '') {
+        const threshold = parseInt(customQuorum, 10);
+        if (isNaN(threshold) || threshold < 1)
+          return 'Votes needed must be at least 1.';
+        if (threshold > totalParticipants)
+          return `Votes needed cannot exceed total participants (${totalParticipants}).`;
+      }
     }
     return '';
   }
@@ -205,9 +208,10 @@ export default function NewGroupEvent() {
 
       const attendeeIds       = attendees.map(a => a.user_id);
       const totalParticipants = attendeeIds.length + 1; // attendees + organizer
+      const majorityDefault   = Math.ceil(totalParticipants / 2);
       const quorumThreshold   = quorumMode === 'unanimous'
         ? totalParticipants
-        : parseInt(customQuorum, 10);
+        : (parseInt(customQuorum, 10) || majorityDefault); // empty → majority default
 
       const { itineraryId } = await createGroupItinerary({
         group_id:            selectedGroupId,
