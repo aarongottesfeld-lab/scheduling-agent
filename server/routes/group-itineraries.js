@@ -697,9 +697,24 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'Generate suggestions before sending the itinerary.' });
     }
 
+    // Optional: organizer can specify which suggestion they're recommending.
+    // Validated against the itinerary's suggestions array. Defaults to first suggestion.
+    const { suggestion_id } = req.body;
+    let selectedSuggestionId = itin.suggestions[0]?.id || null;
+    if (suggestion_id) {
+      const validIds = itin.suggestions.map(s => s.id);
+      if (!validIds.includes(suggestion_id)) {
+        return res.status(400).json({ error: 'suggestion_id does not match any suggestion in this itinerary.' });
+      }
+      selectedSuggestionId = suggestion_id;
+    }
+
     const { error: updateErr } = await supabase
       .from('group_itineraries')
-      .update({ itinerary_status: 'awaiting_responses' })
+      .update({
+        itinerary_status:      'awaiting_responses',
+        selected_suggestion_id: selectedSuggestionId,
+      })
       .eq('id', req.params.id);
 
     if (updateErr) {

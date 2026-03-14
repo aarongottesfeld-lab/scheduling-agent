@@ -151,8 +151,9 @@ export async function generateGroupSuggestions(itineraryId) {
  * Transitions status: organizer_draft → awaiting_responses.
  * Returns { message: 'Itinerary sent to group.' }.
  */
-export async function sendGroupItinerary(itineraryId) {
-  const res = await client.post(`/group-itineraries/${itineraryId}/send`);
+export async function sendGroupItinerary(itineraryId, suggestionId) {
+  const body = suggestionId ? { suggestion_id: suggestionId } : {};
+  const res = await client.post(`/group-itineraries/${itineraryId}/send`, body);
   return res.data;
 }
 

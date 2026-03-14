@@ -178,23 +178,25 @@ function GroupSuggestionCard({
   voteStatus,
   isOrganizer,
   myId,
-  status,       // itinerary_status
-  onVote,       // (suggestionId, vote) => void — attendee action
-  onSend,       // () => void — organizer sends draft
-  onReroll,     // () => void — organizer rerolls
+  status,               // itinerary_status
+  selectedSuggestionId, // organizer's recommended suggestion (set on send)
+  onVote,               // (suggestionId, vote) => void — attendee action
+  onSend,               // (suggestionId) => void — organizer sends draft
+  onReroll,             // () => void — organizer rerolls
   sending,
   rerolling,
-  actingCardId, // which card currently has a pending vote action
+  actingCardId,         // which card currently has a pending vote action
 }) {
   const [expanded,        setExpanded]        = useState(false);
   const [commentOpen,     setCommentOpen]     = useState(false);
 
-  const isLocked    = status === 'locked';
-  const isWinner    = isLocked && itinerary.selected_suggestion_id === suggestion.id;
-  const myVote      = voteStatus?.[myId]?.vote; // the current user's own vote (attendees only)
-  const isBusy      = actingCardId === suggestion.id;
-  const isDraft     = status === 'organizer_draft';
-  const isAwaiting  = status === 'awaiting_responses';
+  const isLocked        = status === 'locked';
+  const isWinner        = isLocked && itinerary.selected_suggestion_id === suggestion.id;
+  const isOrganizerPick = status === 'awaiting_responses' && selectedSuggestionId === suggestion.id;
+  const myVote          = voteStatus?.[myId]?.vote; // the current user's own vote (attendees only)
+  const isBusy          = actingCardId === suggestion.id;
+  const isDraft         = status === 'organizer_draft';
+  const isAwaiting      = status === 'awaiting_responses';
 
   // Count votes across all attendees for this suggestion.
   // Note: the server does not track per-suggestion vote preferences before lock —
@@ -229,6 +231,15 @@ function GroupSuggestionCard({
               style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}
             >
               ✓ Locked
+            </span>
+          )}
+          {/* Organizer's recommendation badge (awaiting_responses) */}
+          {isOrganizerPick && !isWinner && (
+            <span
+              className="badge"
+              style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}
+            >
+              📤 Your recommendation
             </span>
           )}
         </div>
@@ -311,30 +322,32 @@ function GroupSuggestionCard({
         </div>
 
         {/* ── Vote buttons (attendees only, awaiting_responses) ── */}
-        {!isOrganizer && isAwaiting && (
-          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {myVote && myVote !== 'pending' ? (
-              // Show current vote status — attendee already voted
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-2)', padding: '6px 0' }}>
-                Your vote:{' '}
-                <strong>
-                  {myVote === 'accepted'  && '✓ Accepted'}
-                  {myVote === 'declined'  && '✗ Declined'}
-                  {myVote === 'abstained' && '— Abstained'}
-                </strong>
-                {' '}
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  style={{ fontSize: '0.78rem' }}
-                  onClick={() => onVote(suggestion.id, 'accepted')}
-                  disabled={isBusy}
-                >
-                  Change
-                </button>
-              </div>
-            ) : (
-              <>
+        {!isOrganizer && isAwaiting && (() => {
+          // Organizer's recommended card: Accept / Decline
+          if (isOrganizerPick) {
+            if (myVote && myVote !== 'pending') {
+              return (
+                <div style={{ marginTop: 14, fontSize: '0.85rem', color: 'var(--text-2)', padding: '6px 0' }}>
+                  Your vote:{' '}
+                  <strong>
+                    {myVote === 'accepted' && '✓ Accepted'}
+                    {myVote === 'declined' && '✗ Declined'}
+                  </strong>
+                  {' '}
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    style={{ fontSize: '0.78rem' }}
+                    onClick={() => onVote(suggestion.id, 'accepted')}
+                    disabled={isBusy}
+                  >
+                    Change
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button
                   className="btn btn--primary btn--sm"
                   disabled={isBusy}
@@ -349,17 +362,27 @@ function GroupSuggestionCard({
                 >
                   {isBusy ? '…' : '✗ Decline'}
                 </button>
-                <button
-                  className="btn btn--ghost btn--sm"
-                  disabled={isBusy}
-                  onClick={() => onVote(suggestion.id, 'abstained')}
-                >
-                  — Abstain
-                </button>
-              </>
-            )}
-          </div>
-        )}
+              </div>
+            );
+          }
+
+          // Non-recommended cards: "Suggest this instead" — casts an accept vote for this card
+          if (myVote && myVote !== 'pending') {
+            // Already voted overall — show nothing extra on non-primary cards
+            return null;
+          }
+          return (
+            <div style={{ marginTop: 14 }}>
+              <button
+                className="btn btn--ghost btn--sm"
+                disabled={isBusy}
+                onClick={() => onVote(suggestion.id, 'accepted')}
+              >
+                {isBusy ? '…' : '↩ Suggest this instead'}
+              </button>
+            </div>
+          );
+        })()}
 
         {/* ── Organizer draft card actions ── */}
         {isOrganizer && isDraft && (
@@ -367,16 +390,9 @@ function GroupSuggestionCard({
             <button
               className="btn btn--primary btn--sm"
               disabled={sending || rerolling}
-              onClick={onSend}
+              onClick={() => onSend(suggestion.id)}
             >
-              {sending ? 'Sending…' : '📤 Send to Group'}
-            </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              disabled={sending || rerolling}
-              onClick={onReroll}
-            >
-              {rerolling ? 'Regenerating…' : '↻ Re-roll all'}
+              {sending ? 'Sending…' : '📤 Send this to group'}
             </button>
           </div>
         )}
@@ -438,12 +454,12 @@ export default function GroupItineraryView() {
 
   useEffect(() => { load(); }, [load]);
 
-  /** Organizer sends the draft to all attendees. */
-  async function handleSend() {
+  /** Organizer sends the draft to all attendees, with a specific suggestion as their pick. */
+  async function handleSend(suggestionId) {
     setSending(true);
     setActionError('');
     try {
-      await sendGroupItinerary(id);
+      await sendGroupItinerary(id, suggestionId);
       setSentSuccess(true);
       setTimeout(() => setSentSuccess(false), 4000);
       load();
@@ -728,6 +744,7 @@ export default function GroupItineraryView() {
                 isOrganizer={isOrganizer}
                 myId={myId}
                 status={status}
+                selectedSuggestionId={selectedId}
                 onVote={handleVote}
                 onSend={handleSend}
                 onReroll={handleReroll}
@@ -758,6 +775,7 @@ export default function GroupItineraryView() {
                   isOrganizer={isOrganizer}
                   myId={myId}
                   status={status}
+                  selectedSuggestionId={selectedId}
                   onVote={handleVote}
                   onSend={handleSend}
                   onReroll={handleReroll}
@@ -769,22 +787,15 @@ export default function GroupItineraryView() {
             </div>
           )}
 
-          {/* ── Draft: global send + reroll controls at bottom ── */}
+          {/* ── Draft: global re-roll control at bottom ── */}
           {isOrganizer && status === 'organizer_draft' && suggestions.length > 0 && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button
-                className="btn btn--primary btn--lg"
-                disabled={sending || rerolling}
-                onClick={handleSend}
-              >
-                {sending ? <><span className="spinner spinner--sm" style={{ marginRight: 6 }} />Sending…</> : '📤 Send to Group'}
-              </button>
+            <div style={{ marginTop: 8 }}>
               <button
                 className="btn btn--ghost"
                 disabled={sending || rerolling}
                 onClick={handleReroll}
               >
-                {rerolling ? 'Regenerating…' : '↻ Re-roll all'}
+                {rerolling ? 'Regenerating…' : '↻ Re-roll all suggestions'}
               </button>
             </div>
           )}
