@@ -257,6 +257,7 @@ function LandingPage() {
           Get an itinerary worth showing up for.
         </p>
         <AuthButton />
+        <p className="form-hint" style={{ marginTop: 8, textAlign: 'center' }}>After signing in, you can connect Apple Calendar and additional Google calendars from your profile settings.</p>
         <PrivacyNote />
         <div className="lp-scroll-hint" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -298,6 +299,7 @@ function LandingPage() {
         </h2>
         <div className={`lp-animate lp-animate--delay-1${finalInView ? ' lp-animate--in' : ''}`}>
           <AuthButton />
+          <p className="form-hint" style={{ marginTop: 8, textAlign: 'center' }}>After signing in, you can connect Apple Calendar and additional Google calendars from your profile settings.</p>
           <PrivacyNote />
         </div>
       </section>
