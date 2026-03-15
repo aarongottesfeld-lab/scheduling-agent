@@ -405,6 +405,13 @@ function GroupSuggestionCard({
             {(suggestion.event_source === 'ticketmaster' || suggestion.event_source === 'eventbrite') && (
               <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>🎟 Live event</span>
             )}
+            {/* Priority event badge — shown when Claude anchored this suggestion to a
+                real-world timed event detected from the user's context prompt. */}
+            {suggestion.priority_event && (
+              <span className="badge" style={{ background: 'rgba(220,38,38,.85)', color: '#fff', fontSize: '0.75rem' }}>
+                🔴 Live · {suggestion.priority_event.title}{suggestion.priority_event.time ? ` — ${suggestion.priority_event.time}` : ''}
+              </span>
+            )}
             {suggestion.activity_source === 'places_activity' && (
               <span className="badge" style={{ background: 'rgba(255,255,255,.25)', color: '#fff', fontSize: '0.75rem' }}>
                 {ACTIVITY_EMOJI[suggestion.activity_type] || '🏟'} {suggestion.activity_type ? suggestion.activity_type.replace(/_/g, ' ') : 'activity'}

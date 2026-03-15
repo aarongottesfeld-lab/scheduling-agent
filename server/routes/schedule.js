@@ -27,6 +27,8 @@ const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
 const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
 const { sendPush } = require('../utils/pushNotifications');
+const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
+const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -502,7 +504,7 @@ function buildAttendeeNotesBlock(notes) {
   return `\nATTENDEE CONSTRAINTS (from previous decline):\nThe attendee noted: "${notes.trim()}"`;
 }
 
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, excludedWindowsBlock = '', attendeeBusyNotesBlock = '' }) {
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, excludedWindowsBlock = '', attendeeBusyNotesBlock = '', priorityEventBlock = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -681,13 +683,13 @@ ${
       ).join('\n') +
       `\nUse this as a taste signal only. Do NOT suggest these specific plans or revisit these venues.`
     : ''
-}${
+}${priorityEventBlock}${
   // Live events block — only injected when events were found. If empty, omit entirely:
   // never send Claude a "no events found" message, which could bias output toward apology.
   // Events are optional context: Claude should only anchor a suggestion on one if it
   // genuinely fits both users' interests and the requested date range.
   localEvents && localEvents.length > 0
-    ? `\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the users' interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits. Do not force events that don't match.\n` +
+    ? `${priorityEventBlock ? '\n' : ''}\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the users' interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits. Do not force events that don't match.\n` +
       localEvents.map(ev =>
         `- ${ev.title} at ${ev.venue_name || 'TBD'} (${ev.date}${ev.time ? ' at ' + ev.time : ''}) — ${ev.category || 'Event'} — Ticket link: ${ev.url}`
       ).join('\n') +
@@ -741,7 +743,10 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       "activity_type": "tennis",
       // Optional — website URL for the activity venue, from the Places Details API.
       // Rendered as "Reserve / Book →" in the UI. Omit if no website was found.
-      "venue_url": "https://..."
+      "venue_url": "https://...",
+      // Optional — only set when this suggestion is anchored to a PRIORITY EVENT.
+      // Shape: { title, date, time }. Claude should populate this on the anchored suggestion only.
+      "priority_event": { "title": "Knicks vs. Pacers", "date": "March 18, 2026", "time": "7:30 PM ET" }
     }
   ]
 }
@@ -1045,11 +1050,42 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('[activityVenues] suggest route failed:', activityErr.message);
     }
 
+    // ── Cultural signal detection ─────────────────────────────────────────────
+    // Detect if the organizer's context references a sports game or awards ceremony,
+    // then resolve the actual event date/time within the scheduling window.
+    // Best-effort: any failure leaves priorityEvent null and generation continues.
+    const culturalSignal = extractCulturalSignal(safeContext, [
+      ...(userA.activity_preferences || []),
+      ...(userB.activity_preferences || []),
+    ]);
+    let priorityEvent = null;
+    if (culturalSignal) {
+      try {
+        priorityEvent = await fetchCulturalEvent(
+          culturalSignal.type,
+          culturalSignal.entity,
+          start,
+          end
+        );
+      } catch (culturalErr) {
+        console.warn('[suggest] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const priorityEventBlock = priorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${priorityEvent.title} — ${priorityEvent.date}${priorityEvent.time ? ' at ' + priorityEvent.time : ''}\n` +
+        `Venue: ${priorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Call Claude
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination, excludedWindowsBlock: buildExcludedWindowsBlock(manualBusyBlocks) });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination, excludedWindowsBlock: buildExcludedWindowsBlock(manualBusyBlocks), priorityEventBlock });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1096,6 +1132,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           maxTravelMinutes, eventTitle, durationMinutes,
           sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination,
           excludedWindowsBlock: buildExcludedWindowsBlock(manualBusyBlocks),
+          priorityEventBlock,
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1230,6 +1267,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       activity_venues_injected: activityVenueCount,
       // Whether organizer blocked off specific dates.
       has_manual_busy_blocks: manualBusyBlocks.length > 0,
+      // Cultural signal detection — intent-driven temporal anchoring (Live Events V1).
+      cultural_signal_detected: !!culturalSignal,
+      cultural_signal_type:     culturalSignal?.type   || null,
+      cultural_signal_entity:   culturalSignal?.entity || null,
+      cultural_event_found:     !!priorityEvent,
+      cultural_anchor_used:     !!priorityEvent,
     };
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1753,6 +1796,35 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('[activityVenues] reroll route failed:', activityErr.message);
     }
 
+    // ── Cultural signal detection (reroll) ───────────────────────────────────
+    // Always use the stored context_prompt — preserves the original intent across rerolls.
+    const rerollCulturalSignal = extractCulturalSignal(safeOriginalContext, [
+      ...(userA.activity_preferences || []),
+      ...(userB.activity_preferences || []),
+    ]);
+    let rerollPriorityEvent = null;
+    if (rerollCulturalSignal) {
+      try {
+        rerollPriorityEvent = await fetchCulturalEvent(
+          rerollCulturalSignal.type,
+          rerollCulturalSignal.entity,
+          itin.date_range_start,
+          itin.date_range_end
+        );
+      } catch (culturalErr) {
+        console.warn('[reroll] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const rerollPriorityEventBlock = rerollPriorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${rerollPriorityEvent.title} — ${rerollPriorityEvent.date}${rerollPriorityEvent.time ? ' at ' + rerollPriorityEvent.time : ''}\n` +
+        `Venue: ${rerollPriorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Extract first names for home-based agenda copy, same as in the suggest route.
     const rerollOrgFirst = (userA.full_name || '').split(' ')[0] || '';
     const rerollAttFirst = (userB.full_name || '').split(' ')[0] || '';
@@ -1871,6 +1943,7 @@ ${JSON.stringify(
       destination:          itin.destination          || null,
       excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
       attendeeBusyNotesBlock: buildAttendeeNotesBlock(itin.attendee_busy_notes || ''),
+      priorityEventBlock: rerollPriorityEventBlock,
     });
 
     let newSuggestions;
@@ -2110,6 +2183,12 @@ ${JSON.stringify(
       // Which reroll number this was (1-indexed) — useful for analyzing
       // how quality changes with successive rerolls on the same itinerary.
       reroll_count: updatedRerollCount,
+      // Cultural signal detection — intent-driven temporal anchoring (Live Events V1).
+      cultural_signal_detected: !!rerollCulturalSignal,
+      cultural_signal_type:     rerollCulturalSignal?.type   || null,
+      cultural_signal_entity:   rerollCulturalSignal?.entity || null,
+      cultural_event_found:     !!rerollPriorityEvent,
+      cultural_anchor_used:     !!rerollPriorityEvent,
     };
     // ─────────────────────────────────────────────────────────────────────────
 

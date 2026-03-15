@@ -366,6 +366,13 @@ function SuggestionCard({
                 🎟 Live event
               </span>
             )}
+            {/* Priority event badge — shown when Claude anchored this suggestion to a
+                real-world timed event detected from the user's context prompt. */}
+            {suggestion.priority_event && (
+              <span className="badge" style={{ background: 'rgba(220,38,38,.85)', color: '#fff', fontSize: '0.75rem' }}>
+                🔴 Live · {suggestion.priority_event.title}{suggestion.priority_event.time ? ` — ${suggestion.priority_event.time}` : ''}
+              </span>
+            )}
             {/* Activity badge — shown when Claude anchored this suggestion to a real venue
                 fetched via activity-specific Places API discovery. Emoji is mapped from
                 the activity_type field; falls back to 🏟 for unrecognized types. */}

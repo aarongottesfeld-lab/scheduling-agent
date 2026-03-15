@@ -29,6 +29,8 @@ const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnric
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
 const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
+const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
+const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const IS_PROD   = process.env.NODE_ENV === 'production';
@@ -225,7 +227,7 @@ function buildGroupAttendeeNotesBlock(notesMap) {
   return `\nATTENDEE CONSTRAINTS (from previous declines):\nSome attendees noted these scheduling constraints:\n${lines}`;
 }
 
-function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, rerollNote = '', excludedWindowsBlock = '', attendeeBusyNotesBlock = '' }) {
+function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, rerollNote = '', excludedWindowsBlock = '', attendeeBusyNotesBlock = '', priorityEventBlock = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -345,8 +347,9 @@ ${pastHistory && pastHistory.length > 0
     ).join('\n') +
     `\nUse this as a taste signal only. Do NOT suggest these specific plans or revisit these venues.`
   : ''}
-${localEvents && localEvents.length > 0
-  ? `\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the group's interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits.\n` +
+${priorityEventBlock}${
+localEvents && localEvents.length > 0
+  ? `${priorityEventBlock ? '\n' : ''}\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the group's interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits.\n` +
     localEvents.map(ev =>
       `- ${ev.title} at ${ev.venue_name || 'TBD'} (${ev.date}${ev.time ? ' at ' + ev.time : ''}) — ${ev.category || 'Event'} — Ticket link: ${ev.url}`
     ).join('\n') +
@@ -375,7 +378,10 @@ Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
       ${venueSchema},
       "narrative": "2-3 sentences. Be specific — name the actual activity and why the spot works for this group. No marketing language. Just what they're doing and why it makes sense.",
       "estimatedTravelA": "15 min",
-      "tags": ["cocktails", "rooftop"]
+      "tags": ["cocktails", "rooftop"],
+      // Optional — only set when this suggestion is anchored to a PRIORITY EVENT.
+      // Shape: { title, date, time }. Claude should populate this on the anchored suggestion only.
+      "priority_event": { "title": "Knicks vs. Pacers", "date": "March 18, 2026", "time": "7:30 PM ET" }
     }
   ]
 }
@@ -455,7 +461,7 @@ async function insertNotification(supabase, userId, type, tier, title, body, dat
  * @param {object} sessionStore - { getSessionBySupabaseId }
  * @returns {object[]} suggestions array, ready for DB write
  */
-async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '' } = {}) {
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '', priorityEventBlock = '' } = {}) {
   const start = itin.date_range_start;
   const end   = itin.date_range_end;
   const startISO = new Date(start + 'T00:00:00').toISOString();
@@ -629,6 +635,7 @@ ${JSON.stringify(
     rerollNote: [microAdjustBlock, priorSuggestionsBlock, rerollNote].filter(Boolean).join('\n'),
     excludedWindowsBlock:  buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
     attendeeBusyNotesBlock: buildGroupAttendeeNotesBlock(itin.attendee_busy_notes || {}),
+    priorityEventBlock,
   });
 
   let suggestions;
@@ -816,17 +823,55 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       isOrganizer: p.id === req.userId,
     }));
 
+    // ── Cultural signal detection ─────────────────────────────────────────
+    const safeGroupContext = sanitizePromptInput(itin.context_prompt || '');
+    const groupCulturalSignal = extractCulturalSignal(safeGroupContext,
+      members.flatMap(m => m.activity_preferences || [])
+    );
+    let groupPriorityEvent = null;
+    if (groupCulturalSignal) {
+      try {
+        groupPriorityEvent = await fetchCulturalEvent(
+          groupCulturalSignal.type,
+          groupCulturalSignal.entity,
+          itin.date_range_start,
+          itin.date_range_end
+        );
+      } catch (culturalErr) {
+        console.warn('[group-itineraries/suggest] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const groupPriorityEventBlock = groupPriorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${groupPriorityEvent.title} — ${groupPriorityEvent.date}${groupPriorityEvent.time ? ' at ' + groupPriorityEvent.time : ''}\n` +
+        `Venue: ${groupPriorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────
+
     let suggestions;
     try {
-      suggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore);
+      suggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+        priorityEventBlock: groupPriorityEventBlock,
+      });
     } catch (e) {
       console.error('[group-itineraries] generateGroupSuggestions failed:', e.message);
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
     }
 
+    const groupSuggestTelemetry = {
+      cultural_signal_detected: !!groupCulturalSignal,
+      cultural_signal_type:     groupCulturalSignal?.type   || null,
+      cultural_signal_entity:   groupCulturalSignal?.entity || null,
+      cultural_event_found:     !!groupPriorityEvent,
+      cultural_anchor_used:     !!groupPriorityEvent,
+    };
+
     const { error: updateErr } = await supabase
       .from('group_itineraries')
-      .update({ suggestions })
+      .update({ suggestions, suggestion_telemetry: groupSuggestTelemetry })
       .eq('id', req.params.id);
 
     if (updateErr) {
@@ -1230,14 +1275,44 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
     const isSingleCard = !!targetSuggestion;
 
+    // ── Cultural signal detection (reroll) ─────────────────────────────────
+    // Use stored context_prompt (original intent) — same pattern as schedule.js reroll.
+    const rerollSafeOriginalContext = sanitizePromptInput(itin.context_prompt || '');
+    const rerollGroupCulturalSignal = extractCulturalSignal(rerollSafeOriginalContext,
+      members.flatMap(m => m.activity_preferences || [])
+    );
+    let rerollGroupPriorityEvent = null;
+    if (rerollGroupCulturalSignal) {
+      try {
+        rerollGroupPriorityEvent = await fetchCulturalEvent(
+          rerollGroupCulturalSignal.type,
+          rerollGroupCulturalSignal.entity,
+          itin.date_range_start,
+          itin.date_range_end
+        );
+      } catch (culturalErr) {
+        console.warn('[group-itineraries/reroll] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const rerollGroupPriorityEventBlock = rerollGroupPriorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${rerollGroupPriorityEvent.title} — ${rerollGroupPriorityEvent.date}${rerollGroupPriorityEvent.time ? ' at ' + rerollGroupPriorityEvent.time : ''}\n` +
+        `Venue: ${rerollGroupPriorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────────
+
     let newSuggestions;
     try {
       newSuggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
         rerollType,
         existingSuggestions,
-        singleCard:       isSingleCard,
-        targetSuggestion: targetSuggestion,
-        contextPrompt:    rerollContextPrompt,
+        singleCard:         isSingleCard,
+        targetSuggestion:   targetSuggestion,
+        contextPrompt:      rerollContextPrompt,
+        priorityEventBlock: rerollGroupPriorityEventBlock,
       });
     } catch (e) {
       console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
@@ -1280,6 +1355,15 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       ? Object.fromEntries(Object.entries(itin.attendee_suggestion_map || {}).filter(([, sid]) => sid !== replaceSuggestionId))
       : {};
 
+    const rerollGroupTelemetry = {
+      cultural_signal_detected: !!rerollGroupCulturalSignal,
+      cultural_signal_type:     rerollGroupCulturalSignal?.type   || null,
+      cultural_signal_entity:   rerollGroupCulturalSignal?.entity || null,
+      cultural_event_found:     !!rerollGroupPriorityEvent,
+      cultural_anchor_used:     !!rerollGroupPriorityEvent,
+      reroll_count:             (itin.reroll_count || 0) + 1,
+    };
+
     const { error: updateErr } = await supabase
       .from('group_itineraries')
       .update({
@@ -1288,6 +1372,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         reroll_count:            (itin.reroll_count || 0) + 1,
         attendee_statuses:       resetStatuses,
         attendee_suggestion_map: resetSuggestionMap,
+        suggestion_telemetry:    rerollGroupTelemetry,
         ...(clearSelected ? { selected_suggestion_id: itin.organizer_recommendation_id || null } : {}),
       })
       .eq('id', req.params.id);
