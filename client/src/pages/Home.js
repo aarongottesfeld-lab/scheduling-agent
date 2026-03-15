@@ -299,18 +299,14 @@ export default function Home() {
   }
 
   function handleSortChange(key) {
-    const dir = SORT_DEFAULT_DIR[key];
+    // Re-clicking the active sort toggles direction; clicking a new sort resets to its default.
+    const dir = key === sortBy
+      ? (sortDir === 'asc' ? 'desc' : 'asc')
+      : SORT_DEFAULT_DIR[key];
     localStorage.setItem('rendezvous_home_sort', key);
     localStorage.setItem('rendezvous_home_sort_dir', dir);
     setSortBy(key);
     setSortDir(dir);
-    setVisibleCount(INITIAL_VISIBLE);
-  }
-
-  function toggleSortDir() {
-    const newDir = sortDir === 'asc' ? 'desc' : 'asc';
-    localStorage.setItem('rendezvous_home_sort_dir', newDir);
-    setSortDir(newDir);
     setVisibleCount(INITIAL_VISIBLE);
   }
 
@@ -461,28 +457,9 @@ export default function Home() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {label}
+                          {label}{sortBy === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
                         </button>
                       ))}
-                      {/* Ascending / descending toggle */}
-                      <button
-                        onClick={toggleSortDir}
-                        aria-label={sortDir === 'asc' ? 'Ascending. Click to sort descending.' : 'Descending. Click to sort ascending.'}
-                        title={sortDir === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
-                        style={{
-                          background: 'transparent',
-                          border: '1px solid var(--border)',
-                          borderRadius: 999,
-                          cursor: 'pointer',
-                          padding: '3px 8px',
-                          fontSize: '0.8rem',
-                          color: 'var(--text-3)',
-                          lineHeight: 1,
-                          transition: 'border-color 0.15s, color 0.15s',
-                        }}
-                      >
-                        {sortDir === 'asc' ? '↑' : '↓'}
-                      </button>
                     </div>
                   </div>
 
