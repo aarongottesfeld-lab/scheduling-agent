@@ -126,7 +126,7 @@ export default function MyProfile() {
     }
     getCalendarConnections()
       .then(data => setConnections(data.connections || []))
-      .catch(() => {}); // fail silently — section just shows empty state
+      .catch(err => { console.error('[getCalendarConnections] failed:', err); });
   }, []);
 
   // Dismiss the two-click remove confirmation when the user clicks anywhere
@@ -143,7 +143,7 @@ export default function MyProfile() {
   const refetchConnections = useCallback(() =>
     getCalendarConnections()
       .then(data => setConnections(data.connections || []))
-      .catch(() => {}),
+      .catch(err => { console.error('[refetchConnections] failed:', err); }),
   []);
 
   function showConnectionError(msg) {
@@ -182,7 +182,7 @@ export default function MyProfile() {
   }
 
   async function handleAppleSubmit(e) {
-    e.preventDefault();
+    if (e?.preventDefault) e.preventDefault();
     setAppleSubmitting(true);
     setAppleMessage('');
     try {
@@ -285,6 +285,126 @@ export default function MyProfile() {
     </div></main></>
   );
 
+  // ── Connected Calendars card (shared between read-only and edit views) ──
+  const connectedCalendarsCard = (
+    <div className="card card-pad" style={{ marginBottom:16 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+        <div className="form-section-title" style={{ marginBottom:0 }}>Connected Calendars</div>
+        <a href={getGoogleConnectUrl()} className="btn btn--secondary btn--sm">Add Google Calendar</a>
+      </div>
+      {connections.length === 0 ? (
+        <p className="form-hint" style={{ margin:0 }}>No additional calendars connected.</p>
+      ) : (
+        <ul style={{ listStyle:'none', padding:0, margin:0 }}>
+          {connections.map(conn => {
+            const isLoading     = connectionLoading === conn.id;
+            const isConfirming  = confirmingRemoveId === conn.id;
+            const anyLoading    = !!connectionLoading;
+            return (
+              <li key={conn.id} style={{ display:'flex', alignItems:'center', gap:8, paddingBottom:10, flexWrap:'wrap' }}>
+                <span className="badge badge--gray">{conn.provider}</span>
+                <span style={{ flex:1 }}>{conn.account_email || conn.account_label}</span>
+                {conn.is_primary && (
+                  <span className="badge badge--green">Primary</span>
+                )}
+                {!conn.is_primary && (
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => handleSetPrimary(conn.id)}
+                    disabled={isLoading || anyLoading}
+                  >
+                    {isLoading ? '…' : 'Set as primary'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-remove-btn="true"
+                  className={`btn btn--sm ${isConfirming ? 'btn--danger' : 'btn--ghost'}`}
+                  onClick={() => handleRemove(conn.id)}
+                  disabled={isLoading || anyLoading}
+                >
+                  {isLoading ? '…' : isConfirming ? 'Confirm remove' : 'Remove'}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {connectionError && (
+        <div className="alert alert--error" style={{ marginTop:10, marginBottom:0 }}>{connectionError}</div>
+      )}
+
+      {/* ── Apple CalDAV setup guide ── */}
+      <div style={{ marginTop:16, borderTop:'1px solid var(--border)', paddingTop:14 }}>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setAppleGuideOpen(o => !o)}
+          style={{ display:'flex', alignItems:'center', gap:6 }}
+        >
+          <span style={{ fontSize:11 }}>{appleGuideOpen ? '▼' : '▶'}</span>
+          Connect Apple Calendar
+        </button>
+        {appleGuideOpen && (
+          <div style={{ marginTop:12 }}>
+            <div className="form-section-title" style={{ marginBottom:4 }}>Connect Apple Calendar</div>
+            <p className="form-hint" style={{ marginBottom:12 }}>Apple Calendar uses app-specific passwords for third-party access.</p>
+            <ol style={{ paddingLeft:18, margin:'0 0 14px 0', fontSize:14, lineHeight:1.7 }}>
+              <li>Go to <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">appleid.apple.com</a> and sign in</li>
+              <li>Under <strong>Security</strong>, tap <strong>App-Specific Passwords</strong> → <strong>Generate Password</strong></li>
+              <li>Label it <strong>Rendezvous</strong> and tap Create</li>
+              <li>Copy the 16-character password shown — you won't see it again</li>
+              <li>Enter your iCloud email and paste the password below</li>
+            </ol>
+            <div>
+              <div className="form-group" style={{ marginBottom:10 }}>
+                <input
+                  type="email"
+                  className="form-control"
+                  placeholder="your@icloud.com"
+                  value={appleEmail}
+                  onChange={e => setAppleEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom:10 }}>
+                <input
+                  type="password"
+                  className="form-control"
+                  placeholder="xxxx-xxxx-xxxx-xxxx"
+                  value={applePassword}
+                  onChange={e => setApplePassword(e.target.value)}
+                  required
+                />
+              </div>
+              {appleMessage && (
+                <div className="alert alert--success" style={{ marginBottom:10 }}>{appleMessage}</div>
+              )}
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                onClick={handleAppleSubmit}
+                disabled={appleSubmitting || !appleEmail || !applePassword}
+              >
+                {appleSubmitting ? 'Connecting…' : 'Connect Apple Calendar'}
+              </button>
+            </div>
+            <p className="form-hint" style={{ marginTop:10, marginBottom:6 }}>
+              This password only grants calendar access. You can revoke it anytime at{' '}
+              <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">
+                appleid.apple.com → Security → App-Specific Passwords
+              </a>.
+            </p>
+            <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer" style={{ fontSize:14 }}>
+              Open Apple ID settings →
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // ── Read-only view ─────────────────────────────────────────
   if (!editing) return (
     <><NavBar />
@@ -345,119 +465,7 @@ export default function MyProfile() {
       {connectBanner && connectBanner !== 'success' && (
         <div className="alert alert--error" style={{ marginBottom:12 }}>{connectBanner}</div>
       )}
-      <div className="card card-pad" style={{ marginBottom:16 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-          <div className="form-section-title" style={{ marginBottom:0 }}>Connected Calendars</div>
-          <a href={getGoogleConnectUrl()} className="btn btn--secondary btn--sm">Add Google Calendar</a>
-        </div>
-        {connections.length === 0 ? (
-          <p className="form-hint" style={{ margin:0 }}>No additional calendars connected.</p>
-        ) : (
-          <ul style={{ listStyle:'none', padding:0, margin:0 }}>
-            {connections.map(conn => {
-              const isLoading     = connectionLoading === conn.id;
-              const isConfirming  = confirmingRemoveId === conn.id;
-              const anyLoading    = !!connectionLoading;
-              return (
-                <li key={conn.id} style={{ display:'flex', alignItems:'center', gap:8, paddingBottom:10, flexWrap:'wrap' }}>
-                  <span className="badge badge--gray">{conn.provider}</span>
-                  <span style={{ flex:1 }}>{conn.account_email || conn.account_label}</span>
-                  {conn.is_primary && (
-                    <span className="badge badge--green">Primary</span>
-                  )}
-                  {!conn.is_primary && (
-                    <button
-                      className="btn btn--ghost btn--sm"
-                      onClick={() => handleSetPrimary(conn.id)}
-                      disabled={isLoading || anyLoading}
-                    >
-                      {isLoading ? '…' : 'Set as primary'}
-                    </button>
-                  )}
-                  <button
-                    data-remove-btn="true"
-                    className={`btn btn--sm ${isConfirming ? 'btn--danger' : 'btn--ghost'}`}
-                    onClick={() => handleRemove(conn.id)}
-                    disabled={isLoading || anyLoading}
-                  >
-                    {isLoading ? '…' : isConfirming ? 'Confirm remove' : 'Remove'}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {connectionError && (
-          <div className="alert alert--error" style={{ marginTop:10, marginBottom:0 }}>{connectionError}</div>
-        )}
-
-        {/* ── Apple CalDAV setup guide ── */}
-        <div style={{ marginTop:16, borderTop:'1px solid var(--border)', paddingTop:14 }}>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setAppleGuideOpen(o => !o)}
-            style={{ display:'flex', alignItems:'center', gap:6 }}
-          >
-            <span style={{ fontSize:11 }}>{appleGuideOpen ? '▼' : '▶'}</span>
-            Connect Apple Calendar
-          </button>
-          {appleGuideOpen && (
-            <div style={{ marginTop:12 }}>
-              <div className="form-section-title" style={{ marginBottom:4 }}>Connect Apple Calendar</div>
-              <p className="form-hint" style={{ marginBottom:12 }}>Apple Calendar uses app-specific passwords for third-party access.</p>
-              <ol style={{ paddingLeft:18, margin:'0 0 14px 0', fontSize:14, lineHeight:1.7 }}>
-                <li>Go to <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">appleid.apple.com</a> and sign in</li>
-                <li>Under <strong>Security</strong>, tap <strong>App-Specific Passwords</strong> → <strong>Generate Password</strong></li>
-                <li>Label it <strong>Rendezvous</strong> and tap Create</li>
-                <li>Copy the 16-character password shown — you won't see it again</li>
-                <li>Enter your iCloud email and paste the password below</li>
-              </ol>
-              <form onSubmit={handleAppleSubmit} noValidate>
-                <div className="form-group" style={{ marginBottom:10 }}>
-                  <input
-                    type="email"
-                    className="form-control"
-                    placeholder="your@icloud.com"
-                    value={appleEmail}
-                    onChange={e => setAppleEmail(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="form-group" style={{ marginBottom:10 }}>
-                  <input
-                    type="password"
-                    className="form-control"
-                    placeholder="xxxx-xxxx-xxxx-xxxx"
-                    value={applePassword}
-                    onChange={e => setApplePassword(e.target.value)}
-                    required
-                  />
-                </div>
-                {appleMessage && (
-                  <div className="alert alert--success" style={{ marginBottom:10 }}>{appleMessage}</div>
-                )}
-                <button
-                  type="submit"
-                  className="btn btn--secondary btn--sm"
-                  disabled={appleSubmitting || !appleEmail || !applePassword}
-                >
-                  {appleSubmitting ? 'Connecting…' : 'Connect Apple Calendar'}
-                </button>
-              </form>
-              <p className="form-hint" style={{ marginTop:10, marginBottom:6 }}>
-                This password only grants calendar access. You can revoke it anytime at{' '}
-                <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">
-                  appleid.apple.com → Security → App-Specific Passwords
-                </a>.
-              </p>
-              <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer" style={{ fontSize:14 }}>
-                Open Apple ID settings →
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
+      {connectedCalendarsCard}
     </div></main></>
   );
 
@@ -558,6 +566,13 @@ export default function MyProfile() {
             These preferences may be shared with an AI model to generate personalized activity suggestions.
           </p>
         </div>
+        {connectBanner === 'success' && (
+          <div className="alert alert--success" style={{ marginBottom:12 }}>Google Calendar connected successfully.</div>
+        )}
+        {connectBanner && connectBanner !== 'success' && (
+          <div className="alert alert--error" style={{ marginBottom:12 }}>{connectBanner}</div>
+        )}
+        {connectedCalendarsCard}
         <div className="setup-actions">
           <button type="submit" className="btn btn--primary btn--lg" disabled={saving}>
             {saving ? 'Saving…' : 'Save changes'}
