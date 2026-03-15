@@ -41,6 +41,9 @@
   letter-spacing: -0.03em;
   max-width: 760px;
   margin: 0 auto 24px;
+  /* padding-bottom gives the background-clip gradient room for descenders (g, y, p…).
+     Without it the gradient box ends at the line-height boundary and clips them off. */
+  padding-bottom: 0.18em;
   background: linear-gradient(135deg, #f0f0f5 30%, #a78bfa 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
