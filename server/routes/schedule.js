@@ -1445,6 +1445,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         body: confirmMsg,
         action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
       });
+      if (isSuggestAlternative) {
+        sendPush(supabase, otherForConfirm, {
+          title: confirmerName + ' suggested an alternative',
+          body: confirmerName + ' is suggesting a different option. Take a look.',
+          actionUrl: `/schedule/${itineraryId}`,
+        });
+      }
     }
 
     // If just locked — create Google Calendar events for both users (best-effort)
@@ -1513,13 +1520,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         }),
       ]);
       sendPush(supabase, itin.organizer_id, {
-        title: 'Plans confirmed 🎉',
-        body: `Your plans with ${attendeeName} are locked in.`,
+        title: 'Plans confirmed — calendar invite sent',
+        body: `Your plans with ${attendeeName} are locked in. The event has been added to both your Google Calendars.`,
         actionUrl: `/schedule/${itineraryId}`,
       });
       sendPush(supabase, itin.attendee_id, {
-        title: 'Plans confirmed 🎉',
-        body: `Your plans with ${organizerName} are locked in.`,
+        title: 'Plans confirmed — calendar invite sent',
+        body: `Your plans with ${organizerName} are locked in. The event has been added to both your Google Calendars.`,
         actionUrl: `/schedule/${itineraryId}`,
       });
     }
@@ -1547,8 +1554,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
     });
     sendPush(supabase, itin.attendee_id, {
-      title: `${senderName} sent you a plan`,
-      body: 'Tap to review the options.',
+      title: 'New plan from ' + senderName,
+      body: senderName + ' sent you some plans to review.',
       actionUrl: `/schedule/${req.params.id}`,
     });
 
@@ -1581,6 +1588,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       title: declinerName + ' declined the plan',
       body: declinerName + ' passed on the plans. You can re-roll for new ideas.',
       action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
+    });
+    sendPush(supabase, otherUserId, {
+      title: declinerName + ' declined the plan',
+      body: declinerName + ' passed on the plans. You can re-roll for new ideas.',
+      actionUrl: `/schedule/${req.params.id}`,
     });
 
     res.json({ ok: true });

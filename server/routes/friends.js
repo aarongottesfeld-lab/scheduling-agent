@@ -165,8 +165,8 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
       req.userId,
     );
     sendPush(supabase, targetUserId, {
-      title: `${senderName} sent you a friend request`,
-      body: 'Tap to accept or decline.',
+      title: 'New friend request',
+      body: `${senderName} sent you a friend request.`,
       actionUrl: '/friends',
     });
 
@@ -210,6 +210,11 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
       `/friends/${req.userId}`,
       req.userId,
     );
+    sendPush(supabase, request.user_id, {
+      title: 'Friend request accepted',
+      body: `${acceptorName} accepted your friend request.`,
+      actionUrl: '/friends',
+    });
 
     res.json({ ok: true });
   });

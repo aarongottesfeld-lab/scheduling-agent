@@ -927,7 +927,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     attendeeIds.forEach(attendeeId =>
       sendPush(supabase, attendeeId, {
         title: `${organizerName} wants to plan ${eventName}`,
-        body: 'Tap to review and vote.',
+        body: `${organizerName} sent you some plans to review. Tap to vote.`,
         actionUrl: `/group-itineraries/${req.params.id}`,
       })
     );
@@ -1041,6 +1041,13 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
           `/group-itineraries/${req.params.id}`,
         )
       ));
+      for (const uid of notifyIds) {
+        sendPush(supabase, uid, {
+          title: `${voterName} suggested "${counterTitle}"`,
+          body: `${voterName} voted for a different option in ${eventName}.`,
+          actionUrl: `/group-itineraries/${req.params.id}`,
+        });
+      }
     }
 
     // Notify all members when voting triggers a lock.
