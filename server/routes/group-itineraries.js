@@ -27,6 +27,7 @@ const { createCalendarEventForUser } = require('../utils/calendarUtils');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
+const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const IS_PROD   = process.env.NODE_ENV === 'production';
@@ -536,6 +537,39 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
 
   const vibeAddendum = rerollContextPrompt ? ` User's specific request: "${rerollContextPrompt}".` : '';
 
+  // Micro-adjustment detection — same classification as schedule.js, applied to the
+  // user's reroll input only (rerollContextPrompt). Falls back to full_replace for
+  // ambiguous or empty inputs.
+  const rerollIntentClass = classifyRerollIntent(rerollContextPrompt);
+  if (rerollIntentClass === 'ambiguous') {
+    console.warn('[group-itineraries] classifyRerollIntent returned ambiguous — falling back to full_replace');
+  }
+
+  const microAdjustBlock = rerollIntentClass === 'micro_adjust'
+    ? `MICRO-ADJUSTMENT MODE: The user has requested a small modification to the previous suggestions, not a full replacement.
+You MUST preserve the overall structure, venue sequence, activity types, and general vibe of the prior itinerary.
+Only modify the specific dimension the user called out.
+Do NOT introduce entirely new venues or activity categories unless the user explicitly asks.
+The user's modification request is: "${rerollContextPrompt}"`
+    : '';
+
+  const priorSuggestionsBlock = rerollIntentClass === 'micro_adjust' && existingSuggestions?.length > 0
+    ? `PRIOR SUGGESTIONS (for reference — preserve structure unless instructed otherwise):
+${JSON.stringify(
+  existingSuggestions.map(s => ({
+    id: s.id,
+    title: s.title,
+    date: s.date,
+    time: s.time,
+    location_type: s.location_type,
+    neighborhood: s.neighborhood,
+    narrative: s.narrative,
+    venues: (s.days?.[0]?.stops ?? s.venues ?? []).map(v => v.name),
+  })),
+  null, 2
+)}`
+    : '';
+
   let rerollNote;
   if (singleCard && targetSuggestion) {
     const singleCardInstructions = {
@@ -569,7 +603,7 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
     travelMode:         itin.travel_mode          || 'local',
     tripDurationDays:   itin.trip_duration_days   || 1,
     destination:        itin.destination          || null,
-    rerollNote,
+    rerollNote: [microAdjustBlock, priorSuggestionsBlock, rerollNote].filter(Boolean).join('\n'),
   });
 
   let suggestions;

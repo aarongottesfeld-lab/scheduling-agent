@@ -24,6 +24,7 @@ const { createOAuth2Client, createCalendarEventForUser } = require('../utils/cal
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
+const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -1683,6 +1684,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Original is always first so Claude treats it as the dominant constraint.
     const combinedContext = [safeOriginalContext, safeRerollContext].filter(Boolean).join('. ');
 
+    // Micro-adjustment detection — classify the user's reroll input (NOT the original context).
+    // Only the user's new text (safeRerollContext) is checked for relative modifiers.
+    // The original context is always preserved regardless of classification.
+    const rerollIntentClass = classifyRerollIntent(safeRerollContext);
+    if (rerollIntentClass === 'ambiguous') {
+      console.warn('[reroll] classifyRerollIntent returned ambiguous — falling back to full_replace behavior');
+    }
+
     // exactMatchBlock: for single-card rerolls, tell Claude exactly what the intent is.
     // Built from combinedContext (original + modifier) — NOT from singleCardNote alone,
     // which only describes the reroll operation (timing/vibe) without any activity anchor.
@@ -1697,6 +1706,36 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const rerollVenueName  = extractVenueName(contextPrompt || itin.context_prompt || '');
     const rerollVenueBlock = rerollVenueName ? buildVenueSubstitutionBlock(rerollVenueName) : '';
 
+    // microAdjustBlock: injected only when the user's reroll input is a relative modifier.
+    // Instructs Claude to preserve the existing structure and only modify the flagged dimension.
+    // Falls back to no injection for full_replace and ambiguous (full replacement behavior).
+    const microAdjustBlock = rerollIntentClass === 'micro_adjust'
+      ? `MICRO-ADJUSTMENT MODE: The user has requested a small modification to the previous suggestions, not a full replacement.
+You MUST preserve the overall structure, venue sequence, activity types, and general vibe of the prior itinerary.
+Only modify the specific dimension the user called out.
+Do NOT introduce entirely new venues or activity categories unless the user explicitly asks.
+The user's modification request is: "${safeRerollContext}"`
+      : '';
+
+    // priorSuggestionsBlock: injected only in micro-adjust mode so Claude knows what it's preserving.
+    // Uses itin.suggestions — the current suggestions before this reroll is applied.
+    const priorSuggestionsBlock = rerollIntentClass === 'micro_adjust' && itin.suggestions?.length > 0
+      ? `PRIOR SUGGESTIONS (for reference — preserve structure unless instructed otherwise):
+${JSON.stringify(
+  (itin.suggestions || []).map(s => ({
+    id: s.id,
+    title: s.title,
+    date: s.date,
+    time: s.time,
+    location_type: s.location_type,
+    neighborhood: s.neighborhood,
+    narrative: s.narrative,
+    venues: (s.days?.[0]?.stops ?? s.venues ?? []).map(v => v.name),
+  })),
+  null, 2
+)}`
+      : '';
+
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
@@ -1709,6 +1748,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       // safeOriginalContext is always included first so Claude cannot lose the original intent.
       // singleCardNote supplements it as an operation modifier — it does not replace it.
       contextPrompt: [
+        microAdjustBlock,       // highest priority when micro_adjust — empty string for full_replace
+        priorSuggestionsBlock,  // prior suggestions for reference — empty string when not micro_adjust
         exactMatchBlock,
         rerollVenueBlock,
         safeOriginalContext,                                          // ① original intent — always present, always first
@@ -1716,7 +1757,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         feedback ? `Feedback: ${sanitizePromptInput(feedback)}` : '', // ③ additional guidance from the reroll UI
         singleCardNote,                                               // ④ operation modifier (new time / new vibe)
         appendNote,
-      ].filter(Boolean).join('. '),
+      ].filter(Boolean).join('\n'),
       maxTravelMinutes: itin.max_travel_minutes || null,
       eventTitle: itin.event_title || null,
       durationMinutes: rerollDuration,
@@ -1954,6 +1995,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const rerollTelemetry = {
       context_prompt_present: Boolean(feedbackOrContext),
       intent_class: classifyIntent(feedbackOrContext),
+      reroll_intent_class: rerollIntentClass,
       home_suggestion_count: newSuggestions.filter(s => s.location_type === 'home').length,
       retry_attempted: retryAttempted,
       retry_succeeded: retrySucceeded,
