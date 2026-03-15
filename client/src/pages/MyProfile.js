@@ -87,6 +87,7 @@ export default function MyProfile() {
   const [applePassword,   setApplePassword]   = useState('');
   const [appleSubmitting, setAppleSubmitting] = useState(false);
   const [appleMessage,    setAppleMessage]    = useState('');
+  const [appleIsError,    setAppleIsError]    = useState(false);
 
   const [form, setForm] = useState({
     full_name: '', username: '', location: '', timezone: '', bio: '',
@@ -185,13 +186,30 @@ export default function MyProfile() {
     if (e?.preventDefault) e.preventDefault();
     setAppleSubmitting(true);
     setAppleMessage('');
+    setAppleIsError(false);
     try {
       await connectAppleCalendar({ email: appleEmail, password: applePassword });
+      setAppleMessage('Apple Calendar connected! It now appears in your Connected Calendars list.');
+      setAppleIsError(false);
+      setAppleEmail('');
+      setApplePassword('');
+      await refetchConnections();
     } catch (err) {
+      setAppleIsError(true);
       if (err.response?.status === 501) {
         setAppleMessage('Apple Calendar support is coming soon.');
+      } else if (err.response?.data?.error) {
+        const serverMsg = err.response.data.error;
+        if (serverMsg.includes('already connected')) {
+          setAppleMessage('This Apple account is already connected — you can see it in the Connected Calendars list above.');
+        } else {
+          setAppleMessage(serverMsg);
+        }
       } else {
-        setAppleMessage(err.response?.data?.error || 'Could not connect Apple Calendar.');
+        setAppleMessage(
+          'Connection failed. Make sure you\'re using your iCloud email (not a Gmail or other address) ' +
+          'and an app-specific password from appleid.apple.com — not your regular Apple ID password.'
+        );
       }
     } finally {
       setAppleSubmitting(false);
@@ -379,7 +397,7 @@ export default function MyProfile() {
                 />
               </div>
               {appleMessage && (
-                <div className="alert alert--success" style={{ marginBottom:10 }}>{appleMessage}</div>
+                <div className={`alert alert--${appleIsError ? 'error' : 'success'}`} style={{ marginBottom:10 }}>{appleMessage}</div>
               )}
               <button
                 type="button"
