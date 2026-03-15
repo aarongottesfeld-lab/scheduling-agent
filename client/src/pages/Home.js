@@ -17,10 +17,14 @@ import client from '../utils/client';
 const INITIAL_VISIBLE = 3;
 
 const SORT_OPTIONS = [
-  { key: 'date',   label: 'Date' },
-  { key: 'recent', label: 'Recent' },
-  { key: 'status', label: 'Activity' },
+  { key: 'date',    label: 'Event date'  },
+  { key: 'created', label: 'Invite date' },
+  { key: 'recent',  label: 'Last active' },
 ];
+
+// Natural default direction per sort key.
+// 'date' → ascending (soonest first); invite/active → descending (newest first).
+const SORT_DEFAULT_DIR = { date: 'asc', created: 'desc', recent: 'desc' };
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
@@ -220,7 +224,8 @@ export default function Home() {
   const [error,        setError]        = useState('');
   const [activeTab,    setActiveTab]    = useState('waiting_you');
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
-  const [sortBy,       setSortBy]       = useState(() => localStorage.getItem('rendezvous_home_sort') || 'date');
+  const [sortBy,  setSortBy]  = useState(() => localStorage.getItem('rendezvous_home_sort') || 'date');
+  const [sortDir, setSortDir] = useState(() => localStorage.getItem('rendezvous_home_sort_dir') || SORT_DEFAULT_DIR[localStorage.getItem('rendezvous_home_sort') || 'date']);
 
   useEffect(() => {
     let mounted = true;
@@ -277,12 +282,36 @@ export default function Home() {
   }
 
   function sortItems(a, b) {
-    if (sortBy === 'recent' || sortBy === 'status') {
+    // All comparators return ascending (smaller → -1). sortDir flips via negation.
+    let cmp;
+    if (sortBy === 'recent') {
       const ua = a.updated_at || a.created_at || '';
       const ub = b.updated_at || b.created_at || '';
-      return ua > ub ? -1 : ua < ub ? 1 : 0;
+      cmp = ua < ub ? -1 : ua > ub ? 1 : 0;
+    } else if (sortBy === 'created') {
+      const ca = a.created_at || '';
+      const cb = b.created_at || '';
+      cmp = ca < cb ? -1 : ca > cb ? 1 : 0;
+    } else {
+      cmp = byEventDate(a, b); // asc = soonest first
     }
-    return byEventDate(a, b);
+    return sortDir === 'desc' ? -cmp : cmp;
+  }
+
+  function handleSortChange(key) {
+    const dir = SORT_DEFAULT_DIR[key];
+    localStorage.setItem('rendezvous_home_sort', key);
+    localStorage.setItem('rendezvous_home_sort_dir', dir);
+    setSortBy(key);
+    setSortDir(dir);
+    setVisibleCount(INITIAL_VISIBLE);
+  }
+
+  function toggleSortDir() {
+    const newDir = sortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('rendezvous_home_sort_dir', newDir);
+    setSortDir(newDir);
+    setVisibleCount(INITIAL_VISIBLE);
   }
 
   // Tag group items so EventCard can distinguish them, then merge both lists.
@@ -405,16 +434,20 @@ export default function Home() {
                       })}
                     </div>
 
-                    {/* Sort pills — right-aligned, secondary control */}
-                    <div style={{ display: 'flex', gap: 4, paddingBottom: 8, flexShrink: 0 }}>
+                    {/* Sort controls — right-aligned, secondary */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, paddingBottom: 8, flexShrink: 0 }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-4)', whiteSpace: 'nowrap', marginRight: 2 }}>
+                        Sort by
+                      </span>
                       {SORT_OPTIONS.map(({ key, label }) => (
                         <button
                           key={key}
-                          onClick={() => {
-                            localStorage.setItem('rendezvous_home_sort', key);
-                            setSortBy(key);
-                            setVisibleCount(INITIAL_VISIBLE);
-                          }}
+                          onClick={() => handleSortChange(key)}
+                          title={
+                            key === 'date'    ? 'Sort by when the event is scheduled to happen' :
+                            key === 'created' ? 'Sort by when you received or created the invite' :
+                                               'Sort by most recently changed or responded to'
+                          }
                           style={{
                             background: sortBy === key ? 'var(--brand-light)' : 'transparent',
                             border: `1px solid ${sortBy === key ? 'var(--brand)' : 'var(--border)'}`,
@@ -431,6 +464,25 @@ export default function Home() {
                           {label}
                         </button>
                       ))}
+                      {/* Ascending / descending toggle */}
+                      <button
+                        onClick={toggleSortDir}
+                        aria-label={sortDir === 'asc' ? 'Ascending. Click to sort descending.' : 'Descending. Click to sort ascending.'}
+                        title={sortDir === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
+                        style={{
+                          background: 'transparent',
+                          border: '1px solid var(--border)',
+                          borderRadius: 999,
+                          cursor: 'pointer',
+                          padding: '3px 8px',
+                          fontSize: '0.8rem',
+                          color: 'var(--text-3)',
+                          lineHeight: 1,
+                          transition: 'border-color 0.15s, color 0.15s',
+                        }}
+                      >
+                        {sortDir === 'asc' ? '↑' : '↓'}
+                      </button>
                     </div>
                   </div>
 
