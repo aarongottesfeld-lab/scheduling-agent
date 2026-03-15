@@ -9,6 +9,8 @@ import posthog from 'posthog-js';
 import PillInput from '../components/PillInput';
 import client from '../utils/client';
 import { isAuthenticated, setOnboardingCompleted } from '../utils/auth';
+import { messaging, getToken } from '../firebase';
+import { registerPushToken } from '../utils/api';
 
 // ── Shared constants (identical to MyProfile.js) ─────────────────────────────
 const ACTIVITY_SUGGESTIONS = [
@@ -244,12 +246,20 @@ export default function Onboarding() {
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
       setNotifStatus('granted');
-      // Attempt service worker registration — sw.js doesn't exist yet, catch gracefully
       try {
-        await navigator.serviceWorker.register('/sw.js');
-        // TODO: store push subscription in push_subscriptions table
-        // when web push infrastructure sprint is complete
-      } catch { /* expected — sw.js not built yet */ }
+        const token = await getToken(messaging, {
+          vapidKey: process.env.REACT_APP_FIREBASE_VAPID_KEY,
+          serviceWorkerRegistration: await navigator.serviceWorker.register(
+            '/firebase-messaging-sw.js'
+          ),
+        });
+        if (token) {
+          await registerPushToken(token);
+        }
+      } catch (err) {
+        // Non-fatal: push token registration failure should never block onboarding
+        console.warn('[push] token registration failed:', err.message);
+      }
       // Brief pause so the user sees the success state before navigating away
       setTimeout(() => completeOnboarding(true), 1200);
     } else {

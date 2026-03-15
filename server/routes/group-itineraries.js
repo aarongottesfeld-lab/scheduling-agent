@@ -21,6 +21,7 @@
 'use strict';
 
 const { randomUUID } = require('crypto');
+const { sendPush } = require('../utils/pushNotifications');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const { createCalendarEventForUser } = require('../utils/calendarUtils');
@@ -923,6 +924,13 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         `/group-itineraries/${req.params.id}`,
       )
     ));
+    attendeeIds.forEach(attendeeId =>
+      sendPush(supabase, attendeeId, {
+        title: `${organizerName} wants to plan ${eventName}`,
+        body: 'Tap to review and vote.',
+        actionUrl: `/group-itineraries/${req.params.id}`,
+      })
+    );
 
     res.json({ message: 'Itinerary sent to group.' });
   });

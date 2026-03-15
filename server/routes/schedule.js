@@ -25,6 +25,7 @@ const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnric
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
 const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
+const { sendPush } = require('../utils/pushNotifications');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -1511,6 +1512,16 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
         }),
       ]);
+      sendPush(supabase, itin.organizer_id, {
+        title: 'Plans confirmed 🎉',
+        body: `Your plans with ${attendeeName} are locked in.`,
+        actionUrl: `/schedule/${itineraryId}`,
+      });
+      sendPush(supabase, itin.attendee_id, {
+        title: 'Plans confirmed 🎉',
+        body: `Your plans with ${organizerName} are locked in.`,
+        actionUrl: `/schedule/${itineraryId}`,
+      });
     }
 
     res.json({ itinerary: updated, locked: !!updated?.locked_at, calendarEventId, calendar_event_url: calendarEventUrl });
@@ -1534,6 +1545,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       title: 'New plan from ' + senderName,
       body: senderName + ' sent you some plans to review.',
       action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
+    });
+    sendPush(supabase, itin.attendee_id, {
+      title: `${senderName} sent you a plan`,
+      body: 'Tap to review the options.',
+      actionUrl: `/schedule/${req.params.id}`,
     });
 
     res.json({ ok: true });

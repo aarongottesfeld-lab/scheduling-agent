@@ -1,5 +1,6 @@
 // routes/friends.js — friendships, requests, profiles, annotations, shared interests
 'use strict';
+const { sendPush } = require('../utils/pushNotifications');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -163,6 +164,11 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
       '/friends',
       req.userId,
     );
+    sendPush(supabase, targetUserId, {
+      title: `${senderName} sent you a friend request`,
+      body: 'Tap to accept or decline.',
+      actionUrl: '/friends',
+    });
 
     res.json({ ok: true });
   });

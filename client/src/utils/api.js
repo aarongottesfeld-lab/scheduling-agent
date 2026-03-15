@@ -7,6 +7,12 @@ import client from './client';
 
 const BASE_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:3001';
 
+// ── Push ──────────────────────────────────────────────────────────────────────
+
+export async function registerPushToken(token) {
+  return client.post('/push/register', { token });
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 export function getGoogleAuthUrl() {
