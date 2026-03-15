@@ -202,7 +202,42 @@ async function fetchBusy(session, startISO, endISO, supabase, userId) {
  *   - Aggregates dietary and mobility restrictions across all members as hard constraints
  *   - Injects group size so Claude can reason about venue capacity
  */
-function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, rerollNote = '' }) {
+function formatTime12h(t) { // '14:00' → '2:00 PM'
+  const [h, m] = t.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+/**
+ * Build the EXCLUDED WINDOWS block for the Claude prompt.
+ * Returns empty string when blocks is empty — no injection occurs.
+ * Handles both full-day blocks and specific time ranges.
+ */
+function buildExcludedWindowsBlock(blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return '';
+  const lines = blocks.map(b => {
+    let line = `- ${b.date}`;
+    if (b.timeStart && b.timeEnd) line += ` from ${formatTime12h(b.timeStart)} to ${formatTime12h(b.timeEnd)}`;
+    else if (b.timeStart)         line += ` from ${formatTime12h(b.timeStart)} onwards`;
+    if (b.label) line += ` — ${b.label}`;
+    return line;
+  }).join('\n');
+  return `\nEXCLUDED WINDOWS (strictly enforced):\nDo NOT suggest plans on any of these organizer-blocked dates:\n${lines}`;
+}
+
+/**
+ * Build the ATTENDEE CONSTRAINTS block for group itineraries.
+ * notesMap is { userId: notesString }. Concatenates all non-empty notes.
+ */
+function buildGroupAttendeeNotesBlock(notesMap) {
+  if (!notesMap || typeof notesMap !== 'object') return '';
+  const entries = Object.values(notesMap).filter(n => n && typeof n === 'string' && n.trim());
+  if (entries.length === 0) return '';
+  const lines = entries.map(n => `- "${n.trim()}"`).join('\n');
+  return `\nATTENDEE CONSTRAINTS (from previous declines):\nSome attendees noted these scheduling constraints:\n${lines}`;
+}
+
+function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWindows, contextPrompt, eventTitle, maxTravelMinutes, durationMinutes = 120, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, rerollNote = '', excludedWindowsBlock = '', attendeeBusyNotesBlock = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -331,7 +366,7 @@ ${localEvents && localEvents.length > 0
   : ''}
 ${activityVenuesBlock || ''}
 AVAILABLE TIME WINDOWS (use one per suggestion):
-${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
+${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}${excludedWindowsBlock}${attendeeBusyNotesBlock}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
 EVENT DURATION: Set durationMinutes based on the actual activity planned (coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360).
@@ -604,6 +639,8 @@ ${JSON.stringify(
     tripDurationDays:   itin.trip_duration_days   || 1,
     destination:        itin.destination          || null,
     rerollNote: [microAdjustBlock, priorSuggestionsBlock, rerollNote].filter(Boolean).join('\n'),
+    excludedWindowsBlock:  buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+    attendeeBusyNotesBlock: buildGroupAttendeeNotesBlock(itin.attendee_busy_notes || {}),
   });
 
   let suggestions;
@@ -654,6 +691,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       trip_duration_days: rawTripDays,
       nudge_after_hours: rawNudgeHours,
       tie_behavior: rawTieBehavior,
+      manual_busy_blocks: rawBusyBlocks,
     } = req.body;
 
     // Validate required fields.
@@ -677,6 +715,23 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const VALID_TRAVEL_MODES   = new Set(['local', 'travel', 'remote']);
     const VALID_TIE_BEHAVIORS  = new Set(['schedule', 'decline']);
     const VALID_NUDGE_HOURS    = new Set([24, 48, 72, 168]);
+
+    // manual_busy_blocks: array of { date: 'YYYY-MM-DD', label?: string }. Cap at 20 entries.
+    const manualBusyBlocks = Array.isArray(rawBusyBlocks)
+      ? rawBusyBlocks
+          .slice(0, 20)
+          .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
+          .map(b => {
+            const entry = { date: b.date };
+            if (typeof b.label === 'string' && b.label.trim())
+              entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
+            if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
+              entry.timeStart = b.timeStart;
+            if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
+              entry.timeEnd = b.timeEnd;
+            return entry;
+          })
+      : [];
 
     const travelMode       = VALID_TRAVEL_MODES.has(rawTravelMode)   ? rawTravelMode  : 'local';
     const locationPref     = VALID_LOCATION_PREFS.has(rawLocationPref) ? rawLocationPref : 'system_choice';
@@ -719,6 +774,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         destination,
         trip_duration_days: tripDurationDays,
         nudge_after_hours:  nudgeAfterHours,
+        manual_busy_blocks: manualBusyBlocks,
         suggestions:        [],
         changelog:          [],
         reroll_count:       0,
@@ -880,7 +936,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'Invalid itinerary ID.' });
     }
 
-    const { selected_suggestion_id, vote } = req.body;
+    const { selected_suggestion_id, vote, busy_notes: rawBusyNotes } = req.body;
 
     const VALID_VOTES = new Set(['accepted', 'declined', 'abstained']);
     if (!VALID_VOTES.has(vote)) {
@@ -892,7 +948,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     const { data: itin } = await supabase
       .from('group_itineraries')
-      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
       .eq('id', req.params.id)
       .single();
 
@@ -930,13 +986,23 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       || itin.organizer_recommendation_id
       || selected_suggestion_id;
 
+    // If the attendee is declining and left busy notes, merge into attendee_busy_notes jsonb map.
+    const voteUpdate = {
+      attendee_statuses:       updatedStatuses,
+      attendee_suggestion_map: updatedSuggestionMap,
+      selected_suggestion_id:  winnerCard,
+    };
+    if (vote === 'declined' && rawBusyNotes && typeof rawBusyNotes === 'string') {
+      const sanitizedNotes = sanitizePromptInput(rawBusyNotes.trim().slice(0, 300));
+      if (sanitizedNotes) {
+        const existingNotes = itin.attendee_busy_notes || {};
+        voteUpdate.attendee_busy_notes = { ...existingNotes, [req.userId]: sanitizedNotes };
+      }
+    }
+
     const { data: updated, error: updateErr } = await supabase
       .from('group_itineraries')
-      .update({
-        attendee_statuses:      updatedStatuses,
-        attendee_suggestion_map: updatedSuggestionMap,
-        selected_suggestion_id:  winnerCard,
-      })
+      .update(voteUpdate)
       .eq('id', req.params.id)
       .select('itinerary_status, locked_at')
       .single();

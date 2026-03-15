@@ -711,6 +711,10 @@ export default function GroupItineraryView() {
   const [deleting,          setDeleting]          = useState(false);
   const [deleteError,       setDeleteError]       = useState('');
 
+  // Decline confirmation panel — captures optional busy notes before recording a 'declined' vote.
+  const [pendingDecline,    setPendingDecline]    = useState(null); // { suggestionId } | null
+  const [declineBusyNotes,  setDeclineBusyNotes]  = useState('');
+
   // TODO: inline title edit not yet implemented for group itineraries — add parity with ItineraryView handleSaveTitle once built (see FIX 6 in bug fix session, March 14 2026)
 
   /** Fetch (or re-fetch) the itinerary from the server. */
@@ -779,11 +783,16 @@ export default function GroupItineraryView() {
    * The DB trigger evaluates quorum after the vote — we read back itinerary_status
    * from the response to see if the itinerary locked.
    */
-  async function handleVote(suggestionId, vote) {
+  async function handleVote(suggestionId, vote, busyNotes = '') {
+    // Intercept 'declined' votes to show the busy notes panel first.
+    if (vote === 'declined' && !busyNotes) {
+      setPendingDecline({ suggestionId });
+      return;
+    }
     setActingCard(suggestionId);
     setActionError('');
     try {
-      const result = await voteOnGroupItinerary(id, suggestionId, vote);
+      const result = await voteOnGroupItinerary(id, suggestionId, vote, busyNotes);
       // If this vote triggered a lock, kick off the calendar write before refreshing.
       if (result?.itinerary_status === 'locked') {
         // Best-effort calendar write — do not block UI on failure
@@ -1025,6 +1034,60 @@ export default function GroupItineraryView() {
 
           {actionError && (
             <div className="alert alert--error" style={{ marginBottom: 16 }}>{actionError}</div>
+          )}
+
+          {/* Attendee busy notes banner — shown to organizer when attendees left decline notes */}
+          {isOrganizer && itinerary?.attendee_busy_notes && Object.keys(itinerary.attendee_busy_notes).length > 0 && (
+            <div className="alert" style={{ marginBottom: 16, background: 'var(--surface-2)', borderLeft: '3px solid var(--warning, #f59e0b)' }}>
+              <strong>Attendee constraints from previous declines:</strong>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                {Object.entries(itinerary.attendee_busy_notes).map(([uid, notes]) => {
+                  const voter = voteStatus[uid];
+                  const name = voter?.profile?.full_name || 'An attendee';
+                  return <li key={uid} style={{ fontSize: '0.88rem' }}><strong>{name}:</strong> {notes}</li>;
+                })}
+              </ul>
+            </div>
+          )}
+
+          {/* Decline confirmation panel — captures optional busy notes before submitting a declined vote */}
+          {pendingDecline && (
+            <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Decline this plan?</p>
+              <p style={{ margin: '0 0 12px', fontSize: '0.88rem', color: 'var(--text-2)' }}>
+                Any dates or times that don't work? Let the organizer know so they can adjust when rerolling.
+              </p>
+              <textarea
+                className="form-control"
+                rows={3}
+                value={declineBusyNotes}
+                onChange={e => setDeclineBusyNotes(e.target.value)}
+                placeholder="e.g. 'Can't do weekday evenings', 'Weekends work better'"
+                maxLength={300}
+                style={{ marginBottom: 12 }}
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn btn--danger btn--sm"
+                  disabled={!!actingCard}
+                  onClick={() => {
+                    const { suggestionId } = pendingDecline;
+                    setPendingDecline(null);
+                    setDeclineBusyNotes('');
+                    handleVote(suggestionId, 'declined', declineBusyNotes);
+                  }}
+                >
+                  {actingCard ? '…' : 'Confirm Decline'}
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  disabled={!!actingCard}
+                  onClick={() => { setPendingDecline(null); setDeclineBusyNotes(''); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
 
           {/* ── Delete draft button (organizer_draft only) ── */}

@@ -679,6 +679,10 @@ export default function ItineraryView() {
   // True while the "Generate More" append request is in-flight.
   const [generatingMore,  setGeneratingMore]  = useState(false);
 
+  // Decline confirmation panel — shown to attendees to optionally leave busy notes before declining.
+  const [declinePanelOpen, setDeclinePanelOpen] = useState(false);
+  const [declineBusyNotes, setDeclineBusyNotes] = useState('');
+
   // Inline title editing
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft,   setTitleDraft]   = useState('');
@@ -778,10 +782,20 @@ export default function ItineraryView() {
    * Either party declines the itinerary entirely.
    * Navigates home on success; the itinerary is marked declined on the server.
    */
-  async function handleDecline() {
+  /** Opens the decline confirmation panel (attendees only). Organizers decline immediately. */
+  function handleDeclineRequest() {
+    if (!itin?.isOrganizer) {
+      setDeclinePanelOpen(true);
+    } else {
+      handleDecline('');
+    }
+  }
+
+  async function handleDecline(busyNotes = '') {
     setSubmitting(true);
     try {
-      await client.post(`/schedule/itinerary/${id}/decline`);
+      const body = busyNotes ? { attendee_busy_notes: busyNotes } : {};
+      await client.post(`/schedule/itinerary/${id}/decline`, body);
       navigate('/');
     } catch { setError('Could not decline. Please try again.'); }
     finally { setSubmitting(false); }
@@ -1032,6 +1046,48 @@ export default function ItineraryView() {
           {/* Non-fatal error banner (e.g., a failed reroll after successful initial load) */}
           {error && <div className="alert alert--error" style={{ marginBottom: 12 }}>{error}</div>}
 
+          {/* Attendee busy notes banner — shown to organizer after attendee declines with notes */}
+          {isOrganizer && itin?.attendee_busy_notes && (
+            <div className="alert" style={{ marginBottom: 12, background: 'var(--surface-2)', borderLeft: '3px solid var(--warning, #f59e0b)' }}>
+              <strong>{attendeeName} mentioned:</strong> {itin.attendee_busy_notes}
+            </div>
+          )}
+
+          {/* Decline confirmation panel — attendees only; lets them leave optional busy notes */}
+          {declinePanelOpen && (
+            <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Decline this plan?</p>
+              <p style={{ margin: '0 0 12px', fontSize: '0.88rem', color: 'var(--text-2)' }}>
+                Any times or dates that don't work? Let {organizerName} know so they can adjust when rerolling.
+              </p>
+              <textarea
+                className="form-control"
+                rows={3}
+                value={declineBusyNotes}
+                onChange={e => setDeclineBusyNotes(e.target.value)}
+                placeholder="e.g. 'Can't do weekday evenings', 'Weekends work better for me'"
+                maxLength={300}
+                style={{ marginBottom: 12 }}
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn btn--danger btn--sm"
+                  disabled={submitting}
+                  onClick={() => { handleDecline(declineBusyNotes); setDeclinePanelOpen(false); }}
+                >
+                  {submitting ? 'Declining…' : 'Confirm Decline'}
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  disabled={submitting}
+                  onClick={() => { setDeclinePanelOpen(false); setDeclineBusyNotes(''); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Suggestion cards — all shown normally; only the picked card shown while waiting */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {visibleSuggestions.map((s) => {
@@ -1051,7 +1107,7 @@ export default function ItineraryView() {
                   role={role}
                   status={status}
                   onAccept={handleAccept}
-                  onDecline={handleDecline}
+                  onDecline={handleDeclineRequest}
                   onReroll={() => setRerollOpen(true)}
                   onPick={handlePick}
                   onRerollWithFeedback={(sugId, type, feedback) => handleSingleCardReroll(sugId, type, feedback)}

@@ -477,7 +477,39 @@ function deriveGeoContext(userA, userB) {
  *      are generated when the intent is casual/vague, and venue-focused when specific.
  *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
  */
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null }) {
+/**
+ * Build the EXCLUDED WINDOWS block for the Claude prompt.
+ * Returns empty string when blocks is empty — no injection occurs.
+ * Handles both full-day blocks and specific time ranges.
+ */
+function formatTime12h(t) { // '14:00' → '2:00 PM'
+  const [h, m] = t.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function buildExcludedWindowsBlock(blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return '';
+  const lines = blocks.map(b => {
+    let line = `- ${b.date}`;
+    if (b.timeStart && b.timeEnd) line += ` from ${formatTime12h(b.timeStart)} to ${formatTime12h(b.timeEnd)}`;
+    else if (b.timeStart)         line += ` from ${formatTime12h(b.timeStart)} onwards`;
+    if (b.label) line += ` — ${b.label}`;
+    return line;
+  }).join('\n');
+  return `\nEXCLUDED WINDOWS (strictly enforced):\nDo NOT suggest plans on any of these organizer-blocked dates:\n${lines}`;
+}
+
+/**
+ * Build the ATTENDEE CONSTRAINTS block for the Claude prompt.
+ * Only injected on rerolls after an attendee has declined and left notes.
+ */
+function buildAttendeeNotesBlock(notes) {
+  if (!notes || typeof notes !== 'string' || !notes.trim()) return '';
+  return `\nATTENDEE CONSTRAINTS (from previous decline):\nThe attendee noted: "${notes.trim()}"`;
+}
+
+function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, excludedWindowsBlock = '', attendeeBusyNotesBlock = '' }) {
   const windowList = freeWindows.slice(0, 15).map(w => {
     const s = new Date(w.start);
     const e = new Date(w.end);
@@ -675,7 +707,7 @@ ${
   activityVenuesBlock || ''
 }
 AVAILABLE TIME WINDOWS (use one per suggestion):
-${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}
+${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}${excludedWindowsBlock}${attendeeBusyNotesBlock}
 
 MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
 EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
@@ -804,7 +836,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
-    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference: rawLocationPreference, travel_mode: rawTravelMode, trip_duration_days: rawTripDurationDays, destination: rawDestination } = req.body;
+    const { targetUserId, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference: rawLocationPreference, travel_mode: rawTravelMode, trip_duration_days: rawTripDurationDays, destination: rawDestination, manual_busy_blocks: rawBusyBlocks } = req.body;
     // Validate and default location_preference — all four values are valid now that
     // travel mode (steps 5–6) ships. 'destination' is used when travel_mode='travel'.
     const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice', 'destination']);
@@ -819,6 +851,22 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const destination = (travelMode === 'travel' && typeof rawDestination === 'string')
       ? rawDestination.trim().slice(0, 100) || null
       : null;
+    // manual_busy_blocks: array of { date: 'YYYY-MM-DD', label?: string }. Cap at 20 entries.
+    const manualBusyBlocks = Array.isArray(rawBusyBlocks)
+      ? rawBusyBlocks
+          .slice(0, 20)
+          .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
+          .map(b => {
+            const entry = { date: b.date };
+            if (typeof b.label === 'string' && b.label.trim())
+              entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
+            if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
+              entry.timeStart = b.timeStart;
+            if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
+              entry.timeEnd = b.timeEnd;
+            return entry;
+          })
+      : [];
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
@@ -1008,7 +1056,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Extract first names so the prompt can reference "at Aaron's place" in home-based agendas.
     const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
     const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
-    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination });
+    const prompt = buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt: finalSuggestContext, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination, excludedWindowsBlock: buildExcludedWindowsBlock(manualBusyBlocks) });
     let suggestions;
     try {
       const msg = await anthropic.messages.create({
@@ -1054,6 +1102,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           contextPrompt: [retryInstruction, finalSuggestContext].filter(Boolean).join('\n'),
           maxTravelMinutes, eventTitle, durationMinutes,
           sharedInterests, organizerFirstName, attendeeFirstName, pastHistory, localEvents, activityVenuesBlock, locationPreference, travelMode, tripDurationDays, destination,
+          excludedWindowsBlock: buildExcludedWindowsBlock(manualBusyBlocks),
         });
         try {
           const retryMsg = await anthropic.messages.create({
@@ -1186,6 +1235,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       activity_type_detected: detectedActivityType || null,
       // How many activity-specific venues were fetched and injected into the prompt.
       activity_venues_injected: activityVenueCount,
+      // Whether organizer blocked off specific dates.
+      has_manual_busy_blocks: manualBusyBlocks.length > 0,
     };
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1209,6 +1260,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         travel_mode:         travelMode,
         trip_duration_days:  tripDurationDays,
         destination:         destination,
+        manual_busy_blocks:  manualBusyBlocks,
         suggestion_telemetry: telemetry,
       })
       .select('id')
@@ -1495,8 +1547,15 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
 
+    const isAttendeeDecline = itin.attendee_id === req.userId;
     const field = itin.organizer_id === req.userId ? 'organizer_status' : 'attendee_status';
-    await supabase.from('itineraries').update({ [field]: 'declined' }).eq('id', req.params.id);
+    const declineUpdate = { [field]: 'declined' };
+    // If the attendee left busy notes, store them so the organizer sees them on the next reroll.
+    if (isAttendeeDecline && req.body.attendee_busy_notes && typeof req.body.attendee_busy_notes === 'string') {
+      const sanitizedNotes = sanitizePromptInput(req.body.attendee_busy_notes.trim().slice(0, 300));
+      if (sanitizedNotes) declineUpdate.attendee_busy_notes = sanitizedNotes;
+    }
+    await supabase.from('itineraries').update(declineUpdate).eq('id', req.params.id);
 
     // Notify the other person
     const otherUserId = itin.organizer_id === req.userId ? itin.attendee_id : itin.organizer_id;
@@ -1775,6 +1834,8 @@ ${JSON.stringify(
       travelMode:           itin.travel_mode          || 'local',
       tripDurationDays:     itin.trip_duration_days   || 1,
       destination:          itin.destination          || null,
+      excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+      attendeeBusyNotesBlock: buildAttendeeNotesBlock(itin.attendee_busy_notes || ''),
     });
 
     let newSuggestions;
@@ -1849,6 +1910,8 @@ ${JSON.stringify(
           travelMode:           itin.travel_mode          || 'local',
           tripDurationDays:     itin.trip_duration_days   || 1,
           destination:          itin.destination          || null,
+          excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+          attendeeBusyNotesBlock: buildAttendeeNotesBlock(itin.attendee_busy_notes || ''),
         });
         try {
           const retryMsg = await anthropic.messages.create({

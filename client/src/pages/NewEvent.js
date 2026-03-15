@@ -94,6 +94,18 @@ function getInitials(name = '') {
   return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
+/** 'YYYY-MM-DD' → 'Mar 20' */
+function formatDateShort(s) {
+  const [, m, d] = s.split('-');
+  return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]} ${+d}`;
+}
+
+/** 'HH:MM' → 'H:MM AM/PM' */
+function formatTime12h(t) {
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
 /* ── Component ──────────────────────────────────────────────── */
 
 export default function NewEvent() {
@@ -131,6 +143,14 @@ export default function NewEvent() {
   // Organizer's first name — fetched once for the helper text below the location selector.
   // Falls back to 'you' if the fetch fails or the name is missing.
   const [organizerFirstName,  setOrganizerFirstName]  = useState('');
+
+  // Busy block state — organizer can block off specific dates/time ranges.
+  const [busyBlocks,    setBusyBlocks]    = useState([]);
+  const [busyBlockOpen, setBusyBlockOpen] = useState(false);
+  const [busyDate,      setBusyDate]      = useState('');
+  const [busyLabel,     setBusyLabel]     = useState('');
+  const [busyTimeStart, setBusyTimeStart] = useState('');
+  const [busyTimeEnd,   setBusyTimeEnd]   = useState('');
 
   // UI state
   const [generating,            setGenerating]            = useState(false);
@@ -229,6 +249,7 @@ export default function NewEvent() {
           : (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
             ? destination.trim()
             : null,
+        manual_busy_blocks: busyBlocks.length > 0 ? busyBlocks : undefined,
       });
       // Server found a conflict on the organizer's calendar — ask before generating.
       if (data?.needsConfirmation) {
@@ -529,6 +550,120 @@ export default function NewEvent() {
                 placeholder="e.g. 'quick dinner', 'something active', 'near Midtown', 'golf and drinks after'"
                 rows={3} />
               <p className="form-hint">Free text — our AI reads between the lines.</p>
+            </div>
+
+            {/* Block off times — optional date/time-range exclusions injected into the AI prompt */}
+            <div className="form-group">
+              <button type="button" className="btn btn--ghost btn--sm"
+                onClick={() => setBusyBlockOpen(o => !o)}>
+                {busyBlockOpen ? '▲' : '▼'} Block off dates{busyBlocks.length > 0 ? ` (${busyBlocks.length})` : ''} <span className="optional">optional</span>
+              </button>
+              {busyBlockOpen && (
+                <div style={{ marginTop: 12 }}>
+                  <p className="form-hint" style={{ marginBottom: 10 }}>
+                    Select a date to add it — then optionally set a time range and reason.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', marginBottom: 3 }}>Date</div>
+                      <input
+                        type="date"
+                        className="form-control"
+                        style={{ width: 'auto' }}
+                        value={busyDate}
+                        min={startDate || today()}
+                        max={endDate || undefined}
+                        onChange={e => {
+                          const value = e.target.value;
+                          if (!value) return;
+                          setBusyBlocks(prev => [...prev, { date: value }]);
+                          setBusyDate('');
+                          setBusyLabel('');
+                          setBusyTimeStart('');
+                          setBusyTimeEnd('');
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', marginBottom: 3 }}>From</div>
+                      <input
+                        type="time"
+                        className="form-control"
+                        style={{ width: 'auto' }}
+                        value={busyTimeStart}
+                        onChange={e => {
+                          setBusyTimeStart(e.target.value);
+                          setBusyBlocks(prev => {
+                            if (!prev.length) return prev;
+                            const last = { ...prev[prev.length - 1] };
+                            if (e.target.value) last.timeStart = e.target.value; else delete last.timeStart;
+                            return [...prev.slice(0, -1), last];
+                          });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', marginBottom: 3 }}>To</div>
+                      <input
+                        type="time"
+                        className="form-control"
+                        style={{ width: 'auto' }}
+                        value={busyTimeEnd}
+                        onChange={e => {
+                          setBusyTimeEnd(e.target.value);
+                          setBusyBlocks(prev => {
+                            if (!prev.length) return prev;
+                            const last = { ...prev[prev.length - 1] };
+                            if (e.target.value) last.timeEnd = e.target.value; else delete last.timeEnd;
+                            return [...prev.slice(0, -1), last];
+                          });
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 120 }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', marginBottom: 3 }}>Reason</div>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="e.g. anniversary"
+                        value={busyLabel}
+                        maxLength={80}
+                        onChange={e => {
+                          setBusyLabel(e.target.value);
+                          setBusyBlocks(prev => {
+                            if (!prev.length) return prev;
+                            const last = { ...prev[prev.length - 1] };
+                            if (e.target.value.trim()) last.label = e.target.value.trim(); else delete last.label;
+                            return [...prev.slice(0, -1), last];
+                          });
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {busyBlocks.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {busyBlocks.map((b, i) => {
+                        const isEditing = i === busyBlocks.length - 1;
+                        let display = formatDateShort(b.date);
+                        if (b.timeStart && b.timeEnd) display += `, ${formatTime12h(b.timeStart)} – ${formatTime12h(b.timeEnd)}`;
+                        else if (b.timeStart) display += ` from ${formatTime12h(b.timeStart)}`;
+                        if (b.label) display += ` — ${b.label}`;
+                        return (
+                          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 10px', borderRadius: 999, background: 'var(--surface-2)', fontSize: '0.82rem', color: 'var(--text-2)', border: `1px solid ${isEditing ? 'var(--primary, #6366f1)' : 'var(--border)'}` }}>
+                            {display}
+                            <button
+                              type="button"
+                              onClick={() => setBusyBlocks(prev => prev.filter((_, j) => j !== i))}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1, marginLeft: 2, color: 'var(--text-3)', fontSize: '0.9rem' }}
+                              aria-label="Remove"
+                            >×</button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <button type="submit" className="btn btn--primary btn--lg btn--full" disabled={generating}>

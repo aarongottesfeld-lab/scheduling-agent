@@ -46,8 +46,8 @@ export async function saveProfile(profile) {
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
 
-export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference, travel_mode, trip_duration_days, destination }) {
-  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference, travel_mode, trip_duration_days, destination });
+export async function getSuggestions({ targetUserId, daysAhead = 7, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference, travel_mode, trip_duration_days, destination, manual_busy_blocks }) {
+  const res = await client.post('/schedule/suggest', { targetUserId, daysAhead, startDate, endDate, timeOfDay, maxTravelMinutes, contextPrompt, eventTitle, timezoneOffsetMinutes, confirmedOrganizerConflict, locationPreference, travel_mode, trip_duration_days, destination, manual_busy_blocks });
   return res.data;
 }
 
@@ -163,11 +163,10 @@ export async function sendGroupItinerary(itineraryId, suggestionId) {
  * Returns { message, itinerary_status, locked_at }.
  * The DB trigger handles quorum evaluation — do not replicate that logic here.
  */
-export async function voteOnGroupItinerary(itineraryId, selectedSuggestionId, vote) {
-  const res = await client.patch(`/group-itineraries/${itineraryId}/vote`, {
-    selected_suggestion_id: selectedSuggestionId,
-    vote,
-  });
+export async function voteOnGroupItinerary(itineraryId, selectedSuggestionId, vote, busyNotes = '') {
+  const body = { selected_suggestion_id: selectedSuggestionId, vote };
+  if (busyNotes) body.busy_notes = busyNotes;
+  const res = await client.patch(`/group-itineraries/${itineraryId}/vote`, body);
   return res.data;
 }
 
