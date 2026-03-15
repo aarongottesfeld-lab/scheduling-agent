@@ -33,6 +33,8 @@ import posthog from 'posthog-js';
 
 import { initSessionFromUrl, setSessionFromApi, clearSession, setOnboardingCompleted, isOnboardingCompleted } from './utils/auth';
 import client from './utils/client';
+import { messaging, getToken } from './firebase';
+import { registerPushToken } from './utils/api';
 import ProtectedRoute from './components/ProtectedRoute';
 
 import Login               from './pages/Login';
@@ -113,6 +115,27 @@ export default function App() {
         } catch {
           // Fail open — don't force onboarding on a transient /users/me error.
           setOnboardingCompleted(true);
+        }
+
+        // Silently re-register FCM token on every authenticated load.
+        // Ensures users who completed onboarding before push was wired get registered
+        // without going through onboarding again. Entirely fire-and-forget — never
+        // blocks app load or surfaces errors to the user.
+        if (
+          typeof Notification !== 'undefined' &&
+          Notification.permission === 'granted' &&
+          'serviceWorker' in navigator
+        ) {
+          navigator.serviceWorker
+            .register('/firebase-messaging-sw.js')
+            .then(registration =>
+              getToken(messaging, {
+                vapidKey: process.env.REACT_APP_FIREBASE_VAPID_KEY,
+                serviceWorkerRegistration: registration,
+              })
+            )
+            .then(token => { if (token) registerPushToken(token); })
+            .catch(err => console.warn('[push] background re-registration failed:', err.message));
         }
       })
       .catch(() => {

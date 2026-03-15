@@ -430,7 +430,13 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 ### Tier 1 — Before/during first beta wave
 
 - [x] **Bug report + feedback buttons** — DONE March 14. Two pill buttons bottom-right. Feedback → Google Form. Bug → modal → POST /bug-report → bug_reports table. nodemailer removed (DB write only for beta).
-- [ ] **Discord button** — Add a "Join Our Discord" pill button alongside the existing bug report and feedback buttons (bottom-right floating cluster). Opens a Discord invite link in a new tab. No backend needed — just a link. Spin up the Discord server first, then add the invite URL as a constant in BugReportButton.jsx (or wherever the floating button cluster lives). Auth-gated same as the other buttons, excluded from /onboarding. Rationale: gives beta users a shared space for group comms, feedback, and coordination without requiring async back-and-forth.
+- [x] **Discord button** — DONE. "💬 Discord" pill button added to top of floating cluster, opens https://discord.gg/6xc8ERrDDb in a new tab. DISCORD_INVITE_URL constant defined alongside FEEDBACK_URL. Auth-gated and excluded from /onboarding.
+
+- [ ] **Discord automations (post-beta, when Discord has active members)** — Feed telemetry and user feedback into Discord automatically so the server becomes a live signal dashboard, not just a chat room. Three candidates:
+  - **Bug reports → Discord channel**: when a row is inserted into `bug_reports` (Supabase), post a formatted message to a #bug-reports Discord channel via a webhook. Include category, description, timestamp, and user UUID (no PII). Can be a Supabase webhook → Vercel serverless function → Discord webhook.
+  - **Feedback form → Discord channel**: Google Sheets `onFormSubmit` trigger (Apps Script) posts new feedback responses to a #feedback channel. Simple Apps Script webhook call — no backend needed.
+  - **Key PostHog events → Discord channel**: PostHog destinations/webhooks can forward specific events (itinerary_locked, suggestion_generated, friend_added) to a Discord channel for real-time usage signal. Useful during early beta to see the app being used in real time.
+  - Sequencing: build these only once Discord has enough members that the signal is worth surfacing. During very early beta (4 users), direct Supabase access is sufficient.
 - [x] **Group invite notification frontend** — DONE March 14. group_invite type renders inline Accept/Decline in notification center.
 - [x] **Group friend search dropdown** — DONE March 14. Live typeahead in GroupDetail, excludes existing members, "No matches" state.
 - [x] **PostHog targeting events** — DONE March 14. home_view_loaded, itinerary_view_loaded, friends_view_loaded firing with relevant properties.
@@ -446,11 +452,11 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - Options: numeric stepper (1–14) or range picker (min days / max days)
 - Resolve UX choice before building; full prompt in CLAUDE_CODE_PROMPTS.md
 
-**2. Voting rules in group event planning UI (HIGH — confirmed missing)**
-- Quorum threshold and tie_behavior set server-side but never shown to organizer in NewGroupEvent
-- Add collapsible "Voting settings" section: quorum (simple majority vs custom) + tie behavior toggle
-- Hide or default-lock for 2-person groups
-- Full prompt in CLAUDE_CODE_PROMPTS.md
+**2. Voting rules in group event planning UI — DONE**
+- Quorum threshold and tie_behavior now visible and configurable in NewGroupEvent
+- Quorum: custom threshold (N of X votes) or Unanimous toggle
+- Tie behavior: "Lock it in anyway" or "Skip the suggestion"
+- Radio card pattern with brand-highlighted active selection
 
 **3. Remote mode (new planning mode — no travel required)**
 - Third mode alongside Local and Travel for virtual hangouts
@@ -470,6 +476,7 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 
 **6. Manual busy blocks (organizer + attendee)**
 - See manual busy blocks section below
+- Prerequisite for MCP server and guest mode — builds the shared exclusion block format both will reuse
 
 **7. Web push notifications**
 - push_subscriptions table and permission grant path exist; delivery not built
@@ -477,33 +484,61 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - Triggers: friend request received, group invite, itinerary sent to you, itinerary locked
 - See notification tiers in SPRINT_SPECS.md
 
-**8. Live events integration (Ticketmaster + Eventbrite)**
+**8. Other calendars (Apple Calendar + multi-calendar support)**
+- Build the calendar_connections DB schema first — unblocks both multi-Google and Apple CalDAV
+- See Apple Calendar and Multi-calendar support sections below for full spec
+- Decision gate on Apple CalDAV itself still stands; schema migration is the prerequisite step regardless
+
+**9. Live events integration (Ticketmaster + Eventbrite)**
 - See full spec in output quality section above
 - Meaningful differentiator worth having before wider rollout
 
-**9. Home screen sorting options (added March 14, 2026)**
-- Currently, event pills on the home screen appear in whatever order the API returns them (no explicit sort)
-- Add sort controls so users can reorder pills within each tab (Waiting for you / Waiting for them / Drafts / Confirmed)
-- Sort options to support:
-  - **By date** (soonest first / latest first) — the most natural default; uses the scheduling window start date
-  - **By recency** (most recently created or updated) — useful for finding what's newest
-  - **By status** (e.g. within a tab, surface items with unread activity or recent votes at top)
-- UI placement: a small sort control above the tab list (affects all tabs) or inline per tab (more control, more chrome)
-- Sort choice should persist across sessions (localStorage) so the user doesn't have to re-select on every load
-- Group events comingled with 1:1 events — sort applies uniformly across both types within a tab
-- Default sort for initial release: by date (soonest first) within each tab
+**9. Home screen sorting — DONE commit 53f39e1**
+- Sort options: Date (soonest first), Recent (updated_at desc), Activity (updated_at desc)
+- Persists to localStorage under 'rendezvous_home_sort', defaults to 'date'
+- Sort pills right-aligned on same row as tab bar; stacks below tabs on mobile
+- Applies uniformly across all four tabs; resets visibleCount on change
+
+**10. Pre-login landing page — DONE commit 10fa724**
+- Fraunces display font via Google Fonts, dark background, indigo accent
+- Hero: "Stop suggesting. Start going." headline, pill OAuth CTA, privacy note, animated scroll hint
+- 3 scroll-triggered feature sections with Intersection Observer (alternating layout, fade+slide)
+  - Calendar overlap SVG mock, SuggestionCard HTML mock, phone calendar SVG mock
+- Final CTA section: "Your next plans are waiting."
+- Floating "Get Started →" button: fixed bottom-right, fades in past hero, links to OAuth
+- Auth redirect logic in Login.js untouched — authenticated users still redirect immediately
+
+**11. Apple Calendar support (moved from React Native section)**
+- Apple Calendar uses CalDAV, not a REST API — requires a CalDAV client library on the server rather than the Google Calendar SDK
+- Auth flow is different: Apple uses app-specific passwords or Sign in with Apple, not OAuth 2.0 in the same pattern
+- Current architecture assumes Google OAuth tokens in `google_tokens` table — need a parallel `apple_tokens` table or a more generic `calendar_tokens` table with a `provider` column and a separate token refresh path
+- `createCalendarEventForUser` (now in calendarUtils.js) and `findFreeWindows` are both Google-specific — need provider-abstracted versions or separate implementations per provider called through a common interface
+- Cross-provider free/busy: if one user has Google Calendar and another has Apple, availability detection needs to produce a unified free window — more complex than two Google users
+- Onboarding flow currently assumes Google OAuth — needs a calendar provider selection step
+- Decision gate: build when there is real signal that adoption is being blocked by the Google Calendar requirement. Most users willing to use an AI scheduling app are already Google Calendar users. Apple Calendar users who care enough will likely connect a Google account for this purpose. Do not start until at least one beta user flags this as a blocker.
+
+**12. Multi-calendar support (linked calendars per user)**
+> Users commonly have more than one calendar they need to check for availability — multiple Google Calendars (personal + work), an Apple Calendar alongside a Google Calendar, or a shared family calendar. Currently Rendezvous only reads the primary Google Calendar linked at sign-in. This causes false availability: a user with a work Google Calendar not connected will appear free during meetings they actually have.
+>
+> This is a prerequisite for Apple Calendar being genuinely useful — if a user has both Google and Apple calendars, they need both connected for availability to be accurate.
+>
+> **Architecture approach:**
+> - Rename or migrate `google_tokens` to a more generic `calendar_connections` table with columns: `user_id`, `provider` (google | apple), `account_label` (e.g. "Work Gmail", "Personal iCloud"), `tokens` (jsonb, encrypted), `calendar_ids` (text[], the specific calendar IDs within that account to include in free/busy), `is_primary` (boolean, the calendar to write new events to), `created_at`
+> - During onboarding and from a new "Connected Calendars" section in profile settings, users can add multiple calendar accounts. Each additional Google account goes through its own OAuth flow; Apple goes through CalDAV (when built).
+> - `findFreeWindows` and `findFreeWindowsForGroup` need to aggregate free/busy across all connected calendars for a given user, not just the single token. The freebusy API supports querying multiple calendar IDs in one call for Google — use that to minimize round trips.
+> - `createCalendarEventForUser` writes to the `is_primary` calendar for each user — not necessarily the first connected account.
+> - UI: "Connected Calendars" section in profile settings showing each linked account with its label, which calendars within it are included, and a "Primary" badge on the write calendar. Add / remove accounts inline. Toggle individual sub-calendars on/off (e.g. user has Google account with Personal + Work + Family calendars and only wants to include Work in availability checks).
+>
+> **DB migration note:** `google_tokens` already exists with RLS. The migration to `calendar_connections` needs to be done carefully — existing rows should be migrated with `provider='google'`, `is_primary=true`. RLS policies need to transfer. Do not drop `google_tokens` until the migration is verified.
+>
+> **Decision gate:** Build the DB schema and "Connected Calendars" UI before Apple Calendar — the schema change unblocks both multi-Google and Apple support. The schema migration is the foundational step; adding Apple CalDAV is a separate sprint on top of it.
 
 ---
 
 ### Tier 3 — Pre-wider-rollout (before >20-30 users)
 
-**Pre-login home page (marketing/landing page)**
-- The current login screen tells users nothing about what Rendezvous is or why they should connect their calendar
-- Build a proper pre-auth landing page at `/` that communicates the value prop before asking for Google sign-in
-- Content: one-line hook, 2–3 benefit statements, sample itinerary card (static, illustrative), "Sign in with Google" CTA
-- Keep it fast and lightweight — not a full marketing site, just enough context that a friend sending someone the link doesn't need to pre-explain what it is
-- Privacy note visible before OAuth: what data is requested and why
-- Existing `/` route is the Login component — either split into a landing + login page or make Login smarter (show marketing content when not authenticated, redirect to /home when already authenticated)
+**Pre-login home page (marketing/landing page) — moved to Tier 2**
+> See Tier 2 for full spec.
 
 **Help page (`/help`)**
 - Accessible from nav (logged in and logged out) and from onboarding
@@ -694,6 +729,27 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - [ ] Deep link fallback — Fever, Eventbrite, Tock, ClassPass
 - [ ] Booking confirmation back-sync → triggers calendar write
 - [ ] Trip mode: lodging — Google Hotels or Booking.com API
+
+### Guest Mode (v2 — no account required)
+> Allow users to invite someone who doesn't have a Rendezvous account to participate in a plan. The guest bypasses OAuth entirely — no calendar connection, no profile. Availability is determined solely by manual busy blocks rather than calendar reads.
+>
+> **Core flow:**
+> - Organizer creates an event as normal, but instead of selecting a registered friend, selects "Invite a guest" and enters an email address
+> - A unique invite link is generated (time-limited token, e.g. 7 days) and sent to the guest's email
+> - Guest opens the link, sees the itinerary suggestions, and can optionally enter their busy times as free-text manual blocks ("I can't do Saturday morning")
+> - Guest can accept, decline, or suggest a different option — no account creation required
+> - On lock, calendar event is written to the organizer's Google Calendar only; guest receives a standard `.ics` file attachment via email that they can add to any calendar app
+>
+> **Why manual busy blocks are central here:** Without a Google Calendar connection, the only availability signal is what the guest self-reports. The manual busy blocks infrastructure (Tier 2 item) is a prerequisite — build that first. The guest mode prompt injection path should reuse the same `EXCLUDED WINDOWS` block format rather than building a separate code path.
+>
+> **Architecture notes:**
+> - Guest sessions are token-based, not cookie-based — the invite token in the URL is the auth mechanism for that specific itinerary only
+> - Guests have no profile row; their name and email are stored on the itinerary row itself (`guest_name`, `guest_email`)
+> - RLS: guest token must be validated server-side on every request; guests can only read/write the specific itinerary they were invited to
+> - No persistent guest accounts — tokens expire, guest data is scoped to the single itinerary
+> - If a guest later creates a full account with the same email, their past guest participation should link to their new profile
+>
+> **Decision gate:** Build after manual busy blocks are shipped and after there is beta signal that the "both users must have an account" requirement is causing meaningful drop-off. Do not build speculatively.
 
 ### Always-On Agent
 > Build last — most powerful when calendar integrations + group planning + booking are all in place.

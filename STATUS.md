@@ -10,6 +10,95 @@ ROADMAP.md is the source of truth for prioritization. STATUS.md is the historica
 
 ---
 
+## March 15, 2026 — FCM web push commit 24d6471
+SHA: 24d6471
+
+Shipped:
+- client/src/firebase.js (new): Firebase app init + messaging export, all config from REACT_APP_FIREBASE_* env vars.
+- public/firebase-messaging-sw.js (new): background push handler, notificationclick → deep link navigation. Config injected via self.FIREBASE_* assignments in public/index.html (CRA replaces %REACT_APP_*% tokens at build time).
+- public/index.html: self.FIREBASE_* script block added before </head> for service worker config.
+- client/src/utils/api.js: registerPushToken() added.
+- client/src/pages/Onboarding.js: step 3 push stub replaced with real FCM getToken() + registerPushToken() call. Non-fatal — never blocks onboarding progression.
+- DB migration: push_subscriptions updated with token text + updated_at timestamptz columns. Old compound unique constraint dropped, new user_id-only unique constraint added.
+- server/routes/notifications.js: POST /push/register route added — upserts FCM token by user_id.
+- server/utils/pushNotifications.js (new): sendPush(supabase, userId, { title, body, actionUrl }) using firebase-admin. Never throws, returns boolean. Stale token auto-cleanup on messaging/registration-token-not-registered error.
+- server/routes/friends.js, schedule.js, group-itineraries.js: sendPush wired into all 4 Tier 1 triggers (friend request, group invite, itinerary sent, itinerary locked — 5 call sites total).
+
+Verification: all 6 checks passed (index.html script block, DB columns, unique constraint, CI build, service worker in build output, sendPush grep).
+
+GCal event: "Rendezvous Save State — FCM Web Push"
+
+---
+
+## March 15, 2026 — Manual busy blocks commit ac48ca9
+SHA: ac48ca9
+
+Shipped:
+- DB migration: manual_busy_blocks jsonb (DEFAULT '[]') + attendee_busy_notes text on itineraries; manual_busy_blocks jsonb + attendee_busy_notes jsonb (keyed by user_id) on group_itineraries. Schema note: group attendee_busy_notes is jsonb not text — correct for multi-attendee attribution.
+- NewEvent.js + NewGroupEvent.js: collapsible 'Block off dates' section after context prompt. Date picker auto-adds on selection (no Add button), From/To time inputs, optional reason label, pill tags with × delete. Full parity across both files.
+- schedule.js: buildExcludedWindowsBlock() + buildAttendeeNotesBlock() helpers. buildSuggestPrompt updated to accept and inject both blocks after AVAILABLE TIME WINDOWS. POST /suggest validates + stores manual_busy_blocks, adds has_manual_busy_blocks to telemetry. POST /reroll reads both fields from DB row and re-injects on every reroll. POST /decline stores attendee_busy_notes.
+- group-itineraries.js: full parity. buildGroupAttendeeNotesBlock() concatenates per-user notes with attribution. generateGroupSuggestions passes both blocks into buildGroupSuggestPrompt. PATCH /vote merges decline notes into attendee_busy_notes[userId].
+- ItineraryView.js: decline panel with optional busy notes textarea. Organizer banner shows attendee_busy_notes when non-empty, hidden from attendee view.
+- GroupItineraryView.js: same decline panel. Organizer banner attributes each attendee's notes by name.
+
+---
+
+## March 15, 2026 — Micro-adjustment reroll commit 504931f
+SHA: 504931f
+
+Shipped:
+- server/utils/classifyRerollIntent.js (new): classifyRerollIntent(prompt) → 'micro_adjust' | 'full_replace' | 'ambiguous'. Ambiguous: null/empty/<2 words. micro_adjust: 5 pattern groups (temporal, vibe, distance, swap, preservers). full_replace: everything else. Full try/catch → returns 'ambiguous' on any error. console.debug on every classification.
+- schedule.js (reroll route only — suggest route untouched): imports classifyRerollIntent, classifies safeRerollContext (user's new text, not original context) immediately after combinedContext. microAdjustBlock + priorSuggestionsBlock built before buildSuggestPrompt call — both empty strings for non-micro_adjust. contextPrompt array: micro-adjust blocks prepended, join separator changed from '. ' to '\n'. reroll_intent_class added to rerollTelemetry.
+- group-itineraries.js (generateGroupSuggestions only): same import and classification block added after vibeAddendum. buildGroupSuggestPrompt call: rerollNote replaced with [microAdjustBlock, priorSuggestionsBlock, rerollNote].filter(Boolean).join('\n') for full parity.
+
+---
+
+## March 15, 2026 — Home screen sorting commit 53f39e1
+SHA: 53f39e1
+
+Shipped:
+- SORT_OPTIONS constant (date / recent / activity) added to Home.js
+- sortBy state initialized from localStorage ('rendezvous_home_sort'), defaults to 'date'
+- sortItems(a, b) comparator: date = byEventDate; recent + activity = updated_at desc (falls back to created_at)
+- All four tab .sort(byEventDate) calls replaced with .sort(sortItems)
+- Sort pills sit right-aligned on same row as tab bar, space-between flex layout
+- Changing sort persists to localStorage + resets visibleCount to INITIAL_VISIBLE
+- Mobile: outer flex wraps so pills stack below tabs without crowding
+
+---
+
+## March 15, 2026 — Pre-login landing page commit 10fa724
+SHA: 10fa724
+
+Shipped:
+- public/index.html: Fraunces loaded via Google Fonts preconnect; title changed from "React App" to "Rendezvous"
+- Landing.css: all styles scoped to .lp-*, dark background (#0f0f13), indigo accent (#6366f1), Fraunces headlines, responsive stacking at 768px, scroll animation classes, floating button fade
+- Login.js: auth redirect logic untouched; LandingPage component added for unauthenticated users
+  - Hero: "Stop suggesting. Start going." headline, pill CTA, privacy note, animated scroll hint
+  - 3 feature sections with Intersection Observer fade+slide on enter, alternating layout
+    - CalendarOverlapSVG: two 7x5 calendar grids, red busy cells, indigo overlap cells
+    - SuggestionCardMock: HTML mock styled like SuggestionCard with gradient header, 3 venues, action buttons
+    - PhoneCalendarSVG: SVG phone with calendar, day 21 highlighted, indigo event block
+  - Final CTA: "Your next plans are waiting." with same auth button
+  - Floating "Get Started →": fixed bottom-right, fades in when hero scrolls out of view, links to OAuth
+
+---
+
+## March 15, 2026 — Voting rules UI commit 2866f66
+SHA: 2866f66
+
+Shipped:
+- Voting rules now visible and configurable in NewGroupEvent UI
+- Quorum: custom threshold (N of X votes needed) or Unanimous toggle
+- Tie behavior: "Lock it in anyway" or "Skip the suggestion"
+- Radio card pattern with brand-highlighted active selection
+
+In flight: pre-login landing page (Claude Code)
+
+Next: home screen sorting, micro-adjustment reroll, manual busy blocks
+
+---
+
 ## March 14, 2026 — 56-item audit results received
 SHA: pending (changes deployed, commit pending)
 
@@ -28,6 +117,35 @@ Confirmed done by audit (44/56 items):
 - All group mode items (GET includes group_name, DELETE with guards, deriveGroupTab, 👥 indicator, handleDeleteDraft routing, [group] — [title] format, responses visible to all, vote labels, re-roll visibility, /group-event/new route, live-search group picker, + New Group Event button)
 - Auth/session items (initSessionFromUrl before /auth/me, OnboardingRedirector, setOnboardingCompleted)
 - QoL items (BugReportButton, + Generate More, inline title edit, SharedProfile route, onboarding route, PostHog init + identify, PageViewTracker, visibleCount/load more, attendee_suggestion_map)
+
+---
+
+## March 14, 2026 — Discord button + session wrap
+SHA: fdfacf9 (last confirmed)
+Discord: https://discord.gg/6xc8ERrDDb
+Production: https://rendezvous-gamma.vercel.app
+
+Shipped this session (full list):
+- fdfacf9: Multi-day UI (date range header, day count duration, collapsed day preview, full-span GCal event — parity across 1:1 and group)
+- 04b2194: Multi-day prompt fix (per-day instructions, no front-loading — parity across 1:1 and group)
+- 3e029d7: Group calendar write path (calendarUtils.js extraction, POST /group-itineraries/:id/finalize-lock, client-side trigger)
+- 06cb301: Calendar confirmation UX (direct event link, home screen calendar status, lock notification copy)
+- b9fe605: Remote mode + trip duration stepper (full parity, DB constraints updated)
+- Discord button: '💬 Discord' pill added to top of floating cluster, DISCORD_INVITE_URL constant
+- Google OAuth flipped to Production mode
+- Browser Maps JS API key created with HTTP referrer restriction
+
+ROADMAP additions this session:
+- Discord automations (future: bug reports, feedback, PostHog events → Discord channels)
+- Travel preferences profile settings (consideration, gated on beta signal)
+- Day-by-day planning wizard (deferred, needs beta signal)
+
+Beta testers invited and messaged. App is live and shared.
+
+Next:
+- Pre-login landing page (Tier 3)
+- Privacy policy (Tier 3, blocks OAuth verification)
+- Notification + privacy settings page (Tier 3)
 
 ---
 
