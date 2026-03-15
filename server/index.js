@@ -492,6 +492,21 @@ app.get('/auth/google/callback', async (req, res) => {
 
     // ── Connect flow: add secondary calendar account ──────────────────────
     if (isConnectFlow) {
+      // A4-001: Validate that the browser session making this callback belongs to
+      // connectState.userId. Without this check, an attacker who obtains a valid
+      // state token can insert a calendar_connections row for an arbitrary userId
+      // by embedding a different userId in the state param — the callback route has
+      // no requireAuth middleware, so the session check must be explicit here.
+      const callbackSessionToken = req.cookies?.rendezvous_session;
+      if (!callbackSessionToken) {
+        return res.redirect(`${CLIENT_URL}/profile?error=${encodeURIComponent('Session validation failed. Please try connecting your calendar again.')}`);
+      }
+      let callbackSession;
+      try { callbackSession = await getSession(callbackSessionToken); } catch {}
+      if (!callbackSession || callbackSession.supabase_id !== connectState.userId) {
+        return res.redirect(`${CLIENT_URL}/profile?error=${encodeURIComponent('Session validation failed. Please try connecting your calendar again.')}`);
+      }
+
       const userId = connectState.userId;
 
       // Reject duplicate: same user + same Google account already linked
@@ -773,24 +788,16 @@ app.patch('/calendar/connections/:id', requireAuth, async (req, res) => {
   if (fetchErr || !conn) return res.status(404).json({ error: 'Connection not found' });
   if (conn.user_id !== req.userId) return res.status(403).json({ error: 'Forbidden' });
 
-  // Unset is_primary on every connection for this user…
-  const { error: unsetErr } = await supabase
-    .from('calendar_connections')
-    .update({ is_primary: false })
-    .eq('user_id', req.userId);
-  if (unsetErr) {
-    console.error('calendar_connections unset primary failed:', unsetErr.message);
-    return res.status(500).json({ error: 'Failed to update primary calendar' });
-  }
-
-  // …then set it on the target row
-  const { error: setErr } = await supabase
-    .from('calendar_connections')
-    .update({ is_primary: true })
-    .eq('id', id);
-  if (setErr) {
-    console.error('calendar_connections set primary failed:', setErr.message);
-    return res.status(500).json({ error: 'Failed to update primary calendar' });
+  // A4-013: Single atomic UPDATE via RPC — replaces the previous two-step sequence
+  // (clear all is_primary, then set on target) which had a gap where a crash between
+  // the two writes would leave the user with no primary calendar connection.
+  const { error: rpcError } = await supabase.rpc('set_primary_calendar_connection', {
+    p_connection_id: id,
+    p_user_id:       req.userId,
+  });
+  if (rpcError) {
+    console.error('set_primary_calendar_connection RPC failed:', rpcError.message);
+    return res.status(500).json({ error: 'Could not update primary calendar.' });
   }
 
   res.json({ ok: true });

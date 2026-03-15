@@ -51,7 +51,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
 const MAX_CONTEXT = 500;
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gi;
+const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
+
+// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
+// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
+const RATE_LIMIT_EXEMPT = new Set(
+  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
+);
 
 function sanitizePromptInput(text, maxLen = MAX_CONTEXT) {
   if (!text || typeof text !== 'string') return '';
@@ -793,6 +799,23 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'Invalid itinerary ID.' });
     }
 
+    // ── Daily rate limit ──────────────────────────────────────────────────
+    // A4-002: Cap each organizer at 10 group suggestion generations per UTC day.
+    // Mirrors the per-user cap in schedule.js /suggest. Checked before any DB
+    // fetches or Claude calls to fail fast and cheaply.
+    const todayUTC = new Date().toISOString().split('T')[0];
+    const { count: groupSuggestCount, error: groupCountErr } = await supabase
+      .from('group_itineraries')
+      .select('*', { count: 'exact', head: true })
+      .eq('organizer_id', req.userId)
+      .gte('created_at', `${todayUTC}T00:00:00.000Z`);
+    if (groupCountErr) {
+      console.warn('group suggest rate-limit count failed:', groupCountErr.message);
+    } else if (groupSuggestCount >= 10 && !RATE_LIMIT_EXEMPT.has(req.userSession?.email)) {
+      return res.status(429).json({ error: 'Daily suggestion limit reached. Try again tomorrow.' });
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     const { data: itin, error: fetchErr } = await supabase
       .from('group_itineraries')
       .select('*')
@@ -1010,45 +1033,69 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'selected_suggestion_id does not match any suggestion.' });
     }
 
-    // Update attendee_statuses and attendee_suggestion_map.
-    const updatedStatuses = { ...attendeeStatuses, [req.userId]: vote };
-    const updatedSuggestionMap = { ...(itin.attendee_suggestion_map || {}), [req.userId]: selected_suggestion_id };
+    // A4-003: Atomically merge this attendee's vote into attendee_statuses via RPC.
+    // Replaces the previous read-modify-write (fetch → merge in JS → update) which
+    // had a lost-update race: two concurrent votes both reading the same initial state
+    // would cause one to silently overwrite the other. The JSONB || operator in the
+    // RPC function merges the single key atomically — no read needed for the write.
+    const { error: voteError } = await supabase.rpc('merge_attendee_vote', {
+      p_itinerary_id: req.params.id,
+      p_user_id:      req.userId,
+      p_vote:         vote,
+    });
+    if (voteError) {
+      console.error('[group-itineraries] vote RPC error:', voteError.message);
+      return res.status(500).json({ error: 'Vote could not be recorded.' });
+    }
+
+    // Re-fetch fresh row so winner computation uses the actual post-vote state,
+    // not the stale pre-RPC snapshot in `itin`.
+    const { data: freshItin, error: refetchErr } = await supabase
+      .from('group_itineraries')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
+      .eq('id', req.params.id)
+      .single();
+    if (refetchErr || !freshItin) {
+      return res.status(500).json({ error: 'Could not read updated vote status.' });
+    }
+
+    const freshStatuses        = freshItin.attendee_statuses || {};
+    const updatedSuggestionMap = { ...(freshItin.attendee_suggestion_map || {}), [req.userId]: selected_suggestion_id };
 
     // Compute the most-voted card among accepted attendees so the DB trigger
     // locks with the correct winner in selected_suggestion_id.
-    const acceptedUids = Object.entries(updatedStatuses).filter(([, v]) => v === 'accepted').map(([uid]) => uid);
+    const acceptedUids = Object.entries(freshStatuses).filter(([, v]) => v === 'accepted').map(([uid]) => uid);
     const voteCounts   = {};
     acceptedUids.forEach(uid => {
       const sid = updatedSuggestionMap[uid];
       if (sid) voteCounts[sid] = (voteCounts[sid] || 0) + 1;
     });
     const winnerCard = Object.entries(voteCounts).sort(([, a], [, b]) => b - a)[0]?.[0]
-      || itin.organizer_recommendation_id
+      || freshItin.organizer_recommendation_id
       || selected_suggestion_id;
 
-    // If the attendee is declining and left busy notes, merge into attendee_busy_notes jsonb map.
-    const voteUpdate = {
-      attendee_statuses:       updatedStatuses,
+    // Update remaining vote metadata (suggestion map, winner card, optional busy notes).
+    const metaUpdate = {
       attendee_suggestion_map: updatedSuggestionMap,
       selected_suggestion_id:  winnerCard,
     };
     if (vote === 'declined' && rawBusyNotes && typeof rawBusyNotes === 'string') {
       const sanitizedNotes = sanitizePromptInput(rawBusyNotes.trim().slice(0, 300));
       if (sanitizedNotes) {
-        const existingNotes = itin.attendee_busy_notes || {};
-        voteUpdate.attendee_busy_notes = { ...existingNotes, [req.userId]: sanitizedNotes };
+        const existingNotes = freshItin.attendee_busy_notes || {};
+        metaUpdate.attendee_busy_notes = { ...existingNotes, [req.userId]: sanitizedNotes };
       }
     }
 
     const { data: updated, error: updateErr } = await supabase
       .from('group_itineraries')
-      .update(voteUpdate)
+      .update(metaUpdate)
       .eq('id', req.params.id)
       .select('itinerary_status, locked_at')
       .single();
 
     if (updateErr) {
-      console.error('[group-itineraries] vote error:', updateErr.message);
+      console.error('[group-itineraries] vote meta update error:', updateErr.message);
       return res.status(500).json({ error: 'Could not record vote.' });
     }
 

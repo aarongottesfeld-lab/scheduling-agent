@@ -58,7 +58,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // This is not exhaustive, but catches the most common attack vectors. The sanitizer is
 // applied to any user-supplied free-text that is interpolated into the Claude prompt
 // (contextPrompt, feedback). Matched segments are replaced with [removed].
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gi;
+const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
 
 /**
  * Sanitize a user-supplied string before injecting it into the Claude prompt.
@@ -127,7 +127,11 @@ function themeMatchesContextPrompt(suggestions, contextPrompt) {
 }
 
 // Emails exempt from all rate limits — useful for testing in production.
-const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
+// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
+// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
+const RATE_LIMIT_EXEMPT = new Set(
+  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
+);
 /** Returns true only if s is a well-formed UUID v4 string. */
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 

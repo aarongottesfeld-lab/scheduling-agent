@@ -7,9 +7,11 @@ const { sendPush } = require('../utils/pushNotifications');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
-// Emails exempt from all rate limits — useful for testing in production.
-// SECURITY-REVIEW: Keep this list minimal; audit before any public/multi-tenant expansion.
-const RATE_LIMIT_EXEMPT = new Set(['aaron.gottesfeld@gmail.com']);
+// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
+// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
+const RATE_LIMIT_EXEMPT = new Set(
+  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
+);
 
 /**
  * Sanitize before interpolating into a PostgREST .or() filter string.
