@@ -734,7 +734,24 @@ app.get('/calendar/connections', requireAuth, async (req, res) => {
     console.error('calendar_connections fetch failed:', error.message);
     return res.status(500).json({ error: 'Failed to fetch calendar connections' });
   }
-  res.json({ connections: data || [] });
+
+  // Prepend the primary login Google account as the first entry.
+  // It lives in the sessions table, not calendar_connections, but the user
+  // expects to see it here. is_login_account: true tells the client to
+  // render it as non-removable.
+  const { email: loginEmail } = req.userSession;
+  const loginEntry = {
+    id: 'primary-google',
+    provider: 'google',
+    account_email: loginEmail,
+    account_label: 'Google Calendar',
+    is_primary: true,
+    is_login_account: true,
+    calendar_ids: [],
+    created_at: null,
+  };
+
+  res.json({ connections: [loginEntry, ...(data || [])] });
 });
 
 /**

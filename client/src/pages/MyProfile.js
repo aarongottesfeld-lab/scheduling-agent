@@ -196,15 +196,13 @@ export default function MyProfile() {
       await refetchConnections();
     } catch (err) {
       setAppleIsError(true);
-      if (err.response?.status === 501) {
+      const serverMsg = err.message || '';
+      if (err.status === 501) {
         setAppleMessage('Apple Calendar support is coming soon.');
-      } else if (err.response?.data?.error) {
-        const serverMsg = err.response.data.error;
-        if (serverMsg.includes('already connected')) {
-          setAppleMessage('This Apple account is already connected — you can see it in the Connected Calendars list above.');
-        } else {
-          setAppleMessage(serverMsg);
-        }
+      } else if (serverMsg.includes('already connected')) {
+        setAppleMessage('This Apple account is already connected — you can see it in the Connected Calendars list above.');
+      } else if (serverMsg && serverMsg !== 'Something went wrong. Please try again.') {
+        setAppleMessage(serverMsg);
       } else {
         setAppleMessage(
           'Connection failed. Make sure you\'re using your iCloud email (not a Gmail or other address) ' +
@@ -310,31 +308,29 @@ export default function MyProfile() {
         <div className="form-section-title" style={{ marginBottom:0 }}>Connected Calendars</div>
         <a href={getGoogleConnectUrl()} className="btn btn--secondary btn--sm">Add Google Calendar</a>
       </div>
-      {connections.length === 0 ? (
-        <p className="form-hint" style={{ margin:0 }}>No additional calendars connected.</p>
-      ) : (
-        <ul style={{ listStyle:'none', padding:0, margin:0 }}>
-          {connections.map(conn => {
-            const isLoading     = connectionLoading === conn.id;
-            const isConfirming  = confirmingRemoveId === conn.id;
-            const anyLoading    = !!connectionLoading;
-            return (
-              <li key={conn.id} style={{ display:'flex', alignItems:'center', gap:8, paddingBottom:10, flexWrap:'wrap' }}>
-                <span className="badge badge--gray">{conn.provider}</span>
-                <span style={{ flex:1 }}>{conn.account_email || conn.account_label}</span>
-                {conn.is_primary && (
-                  <span className="badge badge--green">Primary</span>
-                )}
-                {!conn.is_primary && (
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm"
-                    onClick={() => handleSetPrimary(conn.id)}
-                    disabled={isLoading || anyLoading}
-                  >
-                    {isLoading ? '…' : 'Set as primary'}
-                  </button>
-                )}
+      <ul style={{ listStyle:'none', padding:0, margin:0 }}>
+        {connections.map(conn => {
+          const isLoading    = connectionLoading === conn.id;
+          const isConfirming = confirmingRemoveId === conn.id;
+          const anyLoading   = !!connectionLoading;
+          return (
+            <li key={conn.id} style={{ display:'flex', alignItems:'center', gap:8, paddingBottom:10, flexWrap:'wrap' }}>
+              <span className="badge badge--gray">{conn.provider}</span>
+              <span style={{ flex:1 }}>{conn.account_email || conn.account_label}</span>
+              {conn.is_primary && (
+                <span className="badge badge--green">{conn.is_login_account ? 'Login account' : 'Primary'}</span>
+              )}
+              {!conn.is_primary && !conn.is_login_account && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => handleSetPrimary(conn.id)}
+                  disabled={isLoading || anyLoading}
+                >
+                  {isLoading ? '…' : 'Set as primary'}
+                </button>
+              )}
+              {!conn.is_login_account && (
                 <button
                   type="button"
                   data-remove-btn="true"
@@ -344,11 +340,11 @@ export default function MyProfile() {
                 >
                   {isLoading ? '…' : isConfirming ? 'Confirm remove' : 'Remove'}
                 </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+              )}
+            </li>
+          );
+        })}
+      </ul>
       {connectionError && (
         <div className="alert alert--error" style={{ marginTop:10, marginBottom:0 }}>{connectionError}</div>
       )}
