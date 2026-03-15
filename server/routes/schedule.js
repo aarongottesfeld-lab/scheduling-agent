@@ -21,6 +21,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const { createOAuth2Client, createCalendarEventForUser } = require('../utils/calendarUtils');
+const fetchBusyAggregated = require('../utils/fetchBusyAggregated');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
@@ -163,18 +164,9 @@ function countUnverified(suggestions) {
  * and generating suggestions against incorrect availability data.
  */
 async function fetchBusy(session, startISO, endISO, supabase, userId) {
-  // Real calendar path
+  // Real calendar path — aggregate across all connected calendars for this user
   if (session?.tokens?.access_token) {
-    const auth = createOAuth2Client(session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const res = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: startISO,
-        timeMax: endISO,
-        items: [{ id: 'primary' }],
-      },
-    });
-    return res.data.calendars?.primary?.busy || [];
+    return fetchBusyAggregated(supabase, userId, session.tokens, startISO, endISO);
   }
   // Mock fallback for test users (no OAuth tokens)
   if (userId && supabase) {
@@ -1477,18 +1469,33 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
         sessionStore.getSessionBySupabaseId(itin.attendee_id),
       ]);
 
-      // Create event using whichever user has valid tokens (organizer preferred).
-      // createCalendarEventForUser now returns { id, htmlLink } or null.
-      const activeSession = organizerSession || attendeeSession;
-      if (suggestion && activeSession) {
-        const calResult = await createCalendarEventForUser({
-          session: activeSession,
-          suggestion,
-          organizer: organizerProfile,
-          attendee:  attendeeProfile,
-          itineraryId,
-        });
+      // Write calendar events for organizer and attendee independently.
+      // Each call resolves its own primary-calendar tokens via getPrimaryCalendarTokens.
+      // createCalendarEventForUser returns { id, htmlLink } or null (best-effort, never throws).
+      if (suggestion) {
+        const [orgCalResult, attCalResult] = await Promise.all([
+          organizerSession ? createCalendarEventForUser({
+            session:     organizerSession,
+            suggestion,
+            organizer:   organizerProfile,
+            attendee:    attendeeProfile,
+            itineraryId,
+            supabase,
+            userId: itin.organizer_id,
+          }) : Promise.resolve(null),
+          attendeeSession ? createCalendarEventForUser({
+            session:     attendeeSession,
+            suggestion,
+            organizer:   organizerProfile,
+            attendee:    attendeeProfile,
+            itineraryId,
+            supabase,
+            userId: itin.attendee_id,
+          }) : Promise.resolve(null),
+        ]);
 
+        // Store the first successful event link (organizer preferred).
+        const calResult = orgCalResult || attCalResult;
         if (calResult?.id) {
           calendarEventId  = calResult.id;
           calendarEventUrl = calResult.htmlLink || null;

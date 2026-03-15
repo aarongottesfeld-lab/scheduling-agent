@@ -10,6 +10,8 @@
 'use strict';
 
 const { google } = require('googleapis');
+const getPrimaryCalendarTokens    = require('./getPrimaryCalendarTokens');
+const { createAppleCalendarEvent } = require('./appleCalendarUtils');
 
 /**
  * Creates a fresh Google OAuth2 client, optionally pre-loaded with stored tokens.
@@ -36,18 +38,40 @@ function createOAuth2Client(tokens) {
  * @param {object} options.organizer      - { email, full_name } of the organizer
  * @param {object} options.attendee       - { email, full_name } of the attendee (or group label)
  * @param {string} options.itineraryId    - used in the event description for deep-linking
+ * @param {object} [options.supabase]     - Supabase client; when provided with userId, resolves
+ *                                         the user's is_primary calendar_connections row first
+ * @param {string} [options.userId]       - Supabase UUID; paired with supabase for token lookup
  */
-async function createCalendarEventForUser({ session, suggestion, organizer, attendee, itineraryId }) {
+async function createCalendarEventForUser({ session, suggestion, organizer, attendee, itineraryId, supabase, userId }) {
   if (!session?.tokens?.access_token) return null;
 
   try {
-    const auth = createOAuth2Client(session.tokens);
+    // Resolve which connection to use for the write.
+    // When supabase + userId are provided, prefer the is_primary calendar_connections row.
+    // Falls back to { tokens: session.tokens, provider: 'google' } on any error or absence.
+    const { tokens, provider } = (supabase && userId)
+      ? await getPrimaryCalendarTokens(supabase, userId, session.tokens)
+      : { tokens: session.tokens, provider: 'google' };
+
+    // ── Apple CalDAV path ─────────────────────────────────────────────────
+    if (provider === 'apple') {
+      return createAppleCalendarEvent({
+        email:       tokens.email,
+        password:    tokens.password,
+        suggestion,
+        organizer,
+        attendee,
+        itineraryId,
+      });
+    }
+
+    // ── Google Calendar path (default) ────────────────────────────────────
+    const auth = createOAuth2Client(tokens);
 
     // Refresh token if expired
-    const expiry = session.tokens.expiry_date;
-    if (expiry && Date.now() > expiry - 60000 && session.tokens.refresh_token) {
+    const expiry = tokens.expiry_date;
+    if (expiry && Date.now() > expiry - 60000 && tokens.refresh_token) {
       const { credentials } = await auth.refreshAccessToken();
-      session.tokens = credentials;
       auth.setCredentials(credentials);
     }
 

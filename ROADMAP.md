@@ -90,16 +90,55 @@ standard security/privacy/DR categories, Claude Code should evaluate:
       post-launch — PostHog free tier is sufficient for early signal gathering
 
 **Audit 4 — Before wider rollout (>20–30 users)**
-Trigger: before expanding beyond the initial beta group. By this point group mode, remote mode, and 1:1 mode will all be live and diverging. The primary focus of this audit is feature parity and behavioral consistency across planning modes — not security (covered in Audit 3).
+Trigger: after multi-calendar support (phases 1-6) is complete and verified. By this point the core PWA feature set is essentially complete — 1:1, group, remote, travel, push notifications, and multi-calendar. This is a full-spectrum audit before pushing harder on user growth.
 
-Parity sweep scope:
+**Parity & consistency**
 - Enumerate every user-facing feature across 1:1 (ItineraryView / schedule.js), group (GroupItineraryView / group-itineraries.js), and remote mode
 - For each feature, verify behavior is consistent: same UX patterns, same inline confirmation flows, same error handling, same telemetry events
-- Known parity surface area to check at minimum: delete draft button, reroll UX, send flow, status banners, PostHog events, travel/location mode options
+- Known parity surface area to check at minimum: delete draft button, reroll UX, send flow, status banners, PostHog events, travel/location mode options, manual busy blocks, micro-adjustment reroll
 - Flag any feature that exists in one mode but is absent or degraded in another — each gap should be a deliberate decision, not an oversight
-- Review CLAUDE_CODE_PROMPTS.md to confirm all saved prompts include parity instructions before they are executed
+- Review CLAUDE_CODE_PROMPTS.md to confirm all saved prompts include parity instructions
+- Verify buildSuggestPrompt (schedule.js) and buildGroupSuggestPrompt (group-itineraries.js) are structurally in sync — new prompt features should exist in both or have an explicit documented reason for asymmetry
 
-Secondary scope: prompt consistency audit — verify that buildSuggestPrompt (schedule.js) and buildGroupSuggestPrompt (group-itineraries.js) are structurally in sync. New prompt features (remote mode block, cultural moment anchoring, activity venue injection, etc.) should exist in both or have an explicit reason for the asymmetry.
+**Security**
+- calendar_connections trust boundary: verify the secondary Google OAuth connect flow cannot be used to associate another user's tokens with the wrong user_id. The stateData.userId in the connect callback must be verified against req.userId — confirm this check exists and cannot be bypassed.
+- Re-audit all routes added since Audit 3 for missing requireAuth, missing UUID validation, and missing input sanitization: calendar_connections routes, push notification routes, manual busy blocks, attendee_busy_notes, classifyRerollIntent
+- Confirm INJECTION_RE multiline flag fix (Audit 3 WARN item) has been applied
+- Confirm RATE_LIMIT_EXEMPT has been moved to env var (Audit 3 WARN item)
+- Verify FCM service account JSON is never logged, printed, or returned in any response
+- Confirm push_subscriptions token is never returned to the client in any /calendar/connections or /users/me response
+- Re-check RLS on all tables added since Audit 3: calendar_connections, push_subscriptions (updated schema)
+- Verify sessions table tokens column is never exposed in any API response
+
+**Privacy**
+- Confirm no user PII (email, name, location, dietary/mobility restrictions) flows into PostHog event properties
+- Verify calendar_connections tokens jsonb is excluded from all client-facing API responses
+- Confirm attendee_busy_notes is never surfaced to the attendee — only the organizer can see it
+- Check that the Apple CalDAV app-specific password (when built) is stored encrypted and never returned after initial save
+- Audit all Claude prompt injections for PII: dietary restrictions, mobility restrictions, attendee_busy_notes, location strings — confirm none of this ends up in server logs
+- Verify google_tokens empty table can be safely dropped without any remaining references
+
+**Efficiency & performance**
+- Audit the suggestion pipeline end-to-end for parallelization opportunities: freebusy fetches, friend_annotations, past history, activity venues, local events — identify which are currently sequential and could be Promise.all'd
+- Check p50/p95 latency of /schedule/suggest and /group-itineraries/:id/suggest in Vercel runtime logs — flag anything over 8 seconds
+- Audit calendar_connections freebusy aggregation for N+1 patterns — each connection should not fire a separate HTTP round trip if the same Google account has multiple calendar_ids (use the freebusy API's multi-calendar items[] array instead)
+- Evaluate schedule.js file split (Audit 3 WARN item): 2000+ lines — propose split into promptBuilder.js, availability.js, calendarUtils.js before adding more features
+- Check module-scoped caches in venueEnrichment.js and activityVenues.js for memory leak risk on long-running Vercel instances
+
+**Disaster recovery**
+- Verify that a failed calendar_connections INSERT during the OAuth connect callback does not leave a partial OAuth token set that can't be cleaned up
+- Confirm that deleting a calendar_connections row does not break freebusy for in-progress itineraries that were generated using that connection — check whether any itinerary row references a calendar_connection_id
+- Verify the sessions token fallback (when calendar_connections has no rows for a user) works correctly and doesn't silently return empty availability
+- Check that revoked or expired FCM tokens are cleaned up correctly and don't accumulate in push_subscriptions
+- Confirm that the google_tokens table (0 rows, unused) can be hard-dropped without FK violations or code references — document the cleanup migration
+
+**Best practices & code quality**
+- Audit all new error handling added since Audit 3 — confirm no routes silently swallow errors without logging
+- Verify all new DB migrations have been applied to production (check supabase/migrations against what's live)
+- Confirm firebase-admin is initialized only once (guard against re-initialization in hot-reload) — verify the admin.apps.length check in pushNotifications.js holds under Vercel's serverless model
+- Check that calendar_connections updated_at trigger fires correctly on partial updates (PATCH operations)
+- Review all TODO and FIXME comments added since Audit 3 — categorize as: fix now, log as known issue, or remove if stale
+- Confirm tags field audit-note (Audit 3 scope, deferred) has been resolved: either wired to UI filtering or removed from Claude schema
 
 **Audit 5 — Before App Store submission**
 Trigger: when React Native migration is complete and App Store submission is being
@@ -487,11 +526,57 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 **8. Other calendars (Apple Calendar + multi-calendar support)**
 - Build the calendar_connections DB schema first — unblocks both multi-Google and Apple CalDAV
 - See Apple Calendar and Multi-calendar support sections below for full spec
-- Decision gate on Apple CalDAV itself still stands; schema migration is the prerequisite step regardless
+- Implementation phases (must be done in order):
+  1. DB schema — calendar_connections table (additive, sessions table untouched)
+  2. OAuth connect flow — secondary Google account connection route
+  3. Availability aggregation — merge freebusy across all connections per user
+  4. Calendar write path — write events to is_primary connection
+  5. Connected Calendars UI — list/add/remove connections in profile settings
+     - Apple Calendar connection requires an inline step-by-step setup guide in the UI
+       (non-technical users need hand-holding through the app-specific password flow):
+       Step 1: Go to appleid.apple.com and sign in
+       Step 2: Under Security, tap "App-Specific Passwords" → "Generate Password"
+       Step 3: Label it "Rendezvous" and tap Create
+       Step 4: Copy the 16-character password and paste it here
+       Step 5: Enter your iCloud email address (the one tied to your Apple ID)
+     - Guide should include a direct link to appleid.apple.com
+     - Make clear the password only grants calendar access, not full Apple ID access
+     - Note that the password can be revoked at any time from Apple ID settings
+  6. Apple CalDAV — app-specific passwords path (PWA only; EventKit available after React Native migration)
+- Apple Calendar is confirmed blocking adoption — Phase 6 is not speculative
+- Apple auth note: on the web, only CalDAV + app-specific passwords is viable (EventKit is iOS-native only). UX requires user to manually generate a password in Apple ID settings. React Native migration unlocks EventKit and a cleaner auth flow — that's the right time to make Apple Calendar fully first-class. For PWA, CalDAV is the only path.
+- Decision gate on Apple CalDAV itself removed — build it after phases 1-5 are verified
 
-**9. Live events integration (Ticketmaster + Eventbrite)**
-- See full spec in output quality section above
-- Meaningful differentiator worth having before wider rollout
+**9. Live events integration**
+
+**V1 — Intent-driven temporal anchoring (do first, lower infrastructure cost)**
+When a user's context prompt references something that happens at a specific time — a sports game, TV premiere, award show, concert, movie opening — the system should detect that signal, look up when it's actually happening within the scheduling window, and weight those time slots more heavily in free window selection and the Claude prompt. No external event browsing, no ticket links. Just: "you said Knicks, the next home game is Saturday at 7:30 PM, here's an itinerary built around that."
+
+Detection + data sources:
+- `extractCulturalSignal(contextPrompt, activityPreferences)` helper — returns `{ type, entity }` (sports / tv / film / awards / concert)
+- Sports: ESPN unofficial API (no key) — covers NBA, MLB, NFL, NHL, MLS
+- TV/film: TMDB API (free tier, themoviedb.org) — premiere dates, episode air dates, release dates. Store as `TMDB_API_KEY`
+- Awards shows: hardcoded constants file (Oscars/Grammys/Emmys/Golden Globes annual dates) — no API needed
+- Concerts: reuse Ticketmaster from V2 when available, skip in V1
+
+Prompt integration:
+- Inject a PRIORITY EVENT block into buildSuggestPrompt — higher priority than general availability windows
+- Anchor the itinerary start time relative to the event (e.g. 1.5-2 hrs before tip-off for a sports game)
+- "Watching" vs "attending" distinction: "watch the Knicks" → bar suggestion; "go to the Knicks game" → MSG/venue suggestion
+- 🔴 Live badge in ItineraryView: `🔴 Live · Knicks tip-off 7:30 PM`
+
+Telemetry: cultural_signal_detected, cultural_signal_type, cultural_event_found, cultural_anchor_used on suggestion_telemetry JSONB
+
+**V2 — Full event discovery (do after V1, has booking implications)**
+Proactive event browsing — Ticketmaster, Eventbrite, SeatGeek, Bandsintown. Surface events happening in the user's area during the scheduling window that match their interests, even when they didn't ask for a specific event. Includes ticket deep links and eventually booking integration.
+
+V2 is where booking capabilities become relevant — Ticketmaster/Eventbrite ticket links are the natural first step, followed by OpenTable/Resy/GolfNow for venue reservations. Spec these together when V2 is prioritized.
+
+Data sources: Ticketmaster Discovery API (5,000 calls/day free), Eventbrite, SeatGeek, Bandsintown
+Prompt integration: AVAILABLE EVENTS block in buildSuggestPrompt — optional context, not priority anchor
+UI: 🎟 badge on event-anchored cards with deep link to purchase/info page
+Caching: 1-hour module-scoped cache per (location, date_range)
+Privacy: only location + date range sent to event APIs — no user data
 
 **9. Home screen sorting — DONE commit 53f39e1**
 - Sort options: Date (soonest first), Recent (updated_at desc), Activity (updated_at desc)
@@ -568,6 +653,23 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 **Notification settings page**
 - Users need per-type toggles before you have many users
 - See spec below
+- Two channels: in-product (bell) and push. Each has its own global on/off toggle plus per-type overrides.
+- Structure:
+  - In-product notifications: [global on/off] → per-type toggles for all 8 types
+  - Push notifications: [global on/off] → per-type toggles for all 8 types
+- 8 notification types:
+  - Friend request received
+  - Friend request accepted
+  - Group invite received
+  - Itinerary sent to you
+  - Itinerary declined
+  - Suggest alternative received
+  - Group counter-proposal
+  - Itinerary locked
+- Global off overrides all per-type settings for that channel — no need to toggle each one individually
+- Per-type toggles only visible/active when global is on
+- Server checks preferences before both the notifications insert (in-product) and the sendPush call (push) — two independent checks, not one shared flag
+- Store as two jsonb columns on profiles: notification_preferences_inapp and notification_preferences_push, each a map of type → boolean. Global toggle stored as a top-level key (e.g. { enabled: true, friend_request: false, ... })
 
 **User privacy settings (new — added March 14, 2026)**
 - Separate from notification settings — controls who can interact with the user's account

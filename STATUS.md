@@ -10,6 +10,127 @@ ROADMAP.md is the source of truth for prioritization. STATUS.md is the historica
 
 ---
 
+## March 15, 2026 — Other Calendars Phase 2 commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- server/index.js: GET /auth/google/connect (new, requireAuth) — base64url JSON state {csrf, userId, mode:'connect'}, csrf stored in oauth_state cookie, prompt:'select_account' forces Google account picker. GET /auth/google/callback modified to detect connect flow via base64url JSON parse — validates csrf, duplicate check on (user_id + account_email), inserts into calendar_connections, redirects to /profile?connected=1. Primary login path completely unchanged.
+- GET /calendar/connections (new, requireAuth): returns all connections for user, tokens column never included in response.
+- client/src/utils/api.js: getGoogleConnectUrl() and getCalendarConnections() added.
+- client/src/pages/MyProfile.js: Connected Calendars section — reads ?connected=1/?error= URL params on mount, sets banner, cleans URL. Read-only list of connections. "Add Google Calendar" button navigates to server connect route (full-page nav, not React Router).
+
+Next: Phase 4 — calendar write path (createCalendarEventForUser writes to is_primary connection)
+
+## March 15, 2026 — ICS Download Button commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- ItineraryView.js + GroupItineraryView.js: generateICS and downloadICS helpers added at module level (identical logic, PRODID string differs by source). Button renders inside existing locked/isLocked && isWinner guard — no new conditions. Single-day: parses suggestion.time + suggestion.date into UTC Date, DTEND from durationMinutes || 120. Multi-day: VALUE=DATE all-day format, exclusive DTEND. Group summary: group_name + event_title. 1:1 summary: venueName with FirstName. Client-side only — Blob + temporary anchor, no server route, no new dependencies.
+
+Multi-calendar sprint fully complete: Phases 1-6 + ICS download button.
+
+Next: Live Events V1 — intent-driven temporal anchoring
+
+---
+
+## March 15, 2026 — Other Calendars Phase 6 commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- server/utils/appleCalendarUtils.js (new): createAppleDAVClient(email, password) — DAVClient Basic auth at https://caldav.icloud.com, calls client.login() to validate credentials, throws on failure. fetchAppleBusy(email, password, calendarIds, startISO, endISO) — fetches calendars, filters by calendarIds if provided, fetchCalendarObjects with timeRange, parses DTSTART/DTEND via regex, returns flat [{start,end}], returns [] on any error, logs email only (never password). createAppleCalendarEvent — picks first writable VEVENT calendar, hand-crafted RFC 5545 ICS string with CRLF line endings, calls createCalendarObject, returns {uid} or null.
+- server/index.js: POST /calendar/connections/apple — validates email+password (400), createAppleDAVClient credential check (400 friendly message on failure), duplicate check by (user_id, provider, account_email), is_primary=true only if first connection, inserts tokens:{email,password}. Password never logged or returned.
+- server/utils/fetchBusyAggregated.js: branches on conn.provider — apple → fetchAppleBusy (flat array); google/no provider → existing googleapis path; unknown → logged+skipped. Apple and Google result shapes handled separately.
+- server/utils/getPrimaryCalendarTokens.js: now selects tokens+provider, returns {tokens, provider}. Fallback returns {tokens: sessionTokens, provider: 'google'}. Token detection accepts Apple (.email) and Google (.access_token).
+- server/utils/calendarUtils.js: destructures {tokens, provider} from getPrimaryCalendarTokens. New branch: provider==='apple' → delegates to createAppleCalendarEvent. Google path and backward-compat fallback unchanged.
+- Password safety confirmed: appears only in function parameters, DAVClient credentials object, and Supabase tokens insert. Zero console.* calls, zero response bodies, zero error messages.
+
+Next: ICS download button on locked itinerary views (client-side generation, no new server route)
+
+---
+
+## March 15, 2026 — Other Calendars Phase 5 commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- server/index.js: PATCH /calendar/connections/:id — ownership check (403), clears is_primary on all user connections then sets on target row, returns {ok:true}, never returns tokens. DELETE /calendar/connections/:id — ownership check (403), guards last is_primary connection with 400 message, hard-deletes otherwise, returns {ok:true}. POST /calendar/connections/apple — stub, returns 501.
+- client/src/utils/api.js: setPrimaryCalendarConnection(id), removeCalendarConnection(id), connectAppleCalendar({email, password}) added.
+- client/src/pages/MyProfile.js: 9 new state vars (connectionLoading, connectionError, confirmingRemoveId, appleGuideOpen, appleEmail, applePassword, appleSubmitting, appleMessage). Click-away useEffect for confirmingRemoveId via document mousedown listener on [data-remove-btn]. refetchConnections (useCallback), showConnectionError (4s auto-clear), handleSetPrimary, handleRemove (two-click pattern), handleAppleSubmit (501 → coming soon message). Connections list now interactive: provider badge, email, Primary badge (badge--green) on is_primary row, Set as primary button (hidden on primary row), Remove/Confirm remove two-click with data-remove-btn. connectionLoading scoped per-row. Apple CalDAV guide: collapsed by default, chevron toggle, 5-step instructions, iCloud email + password inputs, coming soon on 501, revocation note + Apple ID settings link.
+
+- KNOWN ISSUE: PATCH /calendar/connections/:id runs two sequential UPDATEs (clear all is_primary, then set target). If the server crashes between them the user is left with no primary connection. Wrap in a Postgres transaction before wider rollout. Flag for Audit 4.
+
+Next: Phase 6 — Apple CalDAV implementation
+
+---
+
+## March 15, 2026 — Other Calendars Phase 4 commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- server/utils/getPrimaryCalendarTokens.js (new): queries calendar_connections for is_primary=true row, returns those tokens if access_token present, falls back to sessionTokens. Never throws, logs with userId on error. Backward-compat: users with no calendar_connections rows get sessionTokens unchanged.
+- server/utils/calendarUtils.js: createCalendarEventForUser now accepts optional supabase and userId. Resolves tokens via getPrimaryCalendarTokens when both present, else session.tokens. createOAuth2Client, expiry check, and token refresh all use resolved tokens. Removed session.tokens = credentials mutation (shared-state risk — auth.setCredentials is sufficient). Event construction and calendar.events.insert unchanged.
+- server/routes/schedule.js: replaced single activeSession = organizerSession || attendeeSession with two concurrent createCalendarEventForUser calls via Promise.all. Organizer and attendee each resolve their own is_primary tokens independently. Organizer result preferred for calendarEventId/calendarEventUrl storage, attendee as fallback. Both users now reliably get the event written on lock.
+- server/routes/group-itineraries.js: added supabase and userId: memberId to per-member createCalendarEventForUser call in finalize-lock path. No structural change.
+
+Next: Phase 5 — Connected Calendars UI (list/add/remove/set primary in profile settings)
+
+---
+
+## March 15, 2026 — Other Calendars Phase 3 commit [SHA pending]
+SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- server/utils/getCalendarConnectionsForUser.js (new): queries calendar_connections by user_id, returns [] on any error, never throws.
+- server/utils/fetchBusyAggregated.js (new): backward-compat path (no connections) calls freebusy on sessionTokens with items:[primary] — byte-for-byte equivalent to pre-Phase-3 behavior. Aggregated path (connections exist): one freebusy call per connection via Promise.allSettled, calendar_ids used as items when non-empty else defaults to [primary], failed calls logged by connection.id and skipped, all busy arrays merged into flat {start,end} array. tokens passed only to createOAuth2Client — never logged, serialized, or returned.
+- server/routes/schedule.js: fetchBusy real-calendar branch replaced with fetchBusyAggregated call. Mock fallback untouched. All 3 call sites (/suggest, /reroll organizer, /reroll attendee) inherit automatically.
+- server/routes/group-itineraries.js: identical replacement in fetchBusy real-calendar branch. Unused {google} import removed. Concurrent-per-member pattern in generateGroupSuggestions unchanged — per-connection fan-out now handled inside fetchBusyAggregated.
+
+---
+
+---
+
+## March 15, 2026 — Other Calendars Phase 1 commit 39f6cba
+SHA: 39f6cba
+
+Shipped:
+- calendar_connections table created (additive — no existing tables touched):
+  - Columns: id, user_id, provider (google|apple), account_label, account_email, tokens jsonb, calendar_ids text[], is_primary bool, created_at, updated_at
+  - RLS enabled, 5 policies: SELECT/INSERT/UPDATE/DELETE user-scoped + ALL service role
+  - Index on user_id, updated_at trigger
+  - All 6 verification checks passed
+- google_tokens confirmed: exists, 0 rows, schema only. Not touched. Tokens have always lived in sessions table. Can be dropped in a future cleanup migration.
+- No application code changed in this phase.
+
+Next: Phase 2 — OAuth connect flow for secondary Google accounts
+
+---
+
+## March 15, 2026 — Push copy alignment + 4 new triggers commit 8a64ca4
+SHA: 8a64ca4
+
+Shipped:
+- Aligned existing 4 push triggers to match in-product notification copy exactly:
+  - Friend request received: title/body now matches insertNotification copy
+  - Group invite: body now includes organizer name (was generic "Tap to review and vote.")
+  - Itinerary sent: title/body matches 'New plan from ' + senderName copy
+  - Itinerary locked: title 'Plans confirmed — calendar invite sent', full body with Google Calendar line
+- Added 4 new push triggers:
+  - Friend request accepted (friends.js): fires on /accept success
+  - Itinerary declined (schedule.js): fires on /decline
+  - Suggest alternative (schedule.js): fires on /confirm with isSuggestAlternative === true only
+  - Group counter-proposal (group-itineraries.js): fires on /vote with isCounterProposal === true only
+
+Full push notification stack now complete: 8 triggers total, consistent copy across push and in-product, all fire-and-forget.
+
+---
+
+## March 15, 2026 — FCM token re-registration on app load commit 93e222b
+SHA: 93e222b
+
+Shipped:
+- App.js: silent FCM token re-registration fires inside /auth/me .then() after onboarding check. Floating .then()/.catch() chain — never awaited, never delays setAuthReady(true) or spinner clearing. Only fires when Notification.permission === 'granted'. Covers users who completed onboarding before push was wired.
+
+---
+
 ## March 15, 2026 — FCM web push commit 24d6471
 SHA: 24d6471
 

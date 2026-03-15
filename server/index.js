@@ -405,13 +405,44 @@ app.get('/auth/google', (req, res) => {
 });
 
 /**
+ * GET /auth/google/connect
+ * Starts a secondary Google account connect flow for an already-authenticated user.
+ * Unlike /auth/google (sign-in), this route:
+ *   - Requires the user to already be logged in (requireAuth)
+ *   - Embeds userId + mode in the state param so the callback can write to calendar_connections
+ *   - Uses prompt:'select_account' so the user can choose a different Google account
+ *
+ * State encoding: base64url(JSON.stringify({ csrf, userId, mode: 'connect' }))
+ * Only the csrf value is stored in the cookie — the full state travels via Google.
+ */
+app.get('/auth/google/connect', requireAuth, (req, res) => {
+  const csrf  = crypto.randomBytes(32).toString('hex');
+  const state = Buffer.from(JSON.stringify({ csrf, userId: req.userId, mode: 'connect' })).toString('base64url');
+
+  res.cookie('oauth_state', csrf, {
+    httpOnly: true,
+    secure:   IS_PROD,
+    sameSite: IS_PROD ? 'none' : 'lax',
+    maxAge:   10 * 60 * 1000,
+  });
+
+  const authUrl = createOAuth2Client().generateAuthUrl({
+    access_type: 'offline',
+    scope:       GOOGLE_SCOPES,
+    state,
+    prompt:      'select_account', // force account picker for secondary account addition
+  });
+
+  res.redirect(authUrl);
+});
+
+/**
  * GET /auth/google/callback
  * Handles the redirect from Google after user consent.
- * Exchanges the authorization code for tokens, upserts the user profile,
- * creates a session row in Supabase, and sets an HTTP-only session cookie.
- *
- * The redirect to CLIENT_URL no longer carries the session token or supabaseId
- * in the URL — only non-sensitive display params (name, picture, new flag).
+ * Handles two flows:
+ *   1. Primary (sign-in): state is a plain hex string → upsert profile, create session.
+ *   2. Connect (secondary account): state is base64url JSON with mode:'connect' →
+ *      insert into calendar_connections for the authenticated user, redirect to /profile.
  */
 app.get('/auth/google/callback', async (req, res) => {
   const { code, state, error } = req.query;
@@ -421,12 +452,29 @@ app.get('/auth/google/callback', async (req, res) => {
     return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Google authorization was denied')}`);
   }
 
-  // Validate CSRF state — compare query param against the cookie set in /auth/google.
+  // Determine if this is a secondary account connect flow.
+  // Connect flow encodes state as base64url JSON: { csrf, userId, mode: 'connect' }.
+  // Primary flow uses a plain hex string.
+  let isConnectFlow = false;
+  let connectState  = null;
+  try {
+    const parsed = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
+    if (parsed?.mode === 'connect') { isConnectFlow = true; connectState = parsed; }
+  } catch {}
+
+  // Validate CSRF state — compare against the cookie set in /auth/google[/connect].
   // Clear the cookie immediately (one-time use) regardless of outcome.
   const cookieState = req.cookies?.oauth_state;
   res.clearCookie('oauth_state', { httpOnly: true, secure: IS_PROD, sameSite: IS_PROD ? 'none' : 'lax' });
-  if (!state || !cookieState || state !== cookieState) {
-    return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Login session expired. Please try again.')}`);
+
+  if (isConnectFlow) {
+    if (!cookieState || !connectState?.csrf || connectState.csrf !== cookieState) {
+      return res.redirect(`${CLIENT_URL}/profile?error=${encodeURIComponent('Session expired. Please try again.')}`);
+    }
+  } else {
+    if (!state || !cookieState || state !== cookieState) {
+      return res.redirect(`${CLIENT_URL}?error=${encodeURIComponent('Login session expired. Please try again.')}`);
+    }
   }
 
   if (!code || typeof code !== 'string') {
@@ -442,17 +490,53 @@ app.get('/auth/google/callback', async (req, res) => {
     const oauth2 = google.oauth2({ version: 'v2', auth: client });
     const { data: profile } = await oauth2.userinfo.get();
 
+    // ── Connect flow: add secondary calendar account ──────────────────────
+    if (isConnectFlow) {
+      const userId = connectState.userId;
+
+      // Reject duplicate: same user + same Google account already linked
+      const { data: dupCheck } = await supabase
+        .from('calendar_connections')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('account_email', profile.email)
+        .maybeSingle();
+
+      if (dupCheck) {
+        return res.redirect(`${CLIENT_URL}/profile?error=${encodeURIComponent('This Google account is already connected.')}`);
+      }
+
+      const { error: insertErr } = await supabase
+        .from('calendar_connections')
+        .insert({
+          user_id:       userId,
+          provider:      'google',
+          account_email: profile.email,
+          account_label: profile.email,
+          tokens,
+        });
+
+      if (insertErr) {
+        console.error('calendar_connections insert failed:', insertErr.message);
+        return res.redirect(`${CLIENT_URL}/profile?error=${encodeURIComponent('Could not connect calendar. Please try again.')}`);
+      }
+
+      return res.redirect(`${CLIENT_URL}/profile?connected=1`);
+    }
+
+    // ── Primary flow: sign in / sign up ───────────────────────────────────
+
     // Find or create the Supabase profile row.
     // We manage auth ourselves (not Supabase Auth) so we generate UUIDs here.
     let supabaseId;
-    const { data: existing } = await supabase
+    const { data: existingProfile } = await supabase
       .from('profiles')
       .select('id')
       .eq('email', profile.email)
       .maybeSingle();
 
-    if (existing?.id) {
-      supabaseId = existing.id;
+    if (existingProfile?.id) {
+      supabaseId = existingProfile.id;
     } else {
       const newId = crypto.randomUUID();
       const { data: created, error: createErr } = await supabase
@@ -633,6 +717,173 @@ app.get('/calendar/availability', requireAuth, async (req, res) => {
     if (status === 403) return res.status(403).json({ error: 'Insufficient calendar permissions.' });
     res.status(500).json({ error: 'Failed to fetch calendar data' });
   }
+});
+
+/**
+ * GET /calendar/connections
+ * Returns the current user's secondary calendar connections.
+ * Never returns the tokens column — that stays server-side only.
+ */
+app.get('/calendar/connections', requireAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('calendar_connections')
+    .select('id, provider, account_label, account_email, calendar_ids, is_primary, created_at')
+    .eq('user_id', req.userId)
+    .order('created_at', { ascending: true });
+  if (error) {
+    console.error('calendar_connections fetch failed:', error.message);
+    return res.status(500).json({ error: 'Failed to fetch calendar connections' });
+  }
+  res.json({ connections: data || [] });
+});
+
+/**
+ * PATCH /calendar/connections/:id
+ * Sets the specified connection as is_primary for the authenticated user.
+ * Clears is_primary on all other connections for the user first so only
+ * one row ever holds is_primary=true at a time.
+ * Returns 403 if the connection belongs to a different user.
+ */
+app.patch('/calendar/connections/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  // Verify ownership before acting
+  const { data: conn, error: fetchErr } = await supabase
+    .from('calendar_connections')
+    .select('id, user_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (fetchErr || !conn) return res.status(404).json({ error: 'Connection not found' });
+  if (conn.user_id !== req.userId) return res.status(403).json({ error: 'Forbidden' });
+
+  // Unset is_primary on every connection for this user…
+  const { error: unsetErr } = await supabase
+    .from('calendar_connections')
+    .update({ is_primary: false })
+    .eq('user_id', req.userId);
+  if (unsetErr) {
+    console.error('calendar_connections unset primary failed:', unsetErr.message);
+    return res.status(500).json({ error: 'Failed to update primary calendar' });
+  }
+
+  // …then set it on the target row
+  const { error: setErr } = await supabase
+    .from('calendar_connections')
+    .update({ is_primary: true })
+    .eq('id', id);
+  if (setErr) {
+    console.error('calendar_connections set primary failed:', setErr.message);
+    return res.status(500).json({ error: 'Failed to update primary calendar' });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * DELETE /calendar/connections/:id
+ * Hard-deletes a calendar connection owned by the authenticated user.
+ * Blocks deletion when the connection is both is_primary=true and the last
+ * remaining connection — prevents the user from losing their write target.
+ * Returns 403 if the connection belongs to a different user.
+ */
+app.delete('/calendar/connections/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  const { data: conn, error: fetchErr } = await supabase
+    .from('calendar_connections')
+    .select('id, user_id, is_primary')
+    .eq('id', id)
+    .maybeSingle();
+  if (fetchErr || !conn) return res.status(404).json({ error: 'Connection not found' });
+  if (conn.user_id !== req.userId) return res.status(403).json({ error: 'Forbidden' });
+
+  // Block if this is the user's last primary connection
+  if (conn.is_primary) {
+    const { count } = await supabase
+      .from('calendar_connections')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.userId);
+    if (count <= 1) {
+      return res.status(400).json({
+        error: 'Cannot remove your primary calendar. Set another as primary first, or add a new calendar before removing this one.',
+      });
+    }
+  }
+
+  const { error: delErr } = await supabase
+    .from('calendar_connections')
+    .delete()
+    .eq('id', id);
+  if (delErr) {
+    console.error('calendar_connections delete failed:', delErr.message);
+    return res.status(500).json({ error: 'Failed to remove calendar connection' });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
+ * POST /calendar/connections/apple
+ * Connects an Apple iCloud calendar using Basic auth (email + app-specific password).
+ * Validates credentials via CalDAV login before persisting.
+ * Stores tokens as { email, password } in the calendar_connections.tokens jsonb column.
+ * The password is never logged or returned in any response.
+ */
+app.post('/calendar/connections/apple', requireAuth, async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    return res.status(400).json({ error: 'iCloud email is required.' });
+  }
+  if (!password || typeof password !== 'string' || !password.trim()) {
+    return res.status(400).json({ error: 'App-specific password is required.' });
+  }
+
+  // Validate credentials by attempting a CalDAV login — throws on bad auth
+  const { createAppleDAVClient } = require('./utils/appleCalendarUtils');
+  try {
+    await createAppleDAVClient(email.trim(), password.trim());
+  } catch {
+    return res.status(400).json({
+      error: 'Could not connect to Apple Calendar. Check your iCloud email and app-specific password.',
+    });
+  }
+
+  // Reject duplicate: same user + same Apple account already linked
+  const { data: dup } = await supabase
+    .from('calendar_connections')
+    .select('id')
+    .eq('user_id', req.userId)
+    .eq('provider', 'apple')
+    .eq('account_email', email.trim())
+    .maybeSingle();
+  if (dup) {
+    return res.status(400).json({ error: 'This Apple account is already connected.' });
+  }
+
+  // is_primary only if this is the user's very first connection
+  const { count } = await supabase
+    .from('calendar_connections')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', req.userId);
+  const isPrimary = (count || 0) === 0;
+
+  const { error: insertErr } = await supabase
+    .from('calendar_connections')
+    .insert({
+      user_id:       req.userId,
+      provider:      'apple',
+      account_email: email.trim(),
+      account_label: 'Apple Calendar',
+      tokens:        { email: email.trim(), password: password.trim() },
+      calendar_ids:  [],
+      is_primary:    isPrimary,
+    });
+  if (insertErr) {
+    console.error('apple calendar_connections insert failed:', insertErr.message);
+    return res.status(500).json({ error: 'Could not save calendar connection. Please try again.' });
+  }
+
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

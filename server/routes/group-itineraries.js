@@ -23,8 +23,8 @@
 const { randomUUID } = require('crypto');
 const { sendPush } = require('../utils/pushNotifications');
 const Anthropic = require('@anthropic-ai/sdk');
-const { google } = require('googleapis');
 const { createCalendarEventForUser } = require('../utils/calendarUtils');
+const fetchBusyAggregated = require('../utils/fetchBusyAggregated');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
@@ -158,22 +158,9 @@ function findFreeWindowsForGroup(busySlots, startDate, endDate, todFilter, maxWi
  * Mirrors schedule.js fetchBusy — per-user, best-effort.
  */
 async function fetchBusy(session, startISO, endISO, supabase, userId) {
+  // Real calendar path — aggregate across all connected calendars for this user
   if (session?.tokens?.access_token) {
-    const auth = new (require('googleapis').google.auth.OAuth2)(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
-    );
-    auth.setCredentials(session.tokens);
-    const calendar = google.calendar({ version: 'v3', auth });
-    const res = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: startISO,
-        timeMax: endISO,
-        items: [{ id: 'primary' }],
-      },
-    });
-    return res.data.calendars?.primary?.busy || [];
+    return fetchBusyAggregated(supabase, userId, session.tokens, startISO, endISO);
   }
   if (userId && supabase) {
     try {
@@ -1144,6 +1131,8 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         organizer: profileMap[itin.organizer_id] || { email: '', full_name: 'Organizer' },
         attendee: { full_name: itin.event_title || 'Group Event', email: '' },
         itineraryId: itin.id,
+        supabase,
+        userId: memberId,
       });
     });
 

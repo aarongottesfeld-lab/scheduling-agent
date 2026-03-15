@@ -19,6 +19,10 @@ export function getGoogleAuthUrl() {
   return `${BASE_URL}/auth/google`;
 }
 
+export function getGoogleConnectUrl() {
+  return `${BASE_URL}/auth/google/connect`;
+}
+
 export async function getMe() {
   const res = await client.get('/auth/me');
   return res.data;
@@ -30,6 +34,26 @@ export async function logout() {
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
+
+export async function getCalendarConnections() {
+  const res = await client.get('/calendar/connections');
+  return res.data;
+}
+
+export async function setPrimaryCalendarConnection(id) {
+  const res = await client.patch(`/calendar/connections/${id}`);
+  return res.data;
+}
+
+export async function removeCalendarConnection(id) {
+  const res = await client.delete(`/calendar/connections/${id}`);
+  return res.data;
+}
+
+export async function connectAppleCalendar({ email, password }) {
+  const res = await client.post('/calendar/connections/apple', { email, password });
+  return res.data;
+}
 
 export async function getAvailability({ timeMin, timeMax, calendarId = 'primary' }) {
   const res = await client.get('/calendar/availability', {

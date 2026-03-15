@@ -91,6 +91,104 @@ function buildGCalUrl(suggestion, itinerary) {
   return `https://calendar.google.com/calendar/render?${params}`;
 }
 
+/**
+ * Generates an RFC 5545 ICS string for a locked suggestion.
+ * Supports single-day (DTSTART/DTEND as UTC datetimes) and multi-day (VALUE=DATE all-day) events.
+ * Returns the ICS string — the caller is responsible for triggering the download.
+ */
+function generateICS(suggestion, eventTitle) {
+  const CRLF = '\r\n';
+
+  function escICS(str) {
+    return (str || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  }
+
+  function foldLine(line) {
+    if (line.length <= 75) return line;
+    const parts = [line.slice(0, 75)];
+    let i = 75;
+    while (i < line.length) { parts.push(' ' + line.slice(i, i + 74)); i += 74; }
+    return parts.join(CRLF);
+  }
+
+  function nowICS() {
+    return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  }
+
+  const uid = crypto.randomUUID() + '@rendezvous';
+  const isMultiDay = suggestion.days?.length > 1;
+
+  let dtstart, dtend;
+  if (isMultiDay) {
+    const startDate   = suggestion.days[0]?.date ?? suggestion.date;
+    const lastDayDate = suggestion.days[suggestion.days.length - 1]?.date ?? startDate;
+    const [ey, em, ed] = lastDayDate.split('-').map(Number);
+    const exclusiveEnd = new Date(ey, em - 1, ed + 1);
+    const endStr = `${exclusiveEnd.getFullYear()}${String(exclusiveEnd.getMonth()+1).padStart(2,'0')}${String(exclusiveEnd.getDate()).padStart(2,'0')}`;
+    dtstart = `DTSTART;VALUE=DATE:${startDate.replace(/-/g, '')}`;
+    dtend   = `DTEND;VALUE=DATE:${endStr}`;
+  } else {
+    let startDT;
+    const dateStr = suggestion.date;
+    const timeStr = suggestion.time;
+    if (dateStr && timeStr) {
+      const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (match) {
+        let h = parseInt(match[1]);
+        const min = match[2];
+        const ampm = match[3].toUpperCase();
+        if (ampm === 'PM' && h !== 12) h += 12;
+        if (ampm === 'AM' && h === 12) h = 0;
+        startDT = new Date(`${dateStr}T${String(h).padStart(2, '0')}:${min}:00`);
+      }
+    }
+    if (!startDT || isNaN(startDT)) startDT = dateStr ? new Date(dateStr + 'T12:00:00') : new Date();
+    const endDT = new Date(startDT.getTime() + (suggestion.durationMinutes || 120) * 60000);
+    const fmt = d => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    dtstart = `DTSTART:${fmt(startDT)}`;
+    dtend   = `DTEND:${fmt(endDT)}`;
+  }
+
+  const venueLines = (suggestion.venues || [])
+    .map(v => `${v.name}${v.address ? ' — ' + v.address : ''}`)
+    .join('\\n');
+  const description = escICS(
+    [suggestion.narrative, venueLines ? 'Stops:\\n' + venueLines : ''].filter(Boolean).join('\\n\\n')
+  );
+  const location = escICS(suggestion.venues?.[0]?.address || suggestion.neighborhood || '');
+
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Rendezvous//ItineraryView//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    foldLine(`UID:${uid}`),
+    `DTSTAMP:${nowICS()}`,
+    dtstart,
+    dtend,
+    foldLine(`SUMMARY:${escICS(eventTitle)}`),
+    description ? foldLine(`DESCRIPTION:${description}`) : null,
+    location    ? foldLine(`LOCATION:${location}`)       : null,
+    'END:VEVENT',
+    'END:VCALENDAR',
+    '',
+  ].filter(Boolean).join(CRLF);
+}
+
+/** Triggers a browser download of an ICS string as a .ics file. */
+function downloadICS(icsString, filename) {
+  const blob = new Blob([icsString], { type: 'text/calendar;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /* ── RerollModal ────────────────────────────────────────────── */
 
 /**
@@ -648,6 +746,19 @@ function SuggestionCard({
               {calendarEventId ? '📅 View in Google Calendar' : '📅 Add to Calendar'}
             </a>
           )}
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => {
+              const venueName  = suggestion.venues?.[0]?.name || suggestion.activityType || 'Plans';
+              const otherFirst = (itinerary?.attendee?.full_name || itinerary?.organizer?.full_name || '').split(' ')[0] || 'Friend';
+              downloadICS(generateICS(suggestion, `${venueName} with ${otherFirst}`), 'rendezvous-plan.ics');
+            }}
+          >
+            ⬇ Add to another calendar
+          </button>
+          <p className="form-hint" style={{ marginTop: 4, marginBottom: 0 }}>
+            Downloads an .ics file compatible with Google Calendar, Apple Calendar, Outlook, and others.
+          </p>
         </div>
       )}
     </div>
