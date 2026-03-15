@@ -16,6 +16,12 @@ import client from '../utils/client';
 
 const INITIAL_VISIBLE = 3;
 
+const SORT_OPTIONS = [
+  { key: 'date',   label: 'Date' },
+  { key: 'recent', label: 'Recent' },
+  { key: 'status', label: 'Activity' },
+];
+
 /* ── Helpers ────────────────────────────────────────────────── */
 
 function getInitials(name = '') {
@@ -214,6 +220,7 @@ export default function Home() {
   const [error,        setError]        = useState('');
   const [activeTab,    setActiveTab]    = useState('waiting_you');
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
+  const [sortBy,       setSortBy]       = useState(() => localStorage.getItem('rendezvous_home_sort') || 'date');
 
   useEffect(() => {
     let mounted = true;
@@ -269,16 +276,25 @@ export default function Home() {
     return dateA < dateB ? -1 : dateA > dateB ? 1 : 0;
   }
 
+  function sortItems(a, b) {
+    if (sortBy === 'recent' || sortBy === 'status') {
+      const ua = a.updated_at || a.created_at || '';
+      const ub = b.updated_at || b.created_at || '';
+      return ua > ub ? -1 : ua < ub ? 1 : 0;
+    }
+    return byEventDate(a, b);
+  }
+
   // Tag group items so EventCard can distinguish them, then merge both lists.
   const taggedGroupItins = groupItins.map(gi => ({ ...gi, _isGroup: true }));
   const allItems = [...allItins, ...taggedGroupItins];
 
   // Bucket into four tabs, sorted chronologically within each.
   const tabs = {
-    drafts:       allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'drafts').sort(byEventDate),
-    waiting_them: allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_them').sort(byEventDate),
-    waiting_you:  allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_you').sort(byEventDate),
-    confirmed:    allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'confirmed').sort(byEventDate),
+    drafts:       allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'drafts').sort(sortItems),
+    waiting_them: allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_them').sort(sortItems),
+    waiting_you:  allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_you').sort(sortItems),
+    confirmed:    allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'confirmed').sort(sortItems),
   };
 
   const TAB_CONFIG = [
@@ -361,30 +377,61 @@ export default function Home() {
               {/* Unified tabbed event list — 1:1 and group events comingled */}
               {hasAnyEvents && (
                 <section className="section">
-                  <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
-                    {TAB_CONFIG.map(({ key, label }) => {
-                      const count = tabs[key]?.length || 0;
-                      return (
+                  <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
+                    {/* Tab bar */}
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {TAB_CONFIG.map(({ key, label }) => {
+                        const count = tabs[key]?.length || 0;
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => { setActiveTab(key); setVisibleCount(INITIAL_VISIBLE); }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '8px 12px',
+                              fontSize: '0.85rem',
+                              fontWeight: activeTab === key ? 700 : 400,
+                              color: activeTab === key ? 'var(--brand)' : 'var(--text-2)',
+                              borderBottom: activeTab === key ? '2px solid var(--brand)' : '2px solid transparent',
+                              marginBottom: -1,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {label}{count > 0 ? ` (${count})` : ''}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Sort pills — right-aligned, secondary control */}
+                    <div style={{ display: 'flex', gap: 4, paddingBottom: 8, flexShrink: 0 }}>
+                      {SORT_OPTIONS.map(({ key, label }) => (
                         <button
                           key={key}
-                          onClick={() => { setActiveTab(key); setVisibleCount(INITIAL_VISIBLE); }}
+                          onClick={() => {
+                            localStorage.setItem('rendezvous_home_sort', key);
+                            setSortBy(key);
+                            setVisibleCount(INITIAL_VISIBLE);
+                          }}
                           style={{
-                            background: 'none',
-                            border: 'none',
+                            background: sortBy === key ? 'var(--brand-light)' : 'transparent',
+                            border: `1px solid ${sortBy === key ? 'var(--brand)' : 'var(--border)'}`,
+                            borderRadius: 999,
                             cursor: 'pointer',
-                            padding: '8px 12px',
-                            fontSize: '0.85rem',
-                            fontWeight: activeTab === key ? 700 : 400,
-                            color: activeTab === key ? 'var(--brand)' : 'var(--text-2)',
-                            borderBottom: activeTab === key ? '2px solid var(--brand)' : '2px solid transparent',
-                            marginBottom: -1,
+                            padding: '3px 10px',
+                            fontSize: '0.75rem',
+                            fontWeight: sortBy === key ? 600 : 400,
+                            color: sortBy === key ? 'var(--brand)' : 'var(--text-3)',
+                            transition: 'all 0.15s',
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {label}{count > 0 ? ` (${count})` : ''}
+                          {label}
                         </button>
-                      );
-                    })}
+                      ))}
+                    </div>
                   </div>
 
                   {activeItems.length === 0 ? (
