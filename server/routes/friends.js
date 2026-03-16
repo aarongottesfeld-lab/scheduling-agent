@@ -1,6 +1,6 @@
 // routes/friends.js — friendships, requests, profiles, annotations, shared interests
 'use strict';
-const { sendPush } = require('../utils/pushNotifications');
+const { dispatchNotification } = require('../utils/notificationDispatch');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -28,18 +28,6 @@ const MAX_INTEREST  = 100;  // per pill
 const MAX_INTERESTS = 50;   // total pills
 
 module.exports = function friendsRouter(app, supabase, requireAuth) {
-
-  // ── Notification helper ──────────────────────────────────────────────────
-  async function insertNotification(userId, type, title, body, actionUrl, refId) {
-    try {
-      await supabase.from('notifications').insert({
-        user_id: userId, type, title, body, action_url: actionUrl, ref_id: refId, read: false,
-      });
-    } catch (e) {
-      // Non-fatal: log the problem but never surface notification errors to callers
-      console.warn('insertNotification failed:', e.message);
-    }
-  }
 
   // GET /friends — list accepted friends, optional ?search= filter
   app.get('/friends', requireAuth, async (req, res) => {
@@ -158,18 +146,13 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     if (insertResult.error) return res.status(500).json({ error: 'Could not send request.' });
 
     const senderName = senderProfileRes.data?.full_name || senderProfileRes.data?.username || 'Someone';
-    await insertNotification(
-      targetUserId,
-      'friend_request',
-      'New friend request',
-      `${senderName} sent you a friend request.`,
-      '/friends',
-      req.userId,
-    );
-    sendPush(supabase, targetUserId, {
+    await dispatchNotification(supabase, {
+      userId: targetUserId,
+      type: 'friend_request',
       title: 'New friend request',
       body: `${senderName} sent you a friend request.`,
       actionUrl: '/friends',
+      refId: req.userId,
     });
 
     res.json({ ok: true });
@@ -204,18 +187,13 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     ]);
 
     const acceptorName = acceptorProfileRes.data?.full_name || acceptorProfileRes.data?.username || 'Someone';
-    await insertNotification(
-      request.user_id,
-      'friend_request_accepted',
-      'Friend request accepted',
-      `${acceptorName} accepted your friend request.`,
-      `/friends/${req.userId}`,
-      req.userId,
-    );
-    sendPush(supabase, request.user_id, {
+    await dispatchNotification(supabase, {
+      userId: request.user_id,
+      type: 'friend_request_accepted',
       title: 'Friend request accepted',
       body: `${acceptorName} accepted your friend request.`,
-      actionUrl: '/friends',
+      actionUrl: `/friends/${req.userId}`,
+      refId: req.userId,
     });
 
     res.json({ ok: true });

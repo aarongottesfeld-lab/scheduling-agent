@@ -21,26 +21,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
 const GROUP_SIZE_LIMIT = 15;
+const { dispatchNotification } = require('../utils/notificationDispatch');
 
 module.exports = function groupsRouter(app, supabase, requireAuth) {
-
-  // ── Notification helper ────────────────────────────────────────────────────
-  // Best-effort — notification failures never block the primary action.
-  async function insertNotification(userId, type, tier, title, body, data) {
-    try {
-      await supabase.from('notifications').insert({
-        user_id: userId,
-        type,
-        tier,
-        title,
-        body,
-        data: data || null,
-        read: false,
-      });
-    } catch (e) {
-      console.warn('[groups] insertNotification failed:', e.message);
-    }
-  }
 
   /* ── POST /groups ─────────────────────────────────────────────────────── */
   // Creates a new group and inserts the creator as an active admin member.
@@ -388,14 +371,14 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
     const inviterName = req.userSession.name || 'Someone';
     const groupName   = group?.name || 'a group';
 
-    await insertNotification(
-      inviteeId,
-      'group_invite',
-      1,
-      `${inviterName} invited you to ${groupName}`,
-      `You've been invited to join ${groupName}. Tap to accept or decline.`,
-      { group_id: req.params.id },
-    );
+    await dispatchNotification(supabase, {
+      userId: inviteeId,
+      type: 'group_invite',
+      tier: 1,
+      title: `${inviterName} invited you to ${groupName}`,
+      body: `You've been invited to join ${groupName}. Tap to accept or decline.`,
+      data: { group_id: req.params.id },
+    });
 
     res.status(201).json({ message: 'Invitation sent.' });
   });

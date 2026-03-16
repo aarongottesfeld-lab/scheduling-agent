@@ -21,7 +21,7 @@
 'use strict';
 
 const { randomUUID } = require('crypto');
-const { sendPush } = require('../utils/pushNotifications');
+const { dispatchNotification } = require('../utils/notificationDispatch');
 const Anthropic = require('@anthropic-ai/sdk');
 const { createCalendarEventForUser } = require('../utils/calendarUtils');
 const fetchBusyAggregated = require('../utils/fetchBusyAggregated');
@@ -436,25 +436,6 @@ async function fetchGroupHistory(groupId, supabase, limit = 3) {
   }
 }
 
-/**
- * Insert a notification row. Best-effort — failures never block the primary action.
- */
-async function insertNotification(supabase, userId, type, tier, title, body, data, actionUrl) {
-  try {
-    await supabase.from('notifications').insert({
-      user_id:    userId,
-      type,
-      tier,
-      title,
-      body,
-      data:       data || null,
-      action_url: actionUrl || null,
-      read:       false,
-    });
-  } catch (e) {
-    console.warn('[group-itineraries] insertNotification failed:', e.message);
-  }
-}
 
 /**
  * Core suggestion generation logic shared by /suggest and /reroll.
@@ -968,24 +949,16 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const attendeeIds   = Object.keys(itin.attendee_statuses || {});
 
     await Promise.all(attendeeIds.map(attendeeId =>
-      insertNotification(
-        supabase,
-        attendeeId,
-        'group_event_invite',
-        1,
-        `${organizerName} wants to plan ${eventName}`,
-        `${organizerName} sent you some plans to review. Tap to vote.`,
-        { group_itinerary_id: req.params.id },
-        `/group-itineraries/${req.params.id}`,
-      )
-    ));
-    attendeeIds.forEach(attendeeId =>
-      sendPush(supabase, attendeeId, {
+      dispatchNotification(supabase, {
+        userId: attendeeId,
+        type: 'group_event_invite',
+        tier: 1,
         title: `${organizerName} wants to plan ${eventName}`,
         body: `${organizerName} sent you some plans to review. Tap to vote.`,
+        data: { group_itinerary_id: req.params.id },
         actionUrl: `/group-itineraries/${req.params.id}`,
       })
-    );
+    ));
 
     res.json({ message: 'Itinerary sent to group.' });
   });
@@ -1111,22 +1084,16 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         ...Object.keys(attendeeStatuses).filter(uid => uid !== req.userId),
       ];
       await Promise.all(notifyIds.map(uid =>
-        insertNotification(
-          supabase, uid,
-          'group_event_counter_proposal', 2,
-          `${voterName} suggested "${counterTitle}"`,
-          `${voterName} voted for a different option in ${eventName}. Review it and update your vote if you like it.`,
-          { group_itinerary_id: req.params.id },
-          `/group-itineraries/${req.params.id}`,
-        )
-      ));
-      for (const uid of notifyIds) {
-        sendPush(supabase, uid, {
+        dispatchNotification(supabase, {
+          userId: uid,
+          type: 'group_event_counter_proposal',
+          tier: 2,
           title: `${voterName} suggested "${counterTitle}"`,
-          body: `${voterName} voted for a different option in ${eventName}.`,
+          body: `${voterName} voted for a different option in ${eventName}. Review it and update your vote if you like it.`,
+          data: { group_itinerary_id: req.params.id },
           actionUrl: `/group-itineraries/${req.params.id}`,
-        });
-      }
+        })
+      ));
     }
 
     // Notify all members when voting triggers a lock.
@@ -1147,14 +1114,15 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
         ...Object.keys(itin.attendee_statuses || {}),
       ];
       await Promise.all(notifyIds.map(uid =>
-        insertNotification(
-          supabase, uid,
-          'itinerary_locked', 1,
-          'Group plans confirmed',
-          `${groupName} plans are locked in. Calendar invites for group events are coming soon — add it to your calendar manually from the event view for now.`,
-          { group_itinerary_id: req.params.id },
-          `/group-itineraries/${req.params.id}`,
-        )
+        dispatchNotification(supabase, {
+          userId: uid,
+          type: 'itinerary_locked',
+          tier: 1,
+          title: 'Group plans confirmed',
+          body: `${groupName} plans are locked in. Calendar invites for group events are coming soon — add it to your calendar manually from the event view for now.`,
+          data: { group_itinerary_id: req.params.id },
+          actionUrl: `/group-itineraries/${req.params.id}`,
+        })
       ));
     }
 

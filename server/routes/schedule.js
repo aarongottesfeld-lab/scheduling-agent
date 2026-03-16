@@ -26,7 +26,7 @@ const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnric
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
 const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
-const { sendPush } = require('../utils/pushNotifications');
+const { dispatchNotification } = require('../utils/notificationDispatch');
 const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
 const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
 
@@ -1478,19 +1478,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       const confirmTitle = isSuggestAlternative
         ? confirmerName + ' suggested an alternative'
         : confirmerName + ' accepted a plan';
-      await supabase.from('notifications').insert({
-        user_id: otherForConfirm, type: 'itinerary_accepted',
+      await dispatchNotification(supabase, {
+        userId: otherForConfirm,
+        type: 'itinerary_accepted',
         title: confirmTitle,
         body: confirmMsg,
-        action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+        actionUrl: '/schedule/' + itineraryId,
+        refId: itineraryId,
       });
-      if (isSuggestAlternative) {
-        sendPush(supabase, otherForConfirm, {
-          title: confirmerName + ' suggested an alternative',
-          body: confirmerName + ' is suggesting a different option. Take a look.',
-          actionUrl: `/schedule/${itineraryId}`,
-        });
-      }
     }
 
     // If just locked — create Google Calendar events for both users (best-effort)
@@ -1560,29 +1555,23 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       const lockTitle     = 'Plans confirmed — calendar invite sent';
       // Each user's notification names the other party.
       await Promise.all([
-        supabase.from('notifications').insert({
-          user_id: itin.organizer_id, type: 'itinerary_locked',
+        dispatchNotification(supabase, {
+          userId: itin.organizer_id,
+          type: 'itinerary_locked',
           title: lockTitle,
           body: `Your plans with ${attendeeName} are locked in. The event has been added to both your Google Calendars.`,
-          action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+          actionUrl: '/schedule/' + itineraryId,
+          refId: itineraryId,
         }),
-        supabase.from('notifications').insert({
-          user_id: itin.attendee_id, type: 'itinerary_locked',
+        dispatchNotification(supabase, {
+          userId: itin.attendee_id,
+          type: 'itinerary_locked',
           title: lockTitle,
           body: `Your plans with ${organizerName} are locked in. The event has been added to both your Google Calendars.`,
-          action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+          actionUrl: '/schedule/' + itineraryId,
+          refId: itineraryId,
         }),
       ]);
-      sendPush(supabase, itin.organizer_id, {
-        title: 'Plans confirmed — calendar invite sent',
-        body: `Your plans with ${attendeeName} are locked in. The event has been added to both your Google Calendars.`,
-        actionUrl: `/schedule/${itineraryId}`,
-      });
-      sendPush(supabase, itin.attendee_id, {
-        title: 'Plans confirmed — calendar invite sent',
-        body: `Your plans with ${organizerName} are locked in. The event has been added to both your Google Calendars.`,
-        actionUrl: `/schedule/${itineraryId}`,
-      });
     }
 
     res.json({ itinerary: updated, locked: !!updated?.locked_at, calendarEventId, calendar_event_url: calendarEventUrl });
@@ -1601,16 +1590,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     // Notify attendee
     const senderName = await getProfileName(req.userId, supabase);
-    await supabase.from('notifications').insert({
-      user_id: itin.attendee_id, type: 'itinerary_invite',
+    await dispatchNotification(supabase, {
+      userId: itin.attendee_id,
+      type: 'itinerary_invite',
       title: 'New plan from ' + senderName,
       body: senderName + ' sent you some plans to review.',
-      action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
-    });
-    sendPush(supabase, itin.attendee_id, {
-      title: 'New plan from ' + senderName,
-      body: senderName + ' sent you some plans to review.',
-      actionUrl: `/schedule/${req.params.id}`,
+      actionUrl: '/schedule/' + req.params.id,
+      refId: req.params.id,
     });
 
     res.json({ ok: true });
@@ -1637,16 +1623,13 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // Notify the other person
     const otherUserId = itin.organizer_id === req.userId ? itin.attendee_id : itin.organizer_id;
     const declinerName = await getProfileName(req.userId, supabase);
-    await supabase.from('notifications').insert({
-      user_id: otherUserId, type: 'itinerary_declined',
+    await dispatchNotification(supabase, {
+      userId: otherUserId,
+      type: 'itinerary_declined',
       title: declinerName + ' declined the plan',
       body: declinerName + ' passed on the plans. You can re-roll for new ideas.',
-      action_url: '/schedule/' + req.params.id, ref_id: req.params.id,
-    });
-    sendPush(supabase, otherUserId, {
-      title: declinerName + ' declined the plan',
-      body: declinerName + ' passed on the plans. You can re-roll for new ideas.',
-      actionUrl: `/schedule/${req.params.id}`,
+      actionUrl: '/schedule/' + req.params.id,
+      refId: req.params.id,
     });
 
     res.json({ ok: true });
@@ -2240,11 +2223,13 @@ ${JSON.stringify(
     const updated = rerollResult.data;
 
     // Notify the other person
-    await supabase.from('notifications').insert({
-      user_id: otherUserId, type: 'itinerary_reroll',
+    await dispatchNotification(supabase, {
+      userId: otherUserId,
+      type: 'itinerary_reroll',
       title: rollerName + ' rolled new suggestions',
       body: rollerName + (isSingleCard ? ' swapped one plan option.' : ' rolled new suggestions for your plan.'),
-      action_url: '/schedule/' + itineraryId, ref_id: itineraryId,
+      actionUrl: '/schedule/' + itineraryId,
+      refId: itineraryId,
     });
 
     res.json({ itinerary: updated });
