@@ -138,7 +138,8 @@ function mountOAuthRoutes(app, supabase) {
 
   // GET /oauth/authorize — AI client redirects user here
   app.get('/oauth/authorize', (req, res) => {
-    const { client_id, redirect_uri, response_type, state, scope } = req.query;
+    const { client_id, redirect_uri, response_type, state, scope,
+            code_challenge, code_challenge_method } = req.query;
 
     if (response_type !== 'code') {
       return res.status(400).json({ error: 'Only response_type=code is supported.' });
@@ -156,6 +157,8 @@ function mountOAuthRoutes(app, supabase) {
       state,
       scope:          scope || 'read_write',
       challengeToken,
+      codeChallenge:  code_challenge || null,
+      codeChallengeMethod: code_challenge_method || null,
       expiresAt:      Date.now() + 10 * 60 * 1000,
     });
 
@@ -194,6 +197,8 @@ function mountOAuthRoutes(app, supabase) {
       clientId:    pending.clientId,
       redirectUri: pending.redirectUri,
       scope:       pending.scope,
+      codeChallenge:      pending.codeChallenge,
+      codeChallengeMethod: pending.codeChallengeMethod,
       expiresAt:   Date.now() + 5 * 60 * 1000, // 5 min
     });
 
@@ -207,7 +212,7 @@ function mountOAuthRoutes(app, supabase) {
   // POST /oauth/token — AI client exchanges code for access token
   // RFC 6749 §4.1.3 requires application/x-www-form-urlencoded; also accept JSON for flexibility.
   app.post('/oauth/token', express.urlencoded({ extended: false }), express.json(), async (req, res) => {
-    const { code, grant_type, client_id, redirect_uri } = req.body;
+    const { code, grant_type, client_id, redirect_uri, code_verifier } = req.body;
 
     if (grant_type !== 'authorization_code') {
       return res.status(400).json({ error: 'Only grant_type=authorization_code is supported.' });
@@ -228,6 +233,25 @@ function mountOAuthRoutes(app, supabase) {
     }
     if (redirect_uri && redirect_uri !== pending.redirectUri) {
       return res.status(400).json({ error: 'redirect_uri mismatch.' });
+    }
+
+    // PKCE verification (RFC 7636) — required by MCP spec.
+    if (pending.codeChallenge) {
+      if (!code_verifier) {
+        return res.status(400).json({ error: 'code_verifier is required (PKCE).' });
+      }
+      const method = pending.codeChallengeMethod || 'S256';
+      let computed;
+      if (method === 'S256') {
+        computed = crypto.createHash('sha256').update(code_verifier).digest('base64url');
+      } else if (method === 'plain') {
+        computed = code_verifier;
+      } else {
+        return res.status(400).json({ error: `Unsupported code_challenge_method: ${method}` });
+      }
+      if (computed !== pending.codeChallenge) {
+        return res.status(400).json({ error: 'PKCE code_verifier does not match code_challenge.' });
+      }
     }
 
     // Generate access token and store in Supabase.

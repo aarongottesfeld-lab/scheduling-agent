@@ -97,8 +97,6 @@ export default function McpAuth() {
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState(false);
-  const [approved, setApproved] = useState(false);
-  const [callbackUrl, setCallbackUrl] = useState(null);
   const [denying, setDenying] = useState(false);
   const [error, setError] = useState(null);
   const [userName, setUserName] = useState('');
@@ -158,14 +156,9 @@ export default function McpAuth() {
     setApproving(true);
     const userId = getSupabaseId();
     const url = `${mcpServerUrl}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
-    setCallbackUrl(url);
-    setApproved(true);
-    // 1.5s delay gives the success screen time to render and be seen
-    // before the redirect fires. If the AI client doesn't intercept,
-    // the user has the manual Return button as a fallback.
-    setTimeout(() => {
-      window.location.href = url;
-    }, 1500);
+    // Redirect immediately — the MCP server will 302 to the AI client's redirect_uri.
+    // No success screen delay; the browser navigates away as soon as the user clicks Allow.
+    window.location.href = url;
   }
 
   function handleDeny() {
@@ -173,50 +166,6 @@ export default function McpAuth() {
     setTimeout(() => {
       window.location.href = '/home';
     }, 1500);
-  }
-
-  // Approved state — success screen
-  if (approved) {
-    return (
-      <div className="page-center">
-        <div className="card" style={{ ...cardStyle, textAlign: 'center' }}>
-          <Logomark />
-          <div style={{ color: 'var(--brand)', fontWeight: 800, fontSize: '1.1rem', marginBottom: 20 }}>
-            Rendezvous
-          </div>
-
-          <div style={{
-            width: 40, height: 40, borderRadius: '50%', background: 'var(--success-bg)',
-            color: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '1.4rem', fontWeight: 700, margin: '0 auto 16px', lineHeight: 1,
-          }}>&#10003;</div>
-
-          <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-            Connected successfully
-          </p>
-          <p className="form-hint" style={{ marginBottom: 24, textAlign: 'center' }}>
-            You can now use Rendezvous from {clientLabel}. This tab will close automatically.
-          </p>
-
-          <button
-            className="btn btn--primary btn--full"
-            onClick={() => { if (callbackUrl) window.location.href = callbackUrl; }}
-          >
-            Return to {clientLabel}
-          </button>
-
-          <a
-            href="/home"
-            style={{
-              display: 'block', textAlign: 'center', marginTop: 10,
-              fontSize: '0.85rem', color: 'var(--text-3)',
-            }}
-          >
-            Go to Rendezvous
-          </a>
-        </div>
-      </div>
-    );
   }
 
   // Denying state
