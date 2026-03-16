@@ -4,6 +4,7 @@
   "outputDirectory": "client/build",
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index?__path=:path*" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/internal/:path*", "destination": "/api/index?__path=internal/:path*" },
+    { "source": "/((?!api/|internal/).*)", "destination": "/index.html" }
   ]
 }

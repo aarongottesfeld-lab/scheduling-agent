@@ -10,7 +10,7 @@
 const { parse } = require('url');
 const app = require('../server/index.js');
 
-module.exports = (req, res) => {
+const handler = (req, res) => {
   // Reconstruct original path from the __path param injected by the rewrite:
   //   { source: "/api/:path*", destination: "/api/index?__path=:path*" }
   // Without this, req.url would be /api/index and Express would 404.
@@ -20,3 +20,8 @@ module.exports = (req, res) => {
   }
   app(req, res);
 };
+
+// Allow up to 60s for long-running requests (e.g. AI generation pipeline).
+handler.maxDuration = 60;
+
+module.exports = handler;
