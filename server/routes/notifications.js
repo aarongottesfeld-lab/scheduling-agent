@@ -8,14 +8,13 @@ module.exports = function notificationsRouter(app, supabase, requireAuth) {
       return res.status(400).json({ error: 'Invalid token.' });
     }
     try {
-      // Upsert: one active token per user. If the user re-grants permission on a new
-      // device or after clearing site data, this overwrites the old token rather than
-      // accumulating stale entries.
+      // Upsert keyed on (user_id, token) — supports multiple devices per user.
+      // If the same device re-registers, only updated_at changes.
       const { error } = await supabase
         .from('push_subscriptions')
         .upsert(
           { user_id: req.userId, token, updated_at: new Date().toISOString() },
-          { onConflict: 'user_id' }
+          { onConflict: 'user_id,token' }
         );
       if (error) {
         console.error('[push] register failed:', error.message);

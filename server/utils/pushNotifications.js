@@ -10,52 +10,60 @@ if (!admin.apps.length) {
 }
 
 /**
- * Send a push notification to a single user.
+ * Send a push notification to ALL devices registered for a user.
  * Best-effort: never throws — logs and returns false on any failure.
  *
- * @param {object} supabase   - Supabase client (to look up the user's FCM token)
+ * @param {object} supabase   - Supabase client (to look up the user's FCM tokens)
  * @param {string} userId     - UUID of the recipient
  * @param {object} payload    - { title, body, actionUrl }
- * @returns {Promise<boolean>} true if sent successfully, false otherwise
+ * @returns {Promise<boolean>} true if at least one device was sent successfully
  */
 async function sendPush(supabase, userId, { title, body, actionUrl = '/' }) {
   try {
-    const { data, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('push_subscriptions')
-      .select('token')
-      .eq('user_id', userId)
-      .maybeSingle();
+      .select('id, token')
+      .eq('user_id', userId);
 
-    if (error || !data?.token) return false; // no token registered — silent skip
+    if (error || !rows || rows.length === 0) return false;
 
-    const message = {
-      token: data.token,
-      notification: { title, body },
-      data: { actionUrl },
-      webpush: {
-        notification: {
-          icon: '/logo192.png',
-          badge: '/logo192.png',
-          click_action: actionUrl,
-        },
-        fcm_options: { link: actionUrl },
-      },
-    };
+    let anySuccess = false;
 
-    await admin.messaging().send(message);
-    return true;
-  } catch (err) {
-    // Token may be stale (user cleared site data, revoked permission).
-    // Log at warn level — not an error, expected to happen occasionally.
-    console.warn(`[push] sendPush failed for user ${userId}:`, err.message);
-
-    // If FCM returned a registration-not-found error, clean up the stale token.
-    if (err.code === 'messaging/registration-token-not-registered') {
+    await Promise.all(rows.map(async (row) => {
+      if (!row.token) return;
       try {
-        await supabase.from('push_subscriptions').delete().eq('user_id', userId);
-        console.warn(`[push] stale token removed for user ${userId}`);
-      } catch { /* best-effort cleanup */ }
-    }
+        const message = {
+          token: row.token,
+          notification: { title, body },
+          data: { actionUrl },
+          webpush: {
+            notification: {
+              icon: '/logo192.png',
+              badge: '/logo192.png',
+              click_action: actionUrl,
+            },
+            fcm_options: { link: actionUrl },
+          },
+        };
+
+        await admin.messaging().send(message);
+        anySuccess = true;
+      } catch (err) {
+        console.warn(`[push] sendPush failed for user ${userId} (sub ${row.id}):`, err.message);
+
+        // If FCM returned a registration-not-found error, clean up the stale token.
+        if (err.code === 'messaging/registration-token-not-registered') {
+          try {
+            await supabase.from('push_subscriptions').delete().eq('id', row.id);
+            console.warn(`[push] stale token removed for user ${userId} (sub ${row.id})`);
+          } catch { /* best-effort cleanup */ }
+        }
+      }
+    }));
+
+    return anySuccess;
+  } catch (err) {
+    console.warn(`[push] sendPush failed for user ${userId}:`, err.message);
     return false;
   }
 }
