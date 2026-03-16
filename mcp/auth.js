@@ -162,7 +162,7 @@ function mountOAuthRoutes(app, supabase) {
     // Redirect to the main Rendezvous app's MCP consent page.
     // The challenge_token must be echoed back via /oauth/callback to prove the caller
     // received it from this authorization flow (prevents forged callback requests).
-    const consentUrl = `${RENDEZVOUS_APP_URL}/mcp-auth?auth_request_id=${authRequestId}&client_id=${encodeURIComponent(client_id)}&scope=${encodeURIComponent(scope || 'read_write')}&challenge_token=${challengeToken}`;
+    const consentUrl = `${RENDEZVOUS_APP_URL}/mcp-auth?auth_request_id=${authRequestId}&client_id=${encodeURIComponent(client_id)}&scope=${encodeURIComponent(scope || 'read_write')}&challenge_token=${challengeToken}&mcp_server_url=${encodeURIComponent(MCP_SERVER_URL)}`;
     res.redirect(consentUrl);
   });
 

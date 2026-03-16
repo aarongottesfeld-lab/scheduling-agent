@@ -16,7 +16,7 @@ import { useSearchParams } from 'react-router-dom';
 import { isAuthenticated, getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
 
-const MCP_SERVER_URL = process.env.REACT_APP_MCP_SERVER_URL || 'http://localhost:3002';
+const MCP_SERVER_URL_FALLBACK = process.env.REACT_APP_MCP_SERVER_URL || 'http://localhost:3002';
 
 const PERMISSIONS = [
   'View your friends and friend requests',
@@ -109,6 +109,7 @@ export default function McpAuth() {
   const clientId = searchParams.get('client_id');
   const scope = searchParams.get('scope');
   const challengeToken = searchParams.get('challenge_token');
+  const mcpServerUrl = searchParams.get('mcp_server_url') || MCP_SERVER_URL_FALLBACK;
 
   const hasRequiredParams = authRequestId && clientId && scope && challengeToken;
 
@@ -136,7 +137,7 @@ export default function McpAuth() {
         setUserName('User');
       });
 
-    const clientInfoPromise = fetch(`${MCP_SERVER_URL}/oauth/client-info?client_id=${encodeURIComponent(clientId)}`)
+    const clientInfoPromise = fetch(`${mcpServerUrl}/oauth/client-info?client_id=${encodeURIComponent(clientId)}`)
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data?.client_name) setClientName(data.client_name);
@@ -145,7 +146,7 @@ export default function McpAuth() {
 
     Promise.all([profilePromise, clientInfoPromise])
       .finally(() => setLoading(false));
-  }, [hasRequiredParams, clientId]);
+  }, [hasRequiredParams, clientId, mcpServerUrl]);
 
   const displayName = clientName || (clientId && clientId.length > 40
     ? clientId.slice(0, 40) + '...'
@@ -156,7 +157,7 @@ export default function McpAuth() {
   function handleAllow() {
     setApproving(true);
     const userId = getSupabaseId();
-    const url = `${MCP_SERVER_URL}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
+    const url = `${mcpServerUrl}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
     setCallbackUrl(url);
     setApproved(true);
     // 1.5s delay gives the success screen time to render and be seen
