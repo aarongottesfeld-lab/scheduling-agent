@@ -171,6 +171,7 @@ function mountOAuthRoutes(app, supabase) {
 
   // GET /oauth/callback — Rendezvous app calls this after user approves consent
   app.get('/oauth/callback', async (req, res) => {
+    console.log('[mcp/auth] GET /oauth/callback — auth_request_id:', req.query.auth_request_id);
     const { auth_request_id, user_id, challenge_token } = req.query;
 
     if (!auth_request_id || !user_id || !challenge_token) {
@@ -203,6 +204,7 @@ function mountOAuthRoutes(app, supabase) {
     });
 
     // Redirect back to AI client with the authorization code.
+    console.log('[mcp/auth] Auth code generated, redirecting to:', pending.redirectUri);
     const redirectUrl = new URL(pending.redirectUri);
     redirectUrl.searchParams.set('code', code);
     redirectUrl.searchParams.set('state', pending.state);
@@ -212,46 +214,59 @@ function mountOAuthRoutes(app, supabase) {
   // POST /oauth/token — AI client exchanges code for access token
   // RFC 6749 §4.1.3 requires application/x-www-form-urlencoded; also accept JSON for flexibility.
   app.post('/oauth/token', express.urlencoded({ extended: false }), express.json(), async (req, res) => {
+    console.log('[mcp/auth] POST /oauth/token — content-type:', req.headers['content-type']);
+    console.log('[mcp/auth] POST /oauth/token — body keys:', Object.keys(req.body || {}));
+
     const { code, grant_type, client_id, redirect_uri, code_verifier } = req.body;
 
     if (grant_type !== 'authorization_code') {
+      console.error('[mcp/auth] token error: bad grant_type:', grant_type);
       return res.status(400).json({ error: 'Only grant_type=authorization_code is supported.' });
     }
     if (!code) {
+      console.error('[mcp/auth] token error: missing code');
       return res.status(400).json({ error: 'code is required.' });
     }
 
     const pending = pendingCodes.get(`code:${code}`);
     if (!pending) {
+      console.error('[mcp/auth] token error: code not found in pendingCodes (expired or already used)');
       return res.status(400).json({ error: 'Invalid or expired authorization code.' });
     }
     pendingCodes.delete(`code:${code}`);
 
     // Validate client_id and redirect_uri match.
     if (client_id && client_id !== pending.clientId) {
+      console.error('[mcp/auth] token error: client_id mismatch:', client_id, '!==', pending.clientId);
       return res.status(400).json({ error: 'client_id mismatch.' });
     }
     if (redirect_uri && redirect_uri !== pending.redirectUri) {
+      console.error('[mcp/auth] token error: redirect_uri mismatch');
       return res.status(400).json({ error: 'redirect_uri mismatch.' });
     }
 
     // PKCE verification (RFC 7636) — required by MCP spec.
     if (pending.codeChallenge) {
       if (!code_verifier) {
+        console.error('[mcp/auth] token error: PKCE code_verifier missing but code_challenge was set');
         return res.status(400).json({ error: 'code_verifier is required (PKCE).' });
       }
       const method = pending.codeChallengeMethod || 'S256';
       let computed;
       if (method === 'S256') {
-        computed = crypto.createHash('sha256').update(code_verifier).digest('base64url');
+        // Use base64 + manual URL-safe conversion for Node.js compatibility
+        const hash = crypto.createHash('sha256').update(code_verifier).digest('base64');
+        computed = hash.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       } else if (method === 'plain') {
         computed = code_verifier;
       } else {
         return res.status(400).json({ error: `Unsupported code_challenge_method: ${method}` });
       }
       if (computed !== pending.codeChallenge) {
+        console.error('[mcp/auth] token error: PKCE mismatch — computed:', computed, 'expected:', pending.codeChallenge);
         return res.status(400).json({ error: 'PKCE code_verifier does not match code_challenge.' });
       }
+      console.log('[mcp/auth] PKCE verification passed');
     }
 
     // Generate access token and store in Supabase.
@@ -271,6 +286,7 @@ function mountOAuthRoutes(app, supabase) {
       return res.status(500).json({ error: 'Could not create access token.' });
     }
 
+    console.log('[mcp/auth] Token issued successfully for user:', pending.userId);
     res.json({
       access_token: accessToken,
       token_type:   'Bearer',
