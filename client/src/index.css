@@ -998,9 +998,12 @@ textarea.form-control { resize: vertical; min-height: 88px; }
 }
 @media (max-width: 768px) {
   .notif-panel {
-    width: calc(100vw - 24px);
-    max-width: 340px;
-    right: -8px;
+    position: fixed;
+    top: calc(var(--nav-h) + 4px);
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-width: none;
   }
 }
 
