@@ -54,6 +54,7 @@ import GroupItineraryView  from './pages/GroupItineraryView';
 import Onboarding          from './pages/Onboarding';
 import SharedProfile       from './pages/SharedProfile';
 import Settings            from './pages/Settings';
+import McpAuth             from './pages/McpAuth';
 import BugReportButton     from './components/BugReportButton';
 
 /**
@@ -192,6 +193,9 @@ export default function App() {
 
         {/* Public shareable profile — not ProtectedRoute; auth check is inside SharedProfile */}
         <Route path="/u/:username" element={<SharedProfile />} />
+
+        {/* MCP OAuth consent — not ProtectedRoute; McpAuth.js handles its own auth check */}
+        <Route path="/mcp-auth" element={<McpAuth />} />
 
         {/* Onboarding — not wrapped in ProtectedRoute; Onboarding.js handles its own
             auth redirect. Part of the auth completion flow, not a protected feature. */}

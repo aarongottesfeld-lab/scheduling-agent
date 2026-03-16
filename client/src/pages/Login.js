@@ -319,11 +319,17 @@ function LandingPage() {
 
 /* ── Main export ─────────────────────────────────────────── */
 export default function Login() {
-  // Authenticated redirect — do not modify this block
+  // Authenticated redirect
   if (isAuthenticated()) {
     if (isNewUser()) {
       clearNewUser();
       return <Navigate to="/profile/setup" replace />;
+    }
+    // Check for pending MCP auth flow that redirected here for login
+    const mcpReturn = sessionStorage.getItem('mcp_auth_return_url');
+    if (mcpReturn) {
+      sessionStorage.removeItem('mcp_auth_return_url');
+      return <Navigate to={mcpReturn} replace />;
     }
     return <Navigate to="/home" replace />;
   }
