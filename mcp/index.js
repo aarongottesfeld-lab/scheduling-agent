@@ -220,10 +220,12 @@ app.use((err, _req, res, _next) => {
 // Start server
 // ---------------------------------------------------------------------------
 app.listen(PORT, () => {
-  console.log(`Rendezvous MCP server listening on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
-  console.log(`  SSE endpoint: http://localhost:${PORT}/sse`);
-  console.log(`  Health check: http://localhost:${PORT}/health`);
-  if (process.env.MCP_API_KEY) {
-    console.log('  WARNING: MCP_API_KEY is set — dev auth shortcut is active');
+  if (process.stdout.isTTY) {
+    console.log(`Rendezvous MCP server listening on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+    console.log(`  SSE endpoint: http://localhost:${PORT}/sse`);
+    console.log(`  Health check: http://localhost:${PORT}/health`);
+    if (process.env.MCP_API_KEY) {
+      console.log('  WARNING: MCP_API_KEY is set — dev auth shortcut is active');
+    }
   }
 });
