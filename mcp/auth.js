@@ -34,8 +34,13 @@ function mountOAuthRoutes(app, supabase) {
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
     : (process.env.MCP_SERVER_URL || 'http://localhost:3002');
 
-  // GET / — service info (prevents 404 on probe)
-  app.get('/', (_req, res) => {
+  // GET / — service info (prevents 404 on probe).
+  // Only handles non-MCP GET requests; MCP Streamable HTTP traffic is
+  // handled by the transport in index.js via app.all('/').
+  app.get('/', (req, res, next) => {
+    // If Accept header wants SSE, this is an MCP Streamable HTTP GET — pass through
+    const accept = req.headers.accept || '';
+    if (accept.includes('text/event-stream')) return next();
     res.json({
       service: 'Rendezvous MCP Server',
       version: '1.0.0',

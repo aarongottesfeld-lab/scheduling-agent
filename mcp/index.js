@@ -129,6 +129,7 @@ if (isStdio) {
   const express = require('express');
   const cors = require('cors');
   const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
+  const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
   const { mountOAuthRoutes, requireMcpAuth } = require('./auth');
 
   const app = express();
@@ -189,7 +190,85 @@ if (isStdio) {
   // ── OAuth routes ──
   mountOAuthRoutes(app, supabase);
 
-  // ── SSE transport — multi-session support ──
+  // ── Streamable HTTP transport (Claude.ai, newer MCP clients) ──
+  // Clients POST JSON-RPC to / and optionally GET / for SSE stream.
+  // Each session gets its own transport + McpServer scoped to the authenticated user.
+  // Note: GET / without Accept: text/event-stream is handled by auth.js (service info).
+  const streamableSessions = {};
+
+  // Helper to look up an existing streamable session by Mcp-Session-Id header
+  function getStreamableSession(req, res) {
+    const sessionId = req.headers['mcp-session-id'];
+    if (!sessionId || !streamableSessions[sessionId]) return null;
+    const session = streamableSessions[sessionId];
+    if (session.userId !== req.userId) {
+      res.status(403).json({ error: 'Session does not belong to this user.' });
+      return 'denied';
+    }
+    return session;
+  }
+
+  // POST / — JSON-RPC messages (initialize or subsequent)
+  app.post('/', authMiddleware, async (req, res) => {
+    if (!checkRateLimit(req.userId)) {
+      return res.status(429).json({ error: 'Rate limit exceeded. Max 60 requests per minute.' });
+    }
+
+    // Existing session
+    const existing = getStreamableSession(req, res);
+    if (existing === 'denied') return;
+    if (existing) {
+      return existing.transport.handleRequest(req, res, req.body);
+    }
+
+    // New session — initialize
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => require('crypto').randomUUID(),
+    });
+    const mcpServer = createMcpServerForUser(req.userId);
+
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid && streamableSessions[sid]) {
+        delete streamableSessions[sid];
+      }
+    };
+
+    await mcpServer.connect(transport);
+
+    if (transport.sessionId) {
+      streamableSessions[transport.sessionId] = {
+        transport,
+        userId: req.userId,
+        mcpServer,
+      };
+    }
+
+    return transport.handleRequest(req, res, req.body);
+  });
+
+  // GET / with Accept: text/event-stream — SSE stream for existing session
+  // (non-SSE GET / is handled by auth.js as service info)
+  app.get('/', authMiddleware, async (req, res) => {
+    const existing = getStreamableSession(req, res);
+    if (existing === 'denied') return;
+    if (!existing) {
+      return res.status(400).json({ error: 'No valid session. Send an initialize request first.' });
+    }
+    return existing.transport.handleRequest(req, res);
+  });
+
+  // DELETE / — close a session
+  app.delete('/', authMiddleware, async (req, res) => {
+    const existing = getStreamableSession(req, res);
+    if (existing === 'denied') return;
+    if (!existing) {
+      return res.status(400).json({ error: 'No valid session.' });
+    }
+    return existing.transport.handleRequest(req, res);
+  });
+
+  // ── Legacy SSE transport (older MCP clients) ──
   const sessions = {};
 
   app.get('/sse', authMiddleware, async (req, res) => {
