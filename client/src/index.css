@@ -944,6 +944,13 @@ textarea.form-control { resize: vertical; min-height: 88px; }
   overflow: hidden;
   animation: fadeIn .12s ease;
 }
+@media (max-width: 768px) {
+  .notif-panel {
+    width: calc(100vw - 24px);
+    max-width: 340px;
+    right: -8px;
+  }
+}
 
 .notif-panel__header {
   display: flex;
