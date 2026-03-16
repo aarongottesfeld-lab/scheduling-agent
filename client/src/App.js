@@ -146,7 +146,8 @@ export default function App() {
           // Show a native notification when a push arrives while the tab is in the foreground.
           // Without this, FCM silently delivers to onMessage and the user sees nothing.
           onMessage(messaging, (payload) => {
-            const { title, body } = payload.notification || {};
+            const title = payload.data?.title;
+            const body = payload.data?.body || '';
             const actionUrl = payload.data?.actionUrl || '/';
             if (title && Notification.permission === 'granted') {
               const n = new Notification(title, {

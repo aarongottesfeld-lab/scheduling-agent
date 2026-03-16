@@ -32,16 +32,13 @@ async function sendPush(supabase, userId, { title, body, actionUrl = '/' }) {
     await Promise.all(rows.map(async (row) => {
       if (!row.token) return;
       try {
+        // Data-only message — no `notification` key. This prevents FCM from
+        // auto-displaying a notification (which would duplicate the one shown by
+        // our service worker's onBackgroundMessage or the app's onMessage handler).
         const message = {
           token: row.token,
-          notification: { title, body },
-          data: { actionUrl },
+          data: { title, body, actionUrl },
           webpush: {
-            notification: {
-              icon: '/logo192.png',
-              badge: '/logo192.png',
-              click_action: actionUrl,
-            },
             fcm_options: { link: actionUrl },
           },
         };

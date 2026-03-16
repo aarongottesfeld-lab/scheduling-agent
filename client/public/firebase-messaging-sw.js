@@ -14,11 +14,14 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// Data-only messages: title/body are in payload.data (not payload.notification)
+// so FCM never auto-displays — we control the single notification here.
 messaging.onBackgroundMessage(payload => {
-  const { title, body } = payload.notification || {};
+  const title = payload.data?.title || 'Rendezvous';
+  const body = payload.data?.body || '';
   const actionUrl = payload.data?.actionUrl || '/';
-  self.registration.showNotification(title || 'Rendezvous', {
-    body: body || '',
+  self.registration.showNotification(title, {
+    body,
     icon: '/logo192.png',
     data: { actionUrl },
   });
