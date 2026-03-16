@@ -39,6 +39,58 @@
   --t:        150ms ease;
 }
 
+/* ── Dark mode — OS-follows (no user override) ─────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:           #0f1117;
+    --surface:      #1a1d27;
+    --border:       #2d3142;
+    --text:         #f1f5f9;
+    --text-2:       #cbd5e1;
+    --text-3:       #94a3b8;
+    --text-4:       #64748b;
+    --brand-light:  #1e1b4b;
+    --brand-xlight: #1e1b4b;
+    --success-bg:   #052e16;
+    --error-bg:     #450a0a;
+    --warn-bg:      #422006;
+  }
+  :root:not([data-theme="light"]) .navbar       { background: rgba(15,17,23,.92); }
+  :root:not([data-theme="light"]) .bottom-tab-bar { background: rgba(15,17,23,.95); }
+  :root:not([data-theme="light"]) .badge--gray  { background: #2d3142; }
+  :root:not([data-theme="light"]) .btn--secondary:hover { background: #312e81; }
+  :root:not([data-theme="light"]) .btn--ghost:hover     { background: var(--surface); }
+  :root:not([data-theme="light"]) .btn--danger:hover    { background: #7f1d1d; }
+  :root:not([data-theme="light"]) .btn--success:hover   { background: #064e3b; }
+  :root:not([data-theme="light"]) .notif-item--unread:hover { background: #312e81; }
+  :root:not([data-theme="light"]) .login-page { background: linear-gradient(160deg, #0f1117 0%, #1a1d27 55%, #0f1117 100%); }
+}
+
+/* ── Dark mode — forced by user ────────────────────────── */
+:root[data-theme="dark"] {
+  --bg:           #0f1117;
+  --surface:      #1a1d27;
+  --border:       #2d3142;
+  --text:         #f1f5f9;
+  --text-2:       #cbd5e1;
+  --text-3:       #94a3b8;
+  --text-4:       #64748b;
+  --brand-light:  #1e1b4b;
+  --brand-xlight: #1e1b4b;
+  --success-bg:   #052e16;
+  --error-bg:     #450a0a;
+  --warn-bg:      #422006;
+}
+:root[data-theme="dark"] .navbar       { background: rgba(15,17,23,.92); }
+:root[data-theme="dark"] .bottom-tab-bar { background: rgba(15,17,23,.95); }
+:root[data-theme="dark"] .badge--gray  { background: #2d3142; }
+:root[data-theme="dark"] .btn--secondary:hover { background: #312e81; }
+:root[data-theme="dark"] .btn--ghost:hover     { background: var(--surface); }
+:root[data-theme="dark"] .btn--danger:hover    { background: #7f1d1d; }
+:root[data-theme="dark"] .btn--success:hover   { background: #064e3b; }
+:root[data-theme="dark"] .notif-item--unread:hover { background: #312e81; }
+:root[data-theme="dark"] .login-page { background: linear-gradient(160deg, #0f1117 0%, #1a1d27 55%, #0f1117 100%); }
+
 /* ── Reset ────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 
@@ -936,7 +988,7 @@ textarea.form-control { resize: vertical; min-height: 88px; }
   top: calc(100% + 10px);
   right: 0;
   width: 340px;
-  background: #ffffff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   box-shadow: 0 8px 32px rgba(0,0,0,.14), 0 2px 8px rgba(0,0,0,.08);
@@ -1022,7 +1074,7 @@ textarea.form-control { resize: vertical; min-height: 88px; }
 
 .notif-panel__footer {
   border-top: 1px solid var(--border);
-  background: #ffffff;
+  background: var(--surface);
 }
 .notif-panel__see-all {
   display: block;

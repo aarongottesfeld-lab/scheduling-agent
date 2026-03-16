@@ -33,6 +33,7 @@ import posthog from 'posthog-js';
 
 import { initSessionFromUrl, setSessionFromApi, clearSession, setOnboardingCompleted, isOnboardingCompleted } from './utils/auth';
 import client from './utils/client';
+import useTheme from './utils/useTheme';
 import { messaging, getToken } from './firebase';
 import { registerPushToken } from './utils/api';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -85,6 +86,10 @@ function OnboardingRedirector() {
 }
 
 export default function App() {
+  // Apply dark mode data-theme attribute on <html> based on localStorage / OS preference.
+  // The return values are consumed independently by MyProfile's appearance toggle.
+  useTheme();
+
   // authReady: false while the /auth/me round-trip is in flight.
   // Keeps routes from rendering (and ProtectedRoute from redirecting) before
   // we know whether the user has a valid session.

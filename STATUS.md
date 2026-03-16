@@ -21,8 +21,60 @@ Shipped:
 
 Next: Phase 4 — calendar write path (createCalendarEventForUser writes to is_primary connection)
 
-## March 15, 2026 — ICS Download Button commit [SHA pending]
+## March 15, 2026 — Audit 4 Remediation commit 4764c95
+
+Fixed: A4-001 (CRITICAL), A4-002 (HIGH), A4-003 (HIGH), A4-004 (HIGH), A4-005 (WARN), A4-009 (WARN), A4-010 (WARN), A4-012 (WARN), A4-013 (WARN), A4-016 (INFO), A4-017 (INFO)
+
+Modified:
+- server/index.js: A4-001 session validation in connect callback (verify session.supabase_id === connectState.userId before any DB write); A4-013 atomic set_primary_calendar_connection() RPC replaces two-UPDATE gap
+- server/routes/schedule.js: A4-002 RATE_LIMIT_EXEMPT moved to RATE_LIMIT_EXEMPT_EMAILS env var; A4-005 INJECTION_RE multiline flag added
+- server/routes/friends.js: A4-002 RATE_LIMIT_EXEMPT env var
+- server/routes/group-itineraries.js: A4-002 RATE_LIMIT_EXEMPT env var + daily cap added to group suggest route; A4-003 atomic merge_attendee_vote() RPC + re-fetch replaces lost-update pattern; A4-005 INJECTION_RE multiline flag
+
+Deleted:
+- 20260314000002_fix_function_search_path.sql (A4-016 duplicate timestamp prefix, canonical plural version retained)
+
+Migrations created:
+- 20260315000004: A4-004 calendar_connections trigger SET search_path = ''
+- 20260315000005: A4-009 groups.default_activities text[] column
+- 20260315000006: A4-010 bug_reports table + RLS
+- 20260315000007: A4-012 calendar_connections RLS rebuilt with (SELECT auth.uid())
+- 20260315000008: A4-013 set_primary_calendar_connection() RPC
+- 20260315000009: A4-017 DROP TABLE google_tokens CASCADE
+- 20260315000010: A4-003 merge_attendee_vote() RPC
+
+ACTION REQUIRED: Add RATE_LIMIT_EXEMPT_EMAILS=aaron.gottesfeld@gmail.com to Vercel env vars before next deploy.
+
+Deferred (not fixed in this pass): A4-006 PostHog group parity, A4-007 delete-draft 1:1, A4-008 group title edit, A4-011 schedule.js split, A4-014 JS filter vs DB filter, A4-018 remote trip in group UI
+
+---
+
+## March 15, 2026 — Connected Calendars Card Fix commit [SHA pending]
 SHA: pending — update when Claude Code outputs commit hash
+
+Shipped:
+- client/src/pages/MyProfile.js: Both catch blocks now log console.error so calendar connection failures surface in browser console. Extracted entire Connected Calendars card to const connectedCalendarsCard defined before both return branches. Apple form tag replaced with div, submit button changed to type=button onClick=handleAppleSubmit (prevents nested form breakage in edit view). Set as primary and Remove buttons both got type=button (prevents triggering outer profile save form). Card rendered in read-only view at same position as before. Card also rendered in edit form after Mobility section, before Save changes button, with same connectBanner alerts.
+
+Next: Audit 4
+
+---
+
+## March 15, 2026 — Live Events V1 commit 32efae4
+
+Shipped:
+- server/utils/extractCulturalSignal.js (new): detects sports teams (100+) and awards (14) in contextPrompt + activityPreferences. Longest-match ordering for multi-word team names. Never throws.
+- server/utils/fetchCulturalEvent.js (new): ESPN scoreboard handler (no key, 4h cache, multi-league concurrent fetch for ambiguous team names like giants/rangers/panthers/cardinals). MediaWiki awards handler (opensearch to find current-year article, action=query extracts for plain-text intro, date regex with year validation, venue extraction). User-Agent header on all Wikipedia requests. Never throws.
+- server/routes/schedule.js: extractCulturalSignal + fetchCulturalEvent requires added. buildSuggestPrompt updated with priorityEventBlock param, injected before AVAILABLE TIME-SENSITIVE EVENTS block. PRIORITY EVENT detection + injection in both suggest and reroll routes. Telemetry fields added to suggestion_telemetry: cultural_signal_detected, cultural_signal_type, cultural_signal_entity, cultural_event_found, cultural_anchor_used.
+- server/routes/group-itineraries.js: full parity with schedule.js. buildGroupSuggestPrompt updated, generateGroupSuggestions accepts priorityEventBlock, suggest/reroll routes add detection + telemetry.
+- client/src/pages/ItineraryView.js + GroupItineraryView.js: 🔴 Live badge renders on suggestion.priority_event field.
+- ESPN verified: returns data without API key. MediaWiki opensearch verified: returns correct current-year article for awards queries.
+
+Next: Connected Calendars card debug + edit form parity (MyProfile.js), then Audit 4
+
+---
+
+## March 15, 2026 — ICS Download Button commit d23f860
+SHA: d23f860
 
 Shipped:
 - ItineraryView.js + GroupItineraryView.js: generateICS and downloadICS helpers added at module level (identical logic, PRODID string differs by source). Button renders inside existing locked/isLocked && isWinner guard — no new conditions. Single-day: parses suggestion.time + suggestion.date into UTC Date, DTEND from durationMinutes || 120. Multi-day: VALUE=DATE all-day format, exclusive DTEND. Group summary: group_name + event_title. 1:1 summary: venueName with FirstName. Client-side only — Blob + temporary anchor, no server route, no new dependencies.
