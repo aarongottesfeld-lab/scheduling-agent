@@ -18,6 +18,81 @@ import client from '../utils/client';
 
 const MCP_SERVER_URL = process.env.REACT_APP_MCP_SERVER_URL || 'http://localhost:3002';
 
+const PERMISSIONS = [
+  'View your friends and friend requests',
+  'Check your calendar availability',
+  'Create and manage 1-on-1 plans',
+  'Create and manage group plans',
+  'Accept, decline, or vote on plans',
+  'Send and respond to friend requests',
+  'Receive plan notifications',
+];
+
+function Logomark() {
+  return (
+    <div style={{
+      width: 56, height: 56, borderRadius: '50%', background: 'var(--brand)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      margin: '0 auto 10px',
+    }}>
+      <span style={{ color: '#fff', fontWeight: 900, fontSize: '1.6rem', lineHeight: 1 }}>R</span>
+    </div>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <span style={{
+      width: 16, height: 16, borderRadius: '50%', background: 'var(--success-bg)',
+      color: 'var(--success)', display: 'inline-flex', alignItems: 'center',
+      justifyContent: 'center', fontSize: '0.65rem', fontWeight: 700, flexShrink: 0,
+      lineHeight: 1,
+    }}>&#10003;</span>
+  );
+}
+
+function UserPill({ userName, avatarUrl }) {
+  const initials = (userName || 'U').charAt(0).toUpperCase();
+  return (
+    <div style={{
+      background: 'var(--bg)', border: '1px solid var(--border)',
+      borderRadius: 'var(--r-pill)', padding: '8px 14px',
+      display: 'flex', alignItems: 'center', gap: 10,
+      margin: '0 auto 20px', width: 'fit-content', maxWidth: '100%',
+    }}>
+      {avatarUrl ? (
+        <img src={avatarUrl} alt="" style={{
+          width: 28, height: 28, borderRadius: '50%', objectFit: 'cover', flexShrink: 0,
+        }} />
+      ) : (
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'linear-gradient(135deg, var(--brand) 0%, #a78bfa 100%)',
+          color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontWeight: 800, fontSize: '0.7rem', flexShrink: 0,
+        }}>{initials}</div>
+      )}
+      <span style={{ fontSize: '0.85rem', color: 'var(--text-2)', fontWeight: 500 }}>
+        {userName}
+      </span>
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={() => { window.location.href = '/'; }}
+        onKeyDown={e => { if (e.key === 'Enter') window.location.href = '/'; }}
+        style={{
+          fontSize: '0.78rem', color: 'var(--brand)', cursor: 'pointer',
+          marginLeft: 'auto', whiteSpace: 'nowrap',
+        }}
+      >Not you?</span>
+    </div>
+  );
+}
+
+const cardStyle = {
+  maxWidth: 400, padding: 32, boxShadow: 'var(--shadow-lg)', borderRadius: 'var(--r-lg)',
+};
+
 export default function McpAuth() {
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
@@ -25,6 +100,7 @@ export default function McpAuth() {
   const [denying, setDenying] = useState(false);
   const [error, setError] = useState(null);
   const [userName, setUserName] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(null);
 
   const authRequestId = searchParams.get('auth_request_id');
   const clientId = searchParams.get('client_id');
@@ -50,6 +126,7 @@ export default function McpAuth() {
     client.get('/users/me')
       .then(res => {
         setUserName(res.data.full_name || res.data.username || 'User');
+        setAvatarUrl(res.data.avatar_url || null);
       })
       .catch(() => {
         setUserName('User');
@@ -79,9 +156,10 @@ export default function McpAuth() {
   if (denying) {
     return (
       <div className="page-center">
-        <div className="card card-pad" style={{ maxWidth: 420, textAlign: 'center' }}>
-          <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-2)' }}>
-            Access denied. Redirecting...
+        <div className="card" style={{ ...cardStyle, textAlign: 'center' }}>
+          <Logomark />
+          <p style={{ fontSize: '0.95rem', fontWeight: 500, color: 'var(--text-3)', marginTop: 16 }}>
+            Access cancelled
           </p>
         </div>
       </div>
@@ -103,9 +181,10 @@ export default function McpAuth() {
   if (error) {
     return (
       <div className="page-center">
-        <div className="card card-pad" style={{ maxWidth: 420, textAlign: 'center' }}>
-          <div style={{ fontSize: '1.5rem', marginBottom: 12 }}>
-            <span style={{ color: 'var(--brand)', fontWeight: 800 }}>Rendezvous</span>
+        <div className="card" style={{ ...cardStyle, textAlign: 'center' }}>
+          <Logomark />
+          <div style={{ color: 'var(--brand)', fontWeight: 800, fontSize: '1.1rem', marginBottom: 16 }}>
+            Rendezvous
           </div>
           <div className="alert alert--error" style={{ textAlign: 'left' }}>
             {error}
@@ -117,57 +196,73 @@ export default function McpAuth() {
 
   return (
     <div className="page-center">
-      <div className="card card-pad" style={{ maxWidth: 420 }}>
+      <div className="card" style={cardStyle}>
+        {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
-          <span style={{ color: 'var(--brand)', fontWeight: 800, fontSize: '1.3rem' }}>
+          <Logomark />
+          <div style={{ color: 'var(--brand)', fontWeight: 800, fontSize: '1.1rem' }}>
             Rendezvous
-          </span>
+          </div>
         </div>
 
-        <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-          <strong>{displayClientId}</strong> wants to connect to your Rendezvous account
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '0 0 20px' }} />
+
+        {/* Title */}
+        <p style={{
+          fontSize: '1.05rem', fontWeight: 500, color: 'var(--text)',
+          textAlign: 'center', marginBottom: 16, lineHeight: 1.45,
+        }}>
+          <strong>{displayClientId}</strong> would like access to your Rendezvous account
         </p>
 
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-3)', marginBottom: 20 }}>
-          Signed in as <strong style={{ color: 'var(--text-2)' }}>{userName}</strong>
-        </p>
+        {/* Signed-in account pill */}
+        <UserPill userName={userName} avatarUrl={avatarUrl} />
 
-        <p style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-2)', marginBottom: 10 }}>
-          This will allow:
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '0 0 16px' }} />
+
+        {/* Permissions */}
+        <p style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 10 }}>
+          This will allow
         </p>
-        <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {[
-            'View your friends list',
-            'Check your availability',
-            'Create and manage plans',
-            'Vote on group plans',
-          ].map(item => (
-            <li key={item} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem', color: 'var(--text-2)' }}>
-              <span style={{ color: 'var(--success)', fontSize: '0.9rem', flexShrink: 0 }}>&#10003;</span>
+        <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {PERMISSIONS.map(item => (
+            <li key={item} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.5 }}>
+              <CheckIcon />
               {item}
             </li>
           ))}
         </ul>
 
-        <p className="form-hint" style={{ marginBottom: 20 }}>
-          Your calendar credentials are never shared.
-        </p>
+        {/* Privacy note */}
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <p className="form-hint" style={{ margin: 0 }}>
+            Your calendar credentials are never shared with AI clients.
+          </p>
+          <p className="form-hint" style={{ margin: '2px 0 0' }}>
+            Access can be revoked at any time from your Rendezvous settings.
+          </p>
+        </div>
 
+        {/* Allow button */}
         <button
-          className="btn btn--primary btn--full btn--lg"
+          className="btn btn--primary btn--lg btn--full"
           onClick={handleAllow}
           disabled={approving}
-          style={{ marginBottom: 10 }}
         >
-          {approving ? 'Connecting...' : 'Allow'}
+          {approving ? 'Connecting\u2026' : 'Allow access'}
         </button>
 
+        {/* Cancel link */}
         <button
-          className="btn btn--ghost btn--full"
           onClick={handleDeny}
           disabled={approving}
+          style={{
+            display: 'block', width: '100%', textAlign: 'center',
+            marginTop: 10, padding: '8px 0', background: 'none', border: 'none',
+            fontSize: '0.85rem', color: 'var(--text-3)', cursor: 'pointer',
+          }}
         >
-          Deny
+          Cancel
         </button>
       </div>
     </div>
