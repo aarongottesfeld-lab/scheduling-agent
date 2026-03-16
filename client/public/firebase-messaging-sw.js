@@ -1,5 +1,5 @@
-importScripts('https://www.gstatic.com/firebasejs/12.10.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/12.10.0/firebase-messaging-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js');
 
 // Firebase config — these are public client-side keys (same values baked into the React bundle).
 // Service workers cannot access process.env or build-time variables, so the config is inline.
