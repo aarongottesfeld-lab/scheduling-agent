@@ -80,9 +80,9 @@ function Accordion({ items }) {
 }
 
 /* ── Section wrapper ───────────────────────────────────────────── */
-function Section({ title, children }) {
+function Section({ id, title, children }) {
   return (
-    <section style={{ marginBottom: 24 }}>
+    <section id={id} style={{ marginBottom: 24, scrollMarginTop: 80 }}>
       <h2 className="section-title">{title}</h2>
       <div className="card card-pad">{children}</div>
     </section>
@@ -192,8 +192,27 @@ export default function Help() {
         <div className="container container--sm">
           <h1 className="page-title" style={{ marginBottom: 24 }}>Help</h1>
 
+          {/* ── Table of contents ── */}
+          <nav className="card card-pad" style={{ marginBottom: 24 }}>
+            <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)', marginBottom: 10 }}>On this page</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem', lineHeight: 2 }}>
+              <li><a href="#how-it-works" style={{ color: 'var(--brand)', textDecoration: 'none' }}>How it works</a></li>
+              <li><a href="#planning-modes" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Planning modes</a></li>
+              <li><a href="#faq" style={{ color: 'var(--brand)', textDecoration: 'none' }}>FAQ</a></li>
+              <li><a href="#privacy" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Privacy &amp; calendar</a></li>
+              <li><a href="#contact" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Contact &amp; feedback</a></li>
+              {authed && (
+                <>
+                  <li><a href="#settings-guide" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Settings guide</a></li>
+                  <li><a href="#mcp" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Use Rendezvous with AI assistants</a></li>
+                  <li><a href="#roadmap" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Roadmap Q&amp;A</a></li>
+                </>
+              )}
+            </ul>
+          </nav>
+
           {/* ── Section 1: How it works ── */}
-          <Section title="How it works">
+          <Section id="how-it-works" title="How it works">
             {[
               { step: 1, title: 'Connect your calendar', desc: 'Sign in with Google to connect your calendar. You can also add Apple Calendar and additional Google accounts from your profile settings.' },
               { step: 2, title: 'Add your friends', desc: 'Find friends by username or email and send a friend request. Once connected you can start planning together.' },
@@ -219,7 +238,7 @@ export default function Help() {
           </Section>
 
           {/* ── Section 2: Planning modes ── */}
-          <Section title="Planning modes">
+          <Section id="planning-modes" title="Planning modes">
             {[
               { label: 'Local', desc: 'The default mode. Rendezvous suggests venues and activities near both of you, based on your locations. Great for dinners, bars, activities, and day plans in your city.' },
               { label: 'Remote', desc: 'For plans with friends in different cities or anyone you are meeting virtually. Rendezvous skips venue suggestions and focuses on activities you can do over video \u2014 watch parties, online games, cooking the same recipe, and so on.' },
@@ -239,12 +258,12 @@ export default function Help() {
           </Section>
 
           {/* ── Section 3: FAQ ── */}
-          <Section title="FAQ">
+          <Section id="faq" title="FAQ">
             <Accordion items={authed ? [...PUBLIC_FAQ, ...AUTHED_FAQ] : PUBLIC_FAQ} />
           </Section>
 
           {/* ── Section 4: Privacy & calendar ── */}
-          <Section title="Privacy & calendar">
+          <Section id="privacy" title="Privacy & calendar">
             <div style={{ fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.7 }}>
               <p style={{ marginBottom: 14 }}>
                 Your calendar data stays private. Rendezvous only reads free/busy blocks &mdash; it never accesses event titles, descriptions, locations, or attendee lists.
@@ -265,7 +284,7 @@ export default function Help() {
           </Section>
 
           {/* ── Section 5: Contact & feedback ── */}
-          <Section title="Contact & feedback">
+          <Section id="contact" title="Contact & feedback">
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
               <a href={FEEDBACK_URL} target="_blank" rel="noopener noreferrer" className="btn btn--primary">
                 Share feedback
@@ -283,23 +302,8 @@ export default function Help() {
           {/* ── Logged-in only sections ── */}
           {authed && (
             <>
-              {/* ── Section 6: What's coming ── */}
-              <Section title="What's coming">
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 14 }}>
-                  Rendezvous is in active development. Here&rsquo;s a rough sense of what&rsquo;s on the horizon &mdash; no dates, but this is the direction.
-                </p>
-                <ul style={{ paddingLeft: 20, margin: 0, fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.9 }}>
-                  <li>More calendar integrations</li>
-                  <li>Improved suggestion quality</li>
-                  <li>Long-distance and travel planning</li>
-                  <li>Timezone-aware scheduling for remote friends</li>
-                  <li>Group voting rule controls</li>
-                  <li>Native mobile app</li>
-                </ul>
-              </Section>
-
-              {/* ── Section 7: Settings guide ── */}
-              <Section title="Settings guide">
+              {/* ── Section 6: Settings guide ── */}
+              <Section id="settings-guide" title="Settings guide">
                 {[
                   { label: 'Appearance (Light / System / Dark)', to: '/settings' },
                   { label: 'Notification preferences', to: '/settings' },
@@ -318,8 +322,8 @@ export default function Help() {
                 ))}
               </Section>
 
-              {/* ── Section 8: Use Rendezvous with AI ── */}
-              <section style={{ marginBottom: 24 }}>
+              {/* ── Section 7: Use Rendezvous with AI ── */}
+              <section id="mcp" style={{ marginBottom: 24, scrollMarginTop: 80 }}>
                 <h2 className="section-title">Use Rendezvous with AI assistants</h2>
                 <div className="card card-pad">
                   <p style={{ fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 20 }}>
@@ -344,42 +348,22 @@ export default function Help() {
                     ))}
                   </div>
 
-                  {/* Claude Desktop */}
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text)', marginBottom: 12 }}>Connect to Claude desktop</h3>
+                  {/* Claude Desktop and Claude AI */}
+                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text)', marginBottom: 12 }}>Connect to Claude Desktop and Claude AI</h3>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 14 }}>
+                    Works with both the Claude desktop app and <a href="https://claude.ai" target="_blank" rel="noopener noreferrer">claude.ai</a> in a browser.
+                  </p>
                   <ol style={{ paddingLeft: 20, margin: '0 0 24px', fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.8 }}>
                     <li style={{ marginBottom: 8 }}>
-                      Download and install Claude desktop from{' '}
-                      <a href="https://claude.ai/download" target="_blank" rel="noopener noreferrer">claude.ai/download</a> if you haven&rsquo;t already.
-                    </li>
-                    <li style={{ marginBottom: 8 }}>
-                      Open your Claude desktop config file.<br />
-                      <span className="form-hint">
-                        On Mac: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br />
-                        On Windows: <code>%APPDATA%\Claude\claude_desktop_config.json</code>
-                      </span>
-                    </li>
-                    <li style={{ marginBottom: 8 }}>
-                      Add the following inside the <code>"mcpServers"</code> object (create the object if it does not exist):
-                      <CopyBlock text={`"rendezvous": {\n  "command": "npx",\n  "args": [\n    "mcp-remote",\n    "${MCP_URL}/sse"\n  ]\n}`} />
-                    </li>
-                    <li style={{ marginBottom: 8 }}>Save the file and fully quit Claude desktop (Cmd+Q on Mac, not just closing the window).</li>
-                    <li style={{ marginBottom: 8 }}>Relaunch Claude desktop. Look for a hammer icon in new conversations &mdash; that means Rendezvous tools are connected.</li>
-                    <li>The first time you use a Rendezvous tool you will be prompted to sign in and authorize access. Click &ldquo;Allow access&rdquo; to complete the connection.</li>
-                  </ol>
-
-                  {/* Claude.ai */}
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text)', marginBottom: 12 }}>Connect to Claude.ai</h3>
-                  <ol style={{ paddingLeft: 20, margin: '0 0 24px', fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.8 }}>
-                    <li style={{ marginBottom: 8 }}>
-                      Go to <a href="https://claude.ai" target="_blank" rel="noopener noreferrer">claude.ai</a> and sign in.
+                      Open Claude (the desktop app or <a href="https://claude.ai" target="_blank" rel="noopener noreferrer">claude.ai</a>).
                     </li>
                     <li style={{ marginBottom: 8 }}>Click your profile icon &rarr; Settings &rarr; Integrations.</li>
                     <li style={{ marginBottom: 8 }}>
-                      Enter the following URL and click Connect:
+                      Click &ldquo;Add more&rdquo; and enter the following URL:
                       <CopyBlock text={MCP_URL} />
                     </li>
                     <li style={{ marginBottom: 8 }}>You will be redirected to sign in to Rendezvous and authorize access &mdash; click &ldquo;Allow access&rdquo;.</li>
-                    <li>Once connected, Rendezvous tools will be available in your Claude.ai conversations.</li>
+                    <li>Once connected, Rendezvous tools will be available in your conversations. Look for a hammer icon to confirm.</li>
                   </ol>
 
                   {/* ChatGPT */}
@@ -413,8 +397,8 @@ export default function Help() {
                 </div>
               </section>
 
-              {/* ── Section 9: Roadmap Q&A ── */}
-              <Section title="Roadmap Q&A">
+              {/* ── Section 8: Roadmap Q&A ── */}
+              <Section id="roadmap" title="Roadmap Q&A">
                 <Accordion items={ROADMAP_FAQ} />
               </Section>
             </>
