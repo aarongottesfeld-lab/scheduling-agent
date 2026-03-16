@@ -8,7 +8,7 @@
 // Does not render on /onboarding.
 // Import once in App.js so it appears on every protected route.
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
@@ -26,12 +26,24 @@ const DISCORD_INVITE_URL = 'https://discord.gg/6xc8ERrDDb';
 export default function BugReportButton() {
   const location = useLocation();
 
+  const [expanded,   setExpanded]   = useState(false);
   const [showModal,  setShowModal]  = useState(false);
   const [category,   setCategory]   = useState(CATEGORIES[0]);
   const [message,    setMessage]    = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success,    setSuccess]    = useState(false);
   const [error,      setError]      = useState('');
+  const stackRef = useRef(null);
+
+  // Click-away to collapse (same pattern as NotificationBell.js)
+  useEffect(() => {
+    if (!expanded) return;
+    function handleMouseDown(e) {
+      if (stackRef.current && !stackRef.current.contains(e.target)) setExpanded(false);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [expanded]);
 
   // Only render for authenticated users, never on /onboarding
   if (!getSupabaseId() || location.pathname === '/onboarding') return null;
@@ -96,23 +108,33 @@ export default function BugReportButton() {
   return (
     <>
       {/* Floating button stack */}
-      <div className="bug-report-btns">
-        {/* Discord — opens invite in a new tab */}
-        <a href={DISCORD_INVITE_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
-          <span>💬 Discord</span>
-          <span style={subStyle}>Join the community</span>
-        </a>
+      <div className="bug-report-btns" ref={stackRef}>
+        {expanded && (
+          <>
+            {/* Discord — opens invite in a new tab */}
+            <a href={DISCORD_INVITE_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
+              <span>💬 Discord</span>
+              <span style={subStyle}>Join the community</span>
+            </a>
 
-        {/* Feedback — opens Google Form in a new tab */}
-        <a href={FEEDBACK_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
-          <span>💬 Feedback</span>
-          <span style={subStyle}>Suggestions &amp; improvements</span>
-        </a>
+            {/* Feedback — opens Google Form in a new tab */}
+            <a href={FEEDBACK_URL} target="_blank" rel="noopener noreferrer" style={btnStyle}>
+              <span>💬 Feedback</span>
+              <span style={subStyle}>Suggestions &amp; improvements</span>
+            </a>
 
-        {/* Bug report — opens modal */}
-        <button onClick={openModal} style={btnStyle}>
-          <span>🐛 Report a bug</span>
-          <span style={subStyle}>Issues during your experience</span>
+            {/* Bug report — opens modal */}
+            <button onClick={openModal} style={btnStyle}>
+              <span>🐛 Report a bug</span>
+              <span style={subStyle}>Issues during your experience</span>
+            </button>
+          </>
+        )}
+
+        {/* Toggle button — always visible */}
+        <button onClick={() => setExpanded(prev => !prev)} style={{ ...btnStyle, flexDirection: 'row', gap: 6 }}>
+          <span>Feedback</span>
+          <span style={{ fontSize: '0.7rem', lineHeight: 1 }}>{expanded ? '▼' : '▲'}</span>
         </button>
       </div>
 
