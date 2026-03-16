@@ -347,6 +347,23 @@ async function requireAuth(req, res, next) {
 }
 
 // ---------------------------------------------------------------------------
+// Internal API key middleware (server-to-server calls from MCP)
+// ---------------------------------------------------------------------------
+/**
+ * Validates Authorization: Bearer <RENDEZVOUS_API_KEY> for MCP-triggered calls.
+ * Used on /internal/* routes that should never be called by end-user clients.
+ */
+function requireInternalKey(req, res, next) {
+  const key = process.env.RENDEZVOUS_API_KEY;
+  if (!key) return res.status(500).json({ error: 'Internal API key not configured.' });
+  const auth = req.headers.authorization;
+  if (!auth || auth !== 'Bearer ' + key) {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+  next();
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -935,7 +952,7 @@ require('./routes/friends')(app, supabase, requireAuth);
 require('./routes/nudges')(app, supabase, requireAuth);
 // Pass getSessionBySupabaseId so the schedule router can look up calendar tokens
 // for other users (friend's calendar, organizer/attendee event creation).
-require('./routes/schedule')(app, supabase, requireAuth, { getSessionBySupabaseId });
+require('./routes/schedule')(app, supabase, requireAuth, { getSessionBySupabaseId }, requireInternalKey);
 require('./routes/notifications')(app, supabase, requireAuth);
 require('./routes/groups')(app, supabase, requireAuth);
 require('./routes/group-itineraries')(app, supabase, requireAuth, { getSessionBySupabaseId });

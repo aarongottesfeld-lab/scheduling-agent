@@ -226,16 +226,19 @@ function registerTools(server, supabase, config, userId) {
         selected_suggestion_id: selectedSuggestion.id,
       };
 
-      // Check if this locks the itinerary (both parties accepted)
-      const otherStatus = isOrganizer ? itin.attendee_status : itin.organizer_status;
-      const locked = otherStatus === 'accepted';
-      if (locked) {
-        update.locked_at = new Date().toISOString();
-      }
-
+      // Let the DB trigger (itineraries_lock_check) handle locked_at
       await supabase.from('itineraries')
         .update(update)
         .eq('id', itinerary_id);
+
+      // Re-fetch to check if the trigger set locked_at
+      const { data: refreshed } = await supabase
+        .from('itineraries')
+        .select('locked_at')
+        .eq('id', itinerary_id)
+        .single();
+
+      const locked = !!refreshed?.locked_at;
 
       // Notify other party
       const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
@@ -357,20 +360,47 @@ function registerTools(server, supabase, config, userId) {
 }
 
 /**
- * Trigger suggestion generation via the main server's POST /schedule/suggest endpoint.
- * This avoids duplicating the complex AI generation pipeline.
+ * Trigger suggestion generation via the main server's internal API.
+ * The main server runs the full AI generation pipeline and updates the itinerary row directly.
  */
 async function triggerGeneration(itineraryId, config) {
-  // For now, just log — the main server handles generation when the user
-  // navigates to the itinerary in the web app. The itinerary row exists
-  // with empty suggestions, which the web app's ItineraryView detects
-  // and triggers /suggest. This is the expected path until we add a
-  // direct internal API for MCP-triggered generation.
-  console.log(`[mcp/generate] Itinerary ${itineraryId} created — generation will be triggered when viewed in the app or via future internal API.`);
+  const url = `${process.env.RENDEZVOUS_API_URL}/internal/schedule/trigger-suggest`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.RENDEZVOUS_API_KEY}`,
+      },
+      body: JSON.stringify({ itinerary_id: itineraryId, source: 'mcp' }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[mcp/generate] triggerGeneration HTTP ${res.status}: ${text}`);
+    }
+  } catch (err) {
+    console.error('[mcp/generate] triggerGeneration failed:', err.message);
+  }
 }
 
 async function triggerReroll(itineraryId, feedback, config) {
-  console.log(`[mcp/generate] Reroll requested for ${itineraryId} — will be triggered when viewed in the app or via future internal API.`);
+  const url = `${process.env.RENDEZVOUS_API_URL}/internal/schedule/trigger-reroll`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.RENDEZVOUS_API_KEY}`,
+      },
+      body: JSON.stringify({ itinerary_id: itineraryId, feedback, source: 'mcp' }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[mcp/generate] triggerReroll HTTP ${res.status}: ${text}`);
+    }
+  } catch (err) {
+    console.error('[mcp/generate] triggerReroll failed:', err.message);
+  }
 }
 
 module.exports = { registerTools };

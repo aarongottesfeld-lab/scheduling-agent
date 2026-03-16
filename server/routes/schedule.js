@@ -834,7 +834,7 @@ async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit
  * @param {object} sessionStore - { getSessionBySupabaseId } — replaces the old userSessions Map.
  *   getSessionBySupabaseId(supabaseId) is async and queries the Supabase sessions table.
  */
-module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStore) {
+module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStore, requireInternalKey) {
 
   /* ── POST /schedule/suggest ──────────────────────────────── */
   app.post('/schedule/suggest', requireAuth, async (req, res) => {
@@ -2294,5 +2294,518 @@ ${JSON.stringify(
     if (error) return res.status(500).json({ error: 'Could not delete itinerary.' });
     res.json({ ok: true });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Internal API routes — server-to-server calls from the MCP server.
+  // Protected by requireInternalKey (shared secret), not user session cookies.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  if (requireInternalKey) {
+
+    /* ── POST /internal/schedule/trigger-suggest ────────────────────────────
+     * Generates suggestions for an existing itinerary row (created by MCP with
+     * empty suggestions). Runs the full AI generation pipeline and updates the
+     * row in-place. Synchronous — waits for generation to complete before
+     * responding, ensuring the serverless function stays alive on Vercel.
+     */
+    app.post('/internal/schedule/trigger-suggest', requireInternalKey, async (req, res) => {
+      const { itinerary_id } = req.body;
+      if (!itinerary_id || !isValidUUID(itinerary_id)) {
+        return res.status(400).json({ error: 'Valid itinerary_id is required.' });
+      }
+
+      try {
+        const { data: itin, error: fetchErr } = await supabase
+          .from('itineraries')
+          .select('*')
+          .eq('id', itinerary_id)
+          .single();
+
+        if (fetchErr || !itin) {
+          console.error('[internal/trigger-suggest] Itinerary not found:', itinerary_id);
+          return res.status(404).json({ error: 'Itinerary not found.' });
+        }
+
+        // Load profiles
+        const [profileARes, profileBRes] = await Promise.all([
+          supabase.from('profiles').select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions').eq('id', itin.organizer_id).single(),
+          supabase.from('profiles').select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions').eq('id', itin.attendee_id).single(),
+        ]);
+        const userA = { name: profileARes.data?.full_name || 'User A', ...profileARes.data };
+        const userB = { name: profileBRes.data?.full_name || 'Friend', ...profileBRes.data };
+
+        // Calendar availability
+        const start = itin.date_range_start;
+        const end   = itin.date_range_end;
+        const startISO = new Date(start + 'T00:00:00').toISOString();
+        const endISO   = new Date(end   + 'T23:59:59').toISOString();
+
+        const [orgSession, attSession] = await Promise.all([
+          sessionStore.getSessionBySupabaseId(itin.organizer_id),
+          sessionStore.getSessionBySupabaseId(itin.attendee_id),
+        ]);
+
+        let busyA = [], busyB = [];
+        try {
+          [busyA, busyB] = await Promise.all([
+            fetchBusy(orgSession, startISO, endISO, supabase, itin.organizer_id),
+            fetchBusy(attSession, startISO, endISO, supabase, itin.attendee_id),
+          ]);
+        } catch (e) {
+          console.error('[internal/trigger-suggest] fetchBusy failed:', e.message);
+        }
+
+        const timeOfDay = typeof itin.time_of_day === 'object' ? itin.time_of_day : { type: itin.time_of_day || 'any' };
+        const durationMinutes = inferDurationMinutes(itin.event_title, itin.context_prompt);
+        const windowFloorMs = Date.now() + 60 * 60 * 1000;
+
+        let freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, 0, durationMinutes)
+          .filter(w => new Date(w.start).getTime() >= windowFloorMs);
+
+        // If no shared windows, try attendee-only
+        if (freeWindows.length === 0) {
+          freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, 0, durationMinutes)
+            .filter(w => new Date(w.start).getTime() >= windowFloorMs);
+        }
+
+        if (freeWindows.length === 0) {
+          console.error('[internal/trigger-suggest] No free windows for itinerary:', itinerary_id);
+          return res.status(422).json({ error: 'No availability found.' });
+        }
+
+        // Context gathering
+        const safeContext = sanitizePromptInput(itin.context_prompt);
+        const suggestVenueName = extractVenueName(itin.context_prompt);
+        const suggestVenueBlock = suggestVenueName ? buildVenueSubstitutionBlock(suggestVenueName) : '';
+        const finalContext = [suggestVenueBlock, safeContext].filter(Boolean).join('\n');
+
+        const { data: annotationData } = await supabase
+          .from('friend_annotations')
+          .select('shared_interests')
+          .eq('user_id', itin.organizer_id)
+          .eq('friend_id', itin.attendee_id)
+          .maybeSingle();
+        const sharedInterests = annotationData?.shared_interests || [];
+
+        const pastHistory = await fetchAcceptedPairHistory(itin.organizer_id, itin.attendee_id, supabase);
+        const geoContext = deriveGeoContext(userA, userB);
+
+        let localEvents = [];
+        try {
+          localEvents = await fetchLocalEvents(
+            geoContext, start, end,
+            [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
+          );
+        } catch (e) {
+          console.error('[internal/trigger-suggest] fetchLocalEvents failed:', e.message);
+        }
+
+        let activityVenuesBlock = '';
+        try {
+          const activityType = extractActivityType(safeContext);
+          if (activityType) {
+            const cityContext = extractCityFromGeoContext(geoContext);
+            const activityVenues = await fetchActivityVenues(activityType, cityContext);
+            activityVenuesBlock = buildActivityVenuesBlock(activityType, activityVenues);
+          }
+        } catch (e) {
+          console.error('[internal/trigger-suggest] activityVenues failed:', e.message);
+        }
+
+        // Cultural signal
+        const culturalSignal = extractCulturalSignal(safeContext, [
+          ...(userA.activity_preferences || []),
+          ...(userB.activity_preferences || []),
+        ]);
+        let priorityEventBlock = '';
+        if (culturalSignal) {
+          try {
+            const pe = await fetchCulturalEvent(culturalSignal.type, culturalSignal.entity, start, end);
+            if (pe) {
+              priorityEventBlock = `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+                `${pe.title} — ${pe.date}${pe.time ? ' at ' + pe.time : ''}\nVenue: ${pe.venue}\n` +
+                `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+                `Time the suggestion so it leads into the event. The other two should be independent alternatives.`;
+            }
+          } catch (e) {
+            console.warn('[internal/trigger-suggest] fetchCulturalEvent failed:', e.message);
+          }
+        }
+
+        const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
+        const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
+
+        const prompt = buildSuggestPrompt({
+          userA, userB, freeWindows, contextPrompt: finalContext,
+          maxTravelMinutes: itin.max_travel_minutes, eventTitle: itin.event_title,
+          durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName,
+          pastHistory, localEvents, activityVenuesBlock,
+          locationPreference: itin.location_preference || 'system_choice',
+          travelMode: itin.travel_mode || 'local',
+          tripDurationDays: itin.trip_duration_days || 1,
+          destination: itin.destination || null,
+          excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+          priorityEventBlock,
+        });
+
+        // Call Claude
+        let suggestions;
+        try {
+          const msg = await anthropic.messages.create({
+            model: CLAUDE_MODEL, max_tokens: 2000,
+            system: RENDEZVOUS_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const raw = msg.content[0]?.text || '{}';
+          const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+          suggestions = parsed.suggestions || [];
+        } catch (e) {
+          console.error('[internal/trigger-suggest] Claude error:', e.message);
+          return res.status(500).json({ error: 'Suggestion generation failed.' });
+        }
+
+        // Theme-match retry
+        if (itin.context_prompt && classifyIntent(itin.context_prompt) === 'activity_specific' &&
+            !themeMatchesContextPrompt(suggestions, itin.context_prompt)) {
+          try {
+            const retryInstruction =
+              `RETRY — the previous attempt did not return any suggestions matching "${safeContext}". ` +
+              `This is mandatory: at least one of the 3 suggestions MUST directly feature "${safeContext}".`;
+            const retryPrompt = buildSuggestPrompt({
+              userA, userB, freeWindows,
+              contextPrompt: [retryInstruction, finalContext].filter(Boolean).join('\n'),
+              maxTravelMinutes: itin.max_travel_minutes, eventTitle: itin.event_title,
+              durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName,
+              pastHistory, localEvents, activityVenuesBlock,
+              locationPreference: itin.location_preference || 'system_choice',
+              travelMode: itin.travel_mode || 'local',
+              tripDurationDays: itin.trip_duration_days || 1,
+              destination: itin.destination || null,
+              excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+              priorityEventBlock,
+            });
+            const retryMsg = await anthropic.messages.create({
+              model: CLAUDE_MODEL, max_tokens: 2000,
+              system: RENDEZVOUS_SYSTEM_PROMPT,
+              messages: [{ role: 'user', content: retryPrompt }],
+            });
+            const retryRaw    = retryMsg.content[0]?.text || '{}';
+            const retryParsed = JSON.parse(retryRaw.replace(/```json|```/g, '').trim());
+            if (Array.isArray(retryParsed.suggestions) && retryParsed.suggestions.length > 0) {
+              suggestions = retryParsed.suggestions;
+            }
+          } catch (e) {
+            console.error('[internal/trigger-suggest] retry failed:', e.message);
+          }
+        }
+
+        // Window filter
+        const beforeFilter = suggestions.slice();
+        suggestions = suggestions.filter(s => {
+          if (!s.date || !s.time) return true;
+          const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+          if (!match) return true;
+          let h = parseInt(match[1]);
+          const min = parseInt(match[2]);
+          const ampm = match[3].toUpperCase();
+          if (ampm === 'PM' && h !== 12) h += 12;
+          if (ampm === 'AM' && h === 12) h = 0;
+          const [sy, sm, sd] = s.date.split('-').map(Number);
+          const utcStart = new Date(Date.UTC(sy, sm - 1, sd, h, min, 0));
+          const durMs = (s.durationMinutes || durationMinutes) * 60000;
+          const utcEnd = new Date(utcStart.getTime() + durMs);
+          return freeWindows.some(w =>
+            utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+          );
+        });
+
+        // Backfill if needed
+        if (suggestions.length < 3 && beforeFilter.length > suggestions.length) {
+          const keptTitles = new Set(suggestions.map(s => s.title));
+          for (const fb of beforeFilter.filter(s => !keptTitles.has(s.title))) {
+            if (suggestions.length >= 3) break;
+            suggestions.push(fb);
+          }
+        }
+
+        // Venue enrichment
+        try {
+          const cityCtx = extractCityFromGeoContext(geoContext);
+          suggestions = await enrichVenues(suggestions, cityCtx);
+        } catch (e) {
+          console.error('[internal/trigger-suggest] enrichVenues failed:', e.message);
+        }
+
+        // Wrap into days structure
+        suggestions = suggestions.map(s => {
+          if (s.days && Array.isArray(s.days)) return s;
+          return { ...s, days: [{ day: 1, label: null, stops: s.venues || [] }] };
+        });
+
+        // Update itinerary
+        const { error: updateErr } = await supabase
+          .from('itineraries')
+          .update({ suggestions })
+          .eq('id', itinerary_id);
+
+        if (updateErr) {
+          console.error('[internal/trigger-suggest] update failed:', updateErr.message);
+          return res.status(500).json({ error: 'Failed to save suggestions.' });
+        }
+
+        console.log(`[internal/trigger-suggest] Generated ${suggestions.length} suggestions for ${itinerary_id}`);
+        res.json({ ok: true, suggestion_count: suggestions.length });
+      } catch (err) {
+        console.error('[internal/trigger-suggest] unexpected error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'Generation failed.' });
+      }
+    });
+
+    /* ── POST /internal/schedule/trigger-reroll ────────────────────────────
+     * Regenerates suggestions for an existing itinerary. Same pipeline as the
+     * user-facing reroll endpoint but triggered by the MCP server. Synchronous.
+     */
+    app.post('/internal/schedule/trigger-reroll', requireInternalKey, async (req, res) => {
+      const { itinerary_id, feedback } = req.body;
+      if (!itinerary_id || !isValidUUID(itinerary_id)) {
+        return res.status(400).json({ error: 'Valid itinerary_id is required.' });
+      }
+
+      try {
+        const { data: itin, error: fetchErr } = await supabase
+          .from('itineraries')
+          .select('*')
+          .eq('id', itinerary_id)
+          .single();
+
+        if (fetchErr || !itin) {
+          console.error('[internal/trigger-reroll] Itinerary not found:', itinerary_id);
+          return res.status(404).json({ error: 'Itinerary not found.' });
+        }
+        if (itin.locked_at) {
+          console.error('[internal/trigger-reroll] Itinerary is locked:', itinerary_id);
+          return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
+        }
+
+        // Load profiles
+        const [profileARes, profileBRes] = await Promise.all([
+          supabase.from('profiles').select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions').eq('id', itin.organizer_id).single(),
+          supabase.from('profiles').select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions').eq('id', itin.attendee_id).single(),
+        ]);
+        const userA = { name: profileARes.data?.full_name || 'User A', ...profileARes.data };
+        const userB = { name: profileBRes.data?.full_name || 'Friend', ...profileBRes.data };
+
+        // Rebuild free windows
+        const todayStr = new Date().toISOString().split('T')[0];
+        const start = itin.date_range_start > todayStr ? itin.date_range_start : todayStr;
+        const end   = itin.date_range_end;
+        const startISO = new Date(start + 'T00:00:00').toISOString();
+        const endISO   = new Date(end   + 'T23:59:59').toISOString();
+
+        const [orgSession, attSession] = await Promise.all([
+          sessionStore.getSessionBySupabaseId(itin.organizer_id),
+          sessionStore.getSessionBySupabaseId(itin.attendee_id),
+        ]);
+
+        let busyA = [], busyB = [];
+        try {
+          [busyA, busyB] = await Promise.all([
+            fetchBusy(orgSession, startISO, endISO, supabase, itin.organizer_id),
+            fetchBusy(attSession, startISO, endISO, supabase, itin.attendee_id),
+          ]);
+        } catch (e) {
+          console.error('[internal/trigger-reroll] fetchBusy failed:', e.message);
+        }
+
+        const timeOfDay = typeof itin.time_of_day === 'object' ? itin.time_of_day : { type: itin.time_of_day || 'any' };
+        const durationMinutes = inferDurationMinutes(itin.event_title, itin.context_prompt);
+        const windowFloorMs = Date.now() + 60 * 60 * 1000;
+
+        let freeWindows = findFreeWindows(busyA, busyB, start, end, timeOfDay, 20, 0, durationMinutes)
+          .filter(w => new Date(w.start).getTime() >= windowFloorMs);
+
+        if (freeWindows.length === 0) {
+          freeWindows = findFreeWindows([], busyB, start, end, timeOfDay, 20, 0, durationMinutes)
+            .filter(w => new Date(w.start).getTime() >= windowFloorMs);
+        }
+
+        if (freeWindows.length === 0) {
+          console.error('[internal/trigger-reroll] No free windows for itinerary:', itinerary_id);
+          return res.status(422).json({ error: 'No availability found.' });
+        }
+
+        // Context
+        const safeOriginalContext = sanitizePromptInput(itin.context_prompt);
+        const safeFeedback = sanitizePromptInput(feedback);
+
+        const { data: annotationData } = await supabase
+          .from('friend_annotations')
+          .select('shared_interests')
+          .eq('user_id', itin.organizer_id)
+          .eq('friend_id', itin.attendee_id)
+          .maybeSingle();
+        const sharedInterests = annotationData?.shared_interests || [];
+        const pastHistory = await fetchAcceptedPairHistory(itin.organizer_id, itin.attendee_id, supabase);
+        const geoContext = deriveGeoContext(userA, userB);
+
+        let localEvents = [];
+        try {
+          localEvents = await fetchLocalEvents(
+            geoContext, start, end,
+            [...(userA.activity_preferences || []), ...(userB.activity_preferences || [])],
+          );
+        } catch (e) {
+          console.error('[internal/trigger-reroll] fetchLocalEvents failed:', e.message);
+        }
+
+        let activityVenuesBlock = '';
+        try {
+          const activityType = extractActivityType(safeOriginalContext);
+          if (activityType) {
+            const cityContext = extractCityFromGeoContext(geoContext);
+            const activityVenues = await fetchActivityVenues(activityType, cityContext);
+            activityVenuesBlock = buildActivityVenuesBlock(activityType, activityVenues);
+          }
+        } catch (e) {
+          console.error('[internal/trigger-reroll] activityVenues failed:', e.message);
+        }
+
+        const organizerFirstName = (userA.full_name || userA.name || '').split(' ')[0] || '';
+        const attendeeFirstName  = (userB.full_name || userB.name || '').split(' ')[0] || '';
+
+        // Build reroll prompt: original context + feedback
+        const combinedContext = [safeOriginalContext, safeFeedback].filter(Boolean).join('\n\nAdditional feedback: ');
+
+        const prompt = buildSuggestPrompt({
+          userA, userB, freeWindows, contextPrompt: combinedContext,
+          maxTravelMinutes: itin.max_travel_minutes, eventTitle: itin.event_title,
+          durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName,
+          pastHistory, localEvents, activityVenuesBlock,
+          locationPreference: itin.location_preference || 'system_choice',
+          travelMode: itin.travel_mode || 'local',
+          tripDurationDays: itin.trip_duration_days || 1,
+          destination: itin.destination || null,
+          excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+        });
+
+        // Call Claude
+        let suggestions;
+        try {
+          const msg = await anthropic.messages.create({
+            model: CLAUDE_MODEL, max_tokens: 2000,
+            system: RENDEZVOUS_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const raw = msg.content[0]?.text || '{}';
+          const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+          suggestions = parsed.suggestions || [];
+        } catch (e) {
+          console.error('[internal/trigger-reroll] Claude error:', e.message);
+          return res.status(500).json({ error: 'Suggestion generation failed.' });
+        }
+
+        // Theme-match retry
+        const effectiveContext = itin.context_prompt || feedback;
+        if (effectiveContext && classifyIntent(effectiveContext) === 'activity_specific' &&
+            !themeMatchesContextPrompt(suggestions, effectiveContext)) {
+          try {
+            const retryInstruction =
+              `RETRY — the previous attempt did not return any suggestions matching "${sanitizePromptInput(effectiveContext)}". ` +
+              `This is mandatory: at least one of the 3 suggestions MUST directly feature that activity.`;
+            const retryPrompt = buildSuggestPrompt({
+              userA, userB, freeWindows,
+              contextPrompt: [retryInstruction, combinedContext].filter(Boolean).join('\n'),
+              maxTravelMinutes: itin.max_travel_minutes, eventTitle: itin.event_title,
+              durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName,
+              pastHistory, localEvents, activityVenuesBlock,
+              locationPreference: itin.location_preference || 'system_choice',
+              travelMode: itin.travel_mode || 'local',
+              tripDurationDays: itin.trip_duration_days || 1,
+              destination: itin.destination || null,
+              excludedWindowsBlock: buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+            });
+            const retryMsg = await anthropic.messages.create({
+              model: CLAUDE_MODEL, max_tokens: 2000,
+              system: RENDEZVOUS_SYSTEM_PROMPT,
+              messages: [{ role: 'user', content: retryPrompt }],
+            });
+            const retryRaw = retryMsg.content[0]?.text || '{}';
+            const retryParsed = JSON.parse(retryRaw.replace(/```json|```/g, '').trim());
+            if (Array.isArray(retryParsed.suggestions) && retryParsed.suggestions.length > 0) {
+              suggestions = retryParsed.suggestions;
+            }
+          } catch (e) {
+            console.error('[internal/trigger-reroll] retry failed:', e.message);
+          }
+        }
+
+        // Window filter
+        const beforeFilter = suggestions.slice();
+        suggestions = suggestions.filter(s => {
+          if (!s.date || !s.time) return true;
+          const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+          if (!match) return true;
+          let h = parseInt(match[1]);
+          const min = parseInt(match[2]);
+          const ampm = match[3].toUpperCase();
+          if (ampm === 'PM' && h !== 12) h += 12;
+          if (ampm === 'AM' && h === 12) h = 0;
+          const [sy, sm, sd] = s.date.split('-').map(Number);
+          const utcStart = new Date(Date.UTC(sy, sm - 1, sd, h, min, 0));
+          const durMs = (s.durationMinutes || durationMinutes) * 60000;
+          const utcEnd = new Date(utcStart.getTime() + durMs);
+          return freeWindows.some(w =>
+            utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+          );
+        });
+
+        if (suggestions.length < 3 && beforeFilter.length > suggestions.length) {
+          const keptTitles = new Set(suggestions.map(s => s.title));
+          for (const fb of beforeFilter.filter(s => !keptTitles.has(s.title))) {
+            if (suggestions.length >= 3) break;
+            suggestions.push(fb);
+          }
+        }
+
+        // Venue enrichment
+        try {
+          const cityCtx = extractCityFromGeoContext(geoContext);
+          suggestions = await enrichVenues(suggestions, cityCtx);
+        } catch (e) {
+          console.error('[internal/trigger-reroll] enrichVenues failed:', e.message);
+        }
+
+        // Wrap into days structure
+        suggestions = suggestions.map(s => {
+          if (s.days && Array.isArray(s.days)) return s;
+          return { ...s, days: [{ day: 1, label: null, stops: s.venues || [] }] };
+        });
+
+        // Update itinerary
+        const { error: updateErr } = await supabase
+          .from('itineraries')
+          .update({
+            suggestions,
+            reroll_count: (itin.reroll_count || 0) + 1,
+            organizer_status: 'pending',
+            attendee_status:  'pending',
+            selected_suggestion_id: null,
+          })
+          .eq('id', itinerary_id);
+
+        if (updateErr) {
+          console.error('[internal/trigger-reroll] update failed:', updateErr.message);
+          return res.status(500).json({ error: 'Failed to save suggestions.' });
+        }
+
+        console.log(`[internal/trigger-reroll] Generated ${suggestions.length} suggestions for ${itinerary_id}`);
+        res.json({ ok: true, suggestion_count: suggestions.length });
+      } catch (err) {
+        console.error('[internal/trigger-reroll] unexpected error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: 'Reroll failed.' });
+      }
+    });
+
+  } // end requireInternalKey guard
 
 };

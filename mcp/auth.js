@@ -44,31 +44,42 @@ function mountOAuthRoutes(app, supabase) {
 
     // Store the authorization request params and redirect to Rendezvous consent screen.
     const authRequestId = crypto.randomBytes(16).toString('hex');
+    const challengeToken = crypto.randomBytes(16).toString('hex');
     pendingCodes.set(authRequestId, {
-      clientId:    client_id,
-      redirectUri: redirect_uri,
+      clientId:       client_id,
+      redirectUri:    redirect_uri,
       state,
-      scope:       scope || 'read_write',
-      expiresAt:   Date.now() + 10 * 60 * 1000,
+      scope:          scope || 'read_write',
+      challengeToken,
+      expiresAt:      Date.now() + 10 * 60 * 1000,
     });
 
     // Redirect to the main Rendezvous app's MCP consent page.
-    const consentUrl = `${RENDEZVOUS_APP_URL}/mcp-auth?auth_request_id=${authRequestId}&client_id=${encodeURIComponent(client_id)}&scope=${encodeURIComponent(scope || 'read_write')}`;
+    // The challenge_token must be echoed back via /oauth/callback to prove the caller
+    // received it from this authorization flow (prevents forged callback requests).
+    const consentUrl = `${RENDEZVOUS_APP_URL}/mcp-auth?auth_request_id=${authRequestId}&client_id=${encodeURIComponent(client_id)}&scope=${encodeURIComponent(scope || 'read_write')}&challenge_token=${challengeToken}`;
     res.redirect(consentUrl);
   });
 
   // GET /oauth/callback — Rendezvous app calls this after user approves consent
   app.get('/oauth/callback', async (req, res) => {
-    const { auth_request_id, user_id } = req.query;
+    const { auth_request_id, user_id, challenge_token } = req.query;
 
-    if (!auth_request_id || !user_id) {
-      return res.status(400).json({ error: 'auth_request_id and user_id are required.' });
+    if (!auth_request_id || !user_id || !challenge_token) {
+      return res.status(400).json({ error: 'auth_request_id, user_id, and challenge_token are required.' });
     }
 
     const pending = pendingCodes.get(auth_request_id);
     if (!pending) {
       return res.status(400).json({ error: 'Authorization request expired or not found.' });
     }
+
+    // Validate challenge_token — ensures the callback came from a caller that received
+    // the original /oauth/authorize redirect (not a forged request with a guessed user_id).
+    if (challenge_token !== pending.challengeToken) {
+      return res.status(400).json({ error: 'Invalid challenge_token.' });
+    }
+
     pendingCodes.delete(auth_request_id);
 
     // Generate a short-lived authorization code.
