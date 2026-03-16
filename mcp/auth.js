@@ -30,6 +30,70 @@ setInterval(() => {
  */
 function mountOAuthRoutes(app, supabase) {
   const RENDEZVOUS_APP_URL = process.env.RENDEZVOUS_APP_URL || 'http://localhost:3000';
+  const MCP_SERVER_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : (process.env.MCP_SERVER_URL || 'http://localhost:3002');
+
+  // GET / — service info (prevents 404 on probe)
+  app.get('/', (_req, res) => {
+    res.json({
+      service: 'Rendezvous MCP Server',
+      version: '1.0.0',
+      docs: 'https://rendezvous-gamma.vercel.app/help',
+    });
+  });
+
+  // GET /.well-known/oauth-authorization-server — RFC 8414
+  app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+    res.json({
+      issuer: MCP_SERVER_URL,
+      authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
+      token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
+      registration_endpoint: `${MCP_SERVER_URL}/register`,
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code'],
+      code_challenge_methods_supported: ['S256'],
+      token_endpoint_auth_methods_supported: ['none'],
+    });
+  });
+
+  // GET /.well-known/oauth-protected-resource — RFC 9728
+  app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+    res.json({
+      resource: MCP_SERVER_URL,
+      authorization_servers: [MCP_SERVER_URL],
+      bearer_methods_supported: ['header'],
+      resource_documentation: `${MCP_SERVER_URL}/docs`,
+    });
+  });
+
+  // POST /register — Dynamic client registration (RFC 7591)
+  app.post('/register', express.json(), (req, res) => {
+    const { redirect_uris, client_name } = req.body;
+
+    if (!redirect_uris || !Array.isArray(redirect_uris) || redirect_uris.length === 0) {
+      return res.status(400).json({ error: 'redirect_uris must be a non-empty array.' });
+    }
+
+    for (const uri of redirect_uris) {
+      if (typeof uri !== 'string') {
+        return res.status(400).json({ error: 'Each redirect_uri must be a string.' });
+      }
+      // Allow http:// only for localhost (dev)
+      if (!uri.startsWith('https://') && !uri.match(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/)) {
+        return res.status(400).json({ error: `Invalid redirect_uri: ${uri}. Must use https:// (http:// allowed only for localhost).` });
+      }
+    }
+
+    res.status(201).json({
+      client_id: crypto.randomBytes(16).toString('hex'),
+      client_name: client_name || 'Unknown Client',
+      redirect_uris,
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    });
+  });
 
   // GET /oauth/authorize — AI client redirects user here
   app.get('/oauth/authorize', (req, res) => {
