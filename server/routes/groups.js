@@ -320,12 +320,36 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
     // Verify the invitee exists.
     const { data: inviteeProfile } = await supabase
       .from('profiles')
-      .select('id, full_name')
+      .select('id, full_name, allow_non_friend_group_invites')
       .eq('id', inviteeId)
       .maybeSingle();
 
     if (!inviteeProfile) {
       return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // Check if invitee allows non-friend group invites
+    const { data: outFriend } = await supabase
+      .from('friendships')
+      .select('status')
+      .eq('user_id', req.userId)
+      .eq('friend_id', inviteeId)
+      .eq('status', 'accepted')
+      .maybeSingle();
+    const { data: inFriend } = !outFriend ? await supabase
+      .from('friendships')
+      .select('status')
+      .eq('user_id', inviteeId)
+      .eq('friend_id', req.userId)
+      .eq('status', 'accepted')
+      .maybeSingle() : { data: null };
+    const areFriends = !!(outFriend || inFriend);
+
+    if (!areFriends) {
+      const allowSetting = inviteeProfile.allow_non_friend_group_invites;
+      if (allowSetting === false) {
+        return res.status(403).json({ error: 'This user only accepts group invites from friends.' });
+      }
     }
 
     // Check if already a current member or has a pending invite.

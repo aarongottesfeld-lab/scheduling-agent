@@ -4,8 +4,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import NavBar from '../components/NavBar';
 import PillInput from '../components/PillInput';
 import client from '../utils/client';
+import { Link } from 'react-router-dom';
 import { getCalendarConnections, getGoogleConnectUrl, setPrimaryCalendarConnection, removeCalendarConnection, connectAppleCalendar } from '../utils/api';
-import useTheme from '../utils/useTheme';
 
 const ACTIVITY_SUGGESTIONS = [
   'coffee','brunch','lunch spots','fine dining','street food',
@@ -66,7 +66,6 @@ function getInitials(name = '') {
 }
 
 export default function MyProfile() {
-  const [theme, setTheme] = useTheme();
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
@@ -475,38 +474,11 @@ export default function MyProfile() {
           </div>
         )}
       </div>
-      {/* ── Appearance toggle ── */}
-      <div className="card card-pad" style={{ marginBottom:16 }}>
-        <div className="form-label" style={{ marginBottom:10 }}>Appearance</div>
-        <div style={{ display:'inline-flex', borderRadius:'var(--r-pill)', overflow:'hidden', border:'1px solid var(--border)' }}>
-          {[
-            { value: 'light', label: 'Light' },
-            { value: null,    label: 'System' },
-            { value: 'dark',  label: 'Dark' },
-          ].map(opt => {
-            const active = theme === opt.value;
-            return (
-              <button
-                key={opt.label}
-                type="button"
-                onClick={() => setTheme(opt.value)}
-                style={{
-                  padding: '7px 18px',
-                  fontSize: '0.82rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  border: 'none',
-                  background: active ? 'var(--brand)' : 'var(--bg)',
-                  color: active ? '#fff' : 'var(--text-3)',
-                  transition: 'background 150ms ease, color 150ms ease',
-                }}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {/* ── Settings link ── */}
+      <Link to="/settings" className="card card-pad" style={{ marginBottom:16, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', color:'inherit' }}>
+        <span style={{ fontSize:'0.9rem', fontWeight:600, color:'var(--text-2)' }}>Appearance, notifications &amp; privacy</span>
+        <span style={{ color:'var(--text-3)', fontSize:'0.85rem' }}>→</span>
+      </Link>
 
       {connectBanner === 'success' && (
         <div className="alert alert--success" style={{ marginBottom:12 }}>Google Calendar connected successfully.</div>

@@ -208,6 +208,71 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     });
   });
 
+  // GET /users/settings — current user's notification and privacy settings
+  app.get('/users/settings', requireAuth, async (req, res) => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('notification_settings, allow_non_friend_group_invites')
+      .eq('id', req.userId)
+      .single();
+    if (error) return res.status(500).json({ error: 'Could not load settings.' });
+    res.json({
+      notification_settings: data.notification_settings || {},
+      allow_non_friend_group_invites: data.allow_non_friend_group_invites ?? true,
+    });
+  });
+
+  // PATCH /users/settings — update notification and privacy settings
+  app.patch('/users/settings', requireAuth, async (req, res) => {
+    const updates = {};
+    const VALID_CHANNELS = new Set(['in_product', 'push']);
+
+    if (req.body.notification_settings !== undefined) {
+      const ns = req.body.notification_settings;
+      if (typeof ns !== 'object' || ns === null || Array.isArray(ns)) {
+        return res.status(400).json({ error: 'notification_settings must be an object.' });
+      }
+      // Validate each entry: value must be an object with only boolean in_product/push keys
+      for (const [key, val] of Object.entries(ns)) {
+        if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+          return res.status(400).json({ error: `notification_settings.${key} must be an object.` });
+        }
+        for (const [ch, v] of Object.entries(val)) {
+          if (!VALID_CHANNELS.has(ch)) {
+            return res.status(400).json({ error: `Unknown channel "${ch}" in notification_settings.${key}.` });
+          }
+          if (typeof v !== 'boolean') {
+            return res.status(400).json({ error: `notification_settings.${key}.${ch} must be a boolean.` });
+          }
+        }
+      }
+      updates.notification_settings = ns;
+    }
+
+    if (req.body.allow_non_friend_group_invites !== undefined) {
+      if (typeof req.body.allow_non_friend_group_invites !== 'boolean') {
+        return res.status(400).json({ error: 'allow_non_friend_group_invites must be a boolean.' });
+      }
+      updates.allow_non_friend_group_invites = req.body.allow_non_friend_group_invites;
+    }
+
+    // Reject any extra fields
+    const allowedKeys = new Set(['notification_settings', 'allow_non_friend_group_invites']);
+    for (const key of Object.keys(req.body)) {
+      if (!allowedKeys.has(key)) {
+        return res.status(400).json({ error: `Unknown field: ${key}` });
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No updatable fields provided.' });
+    }
+
+    const { error } = await supabase.from('profiles').update(updates).eq('id', req.userId);
+    if (error) return res.status(500).json({ error: 'Could not save settings.' });
+    res.json({ ok: true });
+  });
+
   // GET /users/by-username/:username — public profile lookup for shareable /u/:username links.
   // requireAuth: keeps profile data off unauthenticated scrapers; shared links are meant for
   // logged-in users. Returns the target profile + caller's friendship status with that user.

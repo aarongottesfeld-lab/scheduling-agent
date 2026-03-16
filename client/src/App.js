@@ -53,6 +53,7 @@ import NewGroupEvent       from './pages/NewGroupEvent';
 import GroupItineraryView  from './pages/GroupItineraryView';
 import Onboarding          from './pages/Onboarding';
 import SharedProfile       from './pages/SharedProfile';
+import Settings            from './pages/Settings';
 import BugReportButton     from './components/BugReportButton';
 
 /**
@@ -198,6 +199,9 @@ export default function App() {
         } />
         <Route path="/profile" element={
           <ProtectedRoute><MyProfile /></ProtectedRoute>
+        } />
+        <Route path="/settings" element={
+          <ProtectedRoute><Settings /></ProtectedRoute>
         } />
         <Route path="/schedule/:id" element={
           <ProtectedRoute><ItineraryView /></ProtectedRoute>
