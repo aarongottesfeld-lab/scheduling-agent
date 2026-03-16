@@ -7,6 +7,8 @@ import client from '../utils/client';
 import { Link } from 'react-router-dom';
 import { getCalendarConnections, getGoogleConnectUrl, setPrimaryCalendarConnection, removeCalendarConnection, connectAppleCalendar } from '../utils/api';
 
+const APP_URL = process.env.REACT_APP_URL || window.location.origin;
+
 const ACTIVITY_SUGGESTIONS = [
   'coffee','brunch','lunch spots','fine dining','street food',
   'craft beer','wine bars','cocktail bars','rooftop bars','speakeasies',
@@ -89,6 +91,7 @@ export default function MyProfile() {
   const [appleSubmitting, setAppleSubmitting] = useState(false);
   const [appleMessage,    setAppleMessage]    = useState('');
   const [appleIsError,    setAppleIsError]    = useState(false);
+  const [copied,          setCopied]          = useState(false);
 
   const [form, setForm] = useState({
     full_name: '', username: '', location: '', timezone: '', bio: '',
@@ -212,6 +215,18 @@ export default function MyProfile() {
       }
     } finally {
       setAppleSubmitting(false);
+    }
+  }
+
+  async function handleShareProfile() {
+    if (!form.username) return;
+    const url = `${APP_URL}/u/${form.username}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      window.prompt('Copy this link:', url);
     }
   }
 
@@ -426,7 +441,18 @@ export default function MyProfile() {
     <main className="page"><div className="container container--sm">
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24 }}>
         <h1 className="page-title">My Profile</h1>
-        <button className="btn btn--secondary btn--sm" onClick={() => setEditing(true)}>Edit profile</button>
+        <div style={{ display:'flex', gap:8 }}>
+          {form.username && (
+            <button
+              className={`btn ${copied ? 'btn--success' : 'btn--ghost'} btn--sm`}
+              onClick={handleShareProfile}
+              style={{ flexShrink: 0 }}
+            >
+              {copied ? '✓ Link copied!' : '🔗 Share my profile'}
+            </button>
+          )}
+          <button className="btn btn--secondary btn--sm" onClick={() => setEditing(true)}>Edit profile</button>
+        </div>
       </div>
       {saved && <div className="alert alert--success">Profile saved.</div>}
       <div className="card card-pad" style={{ marginBottom:16 }}>
