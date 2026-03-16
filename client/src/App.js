@@ -34,7 +34,7 @@ import posthog from 'posthog-js';
 import { initSessionFromUrl, setSessionFromApi, clearSession, setOnboardingCompleted, isOnboardingCompleted } from './utils/auth';
 import client from './utils/client';
 import useTheme from './utils/useTheme';
-import { messaging, getToken } from './firebase';
+import { messaging, getToken, onMessage } from './firebase';
 import { registerPushToken } from './utils/api';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -142,6 +142,21 @@ export default function App() {
             )
             .then(token => { if (token) registerPushToken(token); })
             .catch(err => console.warn('[push] background re-registration failed:', err.message));
+
+          // Show a native notification when a push arrives while the tab is in the foreground.
+          // Without this, FCM silently delivers to onMessage and the user sees nothing.
+          onMessage(messaging, (payload) => {
+            const { title, body } = payload.notification || {};
+            const actionUrl = payload.data?.actionUrl || '/';
+            if (title && Notification.permission === 'granted') {
+              const n = new Notification(title, {
+                body: body || '',
+                icon: '/logo192.png',
+                data: { actionUrl },
+              });
+              n.onclick = () => { window.focus(); window.location.href = actionUrl; n.close(); };
+            }
+          });
         }
       })
       .catch(() => {
