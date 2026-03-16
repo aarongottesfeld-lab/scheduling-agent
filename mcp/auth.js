@@ -205,7 +205,8 @@ function mountOAuthRoutes(app, supabase) {
   });
 
   // POST /oauth/token — AI client exchanges code for access token
-  app.post('/oauth/token', express.json(), async (req, res) => {
+  // RFC 6749 §4.1.3 requires application/x-www-form-urlencoded; also accept JSON for flexibility.
+  app.post('/oauth/token', express.urlencoded({ extended: false }), express.json(), async (req, res) => {
     const { code, grant_type, client_id, redirect_uri } = req.body;
 
     if (grant_type !== 'authorization_code') {

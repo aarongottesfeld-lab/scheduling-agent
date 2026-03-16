@@ -149,8 +149,9 @@ if (isStdio) {
     credentials: true,
   }));
 
-  // Parse JSON for POST /messages and OAuth token exchange
+  // Parse JSON for POST /messages and form-encoded for OAuth token exchange (RFC 6749 §4.1.3)
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
 
   // ── Rate limiting — 60 requests/min per userId (in-memory sliding window) ──
   const rateLimitWindow = new Map();
