@@ -150,8 +150,6 @@ export default function McpAuth() {
     ? clientId.slice(0, 40) + '...'
     : clientId);
 
-  const clientLabel = clientName || 'your AI assistant';
-
   function handleAllow() {
     setApproving(true);
     const userId = getSupabaseId();
