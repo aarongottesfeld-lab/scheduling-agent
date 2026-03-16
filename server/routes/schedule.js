@@ -2325,6 +2325,9 @@ ${JSON.stringify(
           console.error('[internal/trigger-suggest] Itinerary not found:', itinerary_id);
           return res.status(404).json({ error: 'Itinerary not found.' });
         }
+        if (itin.locked_at) {
+          return res.status(400).json({ error: 'Cannot trigger generation on a locked itinerary.' });
+        }
 
         // Load profiles
         const [profileARes, profileBRes] = await Promise.all([

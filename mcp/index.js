@@ -259,6 +259,9 @@ if (isStdio) {
   // GET / with Accept: text/event-stream — SSE stream for existing session
   // (non-SSE GET / is handled by auth.js as service info)
   app.get('/', authMiddleware, async (req, res) => {
+    if (!checkRateLimit(req.userId)) {
+      return res.status(429).json({ error: 'Rate limit exceeded. Max 60 requests per minute.' });
+    }
     const existing = getStreamableSession(req, res);
     if (existing === 'denied') return;
     if (!existing) {
@@ -269,6 +272,9 @@ if (isStdio) {
 
   // DELETE / — close a session
   app.delete('/', authMiddleware, async (req, res) => {
+    if (!checkRateLimit(req.userId)) {
+      return res.status(429).json({ error: 'Rate limit exceeded. Max 60 requests per minute.' });
+    }
     const existing = getStreamableSession(req, res);
     if (existing === 'denied') return;
     if (!existing) {

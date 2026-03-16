@@ -4,7 +4,7 @@
 //   1. OAuth 2.0: AI client redirects user → consent → code exchange → Bearer token
 //   2. MCP_API_KEY: static dev key that maps to MCP_OWNER_USER_ID (dev only, logs warning)
 //
-// Token storage: mcp_tokens table in Supabase (24h expiry, auto-cleanup on validate).
+// Token storage: mcp_tokens table in Supabase (90-day expiry, auto-cleanup on validate).
 
 'use strict';
 
@@ -73,7 +73,34 @@ function mountOAuthRoutes(app, supabase) {
   });
 
   // POST /register — Dynamic client registration (RFC 7591)
+  // A5-002: IP-based rate limiting — 10 registrations per IP per hour.
+  const registerRateLimit = new Map();
+  const REGISTER_LIMIT = 10;
+  const REGISTER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+  // Clean up expired registration rate limit entries every 15 minutes.
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of registerRateLimit) {
+      if (now - entry.windowStart > REGISTER_WINDOW_MS) registerRateLimit.delete(ip);
+    }
+  }, 15 * 60 * 1000);
+
   app.post('/register', express.json(), async (req, res) => {
+    // Rate limit by IP
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const now = Date.now();
+    const rl = registerRateLimit.get(clientIp) || { count: 0, windowStart: now };
+    if (now - rl.windowStart > REGISTER_WINDOW_MS) {
+      rl.count = 0;
+      rl.windowStart = now;
+    }
+    rl.count += 1;
+    registerRateLimit.set(clientIp, rl);
+    if (rl.count > REGISTER_LIMIT) {
+      return res.status(429).json({ error: 'Too many registration attempts.' });
+    }
+
     const { redirect_uris, client_name } = req.body;
 
     if (!redirect_uris || !Array.isArray(redirect_uris) || redirect_uris.length === 0) {

@@ -357,7 +357,14 @@ function requireInternalKey(req, res, next) {
   const key = process.env.RENDEZVOUS_API_KEY;
   if (!key) return res.status(500).json({ error: 'Internal API key not configured.' });
   const auth = req.headers.authorization;
-  if (!auth || auth !== 'Bearer ' + key) {
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized.' });
+  }
+  const token = auth.slice(7);
+  // A5-018: constant-time comparison to prevent timing attacks.
+  const keyBuffer = Buffer.from(key);
+  const tokenBuffer = Buffer.from(token);
+  if (keyBuffer.length !== tokenBuffer.length || !crypto.timingSafeEqual(keyBuffer, tokenBuffer)) {
     return res.status(401).json({ error: 'Unauthorized.' });
   }
   next();
