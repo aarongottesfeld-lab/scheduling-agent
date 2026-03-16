@@ -276,7 +276,7 @@ function mountOAuthRoutes(app, supabase) {
 
     // Generate access token and store in Supabase.
     const accessToken = crypto.randomBytes(48).toString('hex');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
     const { error } = await supabase.from('mcp_tokens').insert({
       user_id:      pending.userId,
@@ -295,7 +295,7 @@ function mountOAuthRoutes(app, supabase) {
     res.json({
       access_token: accessToken,
       token_type:   'Bearer',
-      expires_in:   86400,
+      expires_in:   90 * 86400,
       scope:        pending.scope,
     });
   });
