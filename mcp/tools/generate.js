@@ -54,7 +54,7 @@ function registerTools(server, supabase, config, userId) {
           attendee_status: 'pending',
           date_range_start,
           date_range_end,
-          time_of_day: time_of_day ? { type: time_of_day } : { type: 'any' },
+          time_of_day: time_of_day || 'any',
           context_prompt: safeContext,
           max_travel_minutes: max_travel_minutes || null,
           suggestions: [],
