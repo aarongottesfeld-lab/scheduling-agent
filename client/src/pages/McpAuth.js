@@ -159,9 +159,12 @@ export default function McpAuth() {
     const url = `${MCP_SERVER_URL}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
     setCallbackUrl(url);
     setApproved(true);
+    // 1.5s delay gives the success screen time to render and be seen
+    // before the redirect fires. If the AI client doesn't intercept,
+    // the user has the manual Return button as a fallback.
     setTimeout(() => {
       window.location.href = url;
-    }, 800);
+    }, 1500);
   }
 
   function handleDeny() {

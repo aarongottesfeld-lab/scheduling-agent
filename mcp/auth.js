@@ -15,18 +15,11 @@ const express = require('express');
 // Safe for a single-process persistent server (not serverless).
 const pendingCodes = new Map();
 
-// In-memory store for registered clients (client_id → { client_name, redirect_uris }).
-// Populated by POST /register, looked up by GET /oauth/client-info.
-const clientRegistry = new Map();
-
-// Clean up expired codes every 5 minutes + stale client registrations after 1 hour.
+// Clean up expired codes every 5 minutes.
 setInterval(() => {
   const now = Date.now();
   for (const [code, entry] of pendingCodes) {
     if (now > entry.expiresAt) pendingCodes.delete(code);
-  }
-  for (const [id, entry] of clientRegistry) {
-    if (now > entry.expiresAt) clientRegistry.delete(id);
   }
 }, 5 * 60 * 1000);
 
@@ -75,7 +68,7 @@ function mountOAuthRoutes(app, supabase) {
   });
 
   // POST /register — Dynamic client registration (RFC 7591)
-  app.post('/register', express.json(), (req, res) => {
+  app.post('/register', express.json(), async (req, res) => {
     const { redirect_uris, client_name } = req.body;
 
     if (!redirect_uris || !Array.isArray(redirect_uris) || redirect_uris.length === 0) {
@@ -95,12 +88,20 @@ function mountOAuthRoutes(app, supabase) {
     const generatedClientId = crypto.randomBytes(16).toString('hex');
     const resolvedName = client_name || 'Unknown Client';
 
-    // Store in registry so the consent page can look up the friendly name.
-    clientRegistry.set(generatedClientId, {
-      client_name: resolvedName,
-      redirect_uris,
-      expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour
-    });
+    // Persist in Supabase so the consent page can look up the friendly name
+    // even after a server restart.
+    const { error: insertErr } = await supabase
+      .from('mcp_client_registrations')
+      .insert({
+        client_id: generatedClientId,
+        client_name: resolvedName,
+        redirect_uris,
+      });
+
+    if (insertErr) {
+      console.error('[mcp/auth] client registration insert failed:', insertErr.message);
+      // Non-fatal — consent page will fall back to showing the raw client_id.
+    }
 
     res.status(201).json({
       client_id: generatedClientId,
@@ -113,10 +114,26 @@ function mountOAuthRoutes(app, supabase) {
   });
 
   // GET /oauth/client-info — look up friendly client name for consent page
-  app.get('/oauth/client-info', (req, res) => {
+  app.get('/oauth/client-info', async (req, res) => {
     const { client_id } = req.query;
-    const entry = client_id ? clientRegistry.get(client_id) : null;
-    res.json({ client_name: entry?.client_name || null });
+    if (!client_id) return res.json({ client_name: null });
+
+    const { data } = await supabase
+      .from('mcp_client_registrations')
+      .select('client_name')
+      .eq('client_id', client_id)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+
+    // Best-effort cleanup of expired rows (fire-and-forget).
+    supabase
+      .from('mcp_client_registrations')
+      .delete()
+      .lt('expires_at', new Date().toISOString())
+      .then(() => {})
+      .catch(() => {});
+
+    res.json({ client_name: data?.client_name || null });
   });
 
   // GET /oauth/authorize — AI client redirects user here
