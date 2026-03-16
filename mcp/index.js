@@ -210,41 +210,48 @@ if (isStdio) {
 
   // POST / — JSON-RPC messages (initialize or subsequent)
   app.post('/', authMiddleware, async (req, res) => {
-    if (!checkRateLimit(req.userId)) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Max 60 requests per minute.' });
-    }
-
-    // Existing session
-    const existing = getStreamableSession(req, res);
-    if (existing === 'denied') return;
-    if (existing) {
-      return existing.transport.handleRequest(req, res, req.body);
-    }
-
-    // New session — initialize
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => require('crypto').randomUUID(),
-    });
-    const mcpServer = createMcpServerForUser(req.userId);
-
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid && streamableSessions[sid]) {
-        delete streamableSessions[sid];
+    try {
+      if (!checkRateLimit(req.userId)) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Max 60 requests per minute.' });
       }
-    };
 
-    await mcpServer.connect(transport);
+      // Existing session
+      const existing = getStreamableSession(req, res);
+      if (existing === 'denied') return;
+      if (existing) {
+        return await existing.transport.handleRequest(req, res, req.body);
+      }
 
-    if (transport.sessionId) {
-      streamableSessions[transport.sessionId] = {
-        transport,
-        userId: req.userId,
-        mcpServer,
+      // New session — initialize
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => require('crypto').randomUUID(),
+      });
+      const mcpServer = createMcpServerForUser(req.userId);
+
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid && streamableSessions[sid]) {
+          delete streamableSessions[sid];
+        }
       };
-    }
 
-    return transport.handleRequest(req, res, req.body);
+      await mcpServer.connect(transport);
+
+      if (transport.sessionId) {
+        streamableSessions[transport.sessionId] = {
+          transport,
+          userId: req.userId,
+          mcpServer,
+        };
+      }
+
+      return await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('[mcp] POST / error:', err.message, err.stack);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'MCP transport error', detail: err.message });
+      }
+    }
   });
 
   // GET / with Accept: text/event-stream — SSE stream for existing session
