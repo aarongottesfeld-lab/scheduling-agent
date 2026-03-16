@@ -1,7 +1,8 @@
-// Onboarding.js — 3-step new-user onboarding flow
+// Onboarding.js — 4-step new-user onboarding flow
 // Step 1: Profile setup (name, username, activities, dietary, mobility, bio)
 // Step 2: Location (required to proceed) + timezone
 // Step 3: Notifications (opt-in, never blocks progression)
+// Step 4: Calendar connections (secondary calendars, optional)
 // Privacy: only boolean/count properties sent to PostHog — no PII, no location string
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -10,7 +11,14 @@ import PillInput from '../components/PillInput';
 import client from '../utils/client';
 import { isAuthenticated, setOnboardingCompleted } from '../utils/auth';
 import { messaging, getToken } from '../firebase';
-import { registerPushToken } from '../utils/api';
+import {
+  registerPushToken,
+  getCalendarConnections,
+  getGoogleConnectUrl,
+  setPrimaryCalendarConnection,
+  removeCalendarConnection,
+  connectAppleCalendar,
+} from '../utils/api';
 
 // ── Shared constants (identical to MyProfile.js) ─────────────────────────────
 const ACTIVITY_SUGGESTIONS = [
@@ -71,7 +79,7 @@ function validateUsername(v) {
 function StepIndicator({ step }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 28 }}>
-      {[1, 2, 3].map(s => (
+      {[1, 2, 3, 4].map(s => (
         <div
           key={s}
           style={{
@@ -88,7 +96,7 @@ function StepIndicator({ step }) {
         />
       ))}
       <span style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginLeft: 4 }}>
-        Step {step} of 3
+        Step {step} of 4
       </span>
     </div>
   );
@@ -126,8 +134,21 @@ export default function Onboarding() {
 
   // ── Step 3 state ──────────────────────────────────────────────────────────
   // 'idle' | 'granted' | 'denied'
-  const [notifStatus, setNotifStatus] = useState('idle');
-  const [completing,  setCompleting]  = useState(false);
+  const [notifStatus,  setNotifStatus]  = useState('idle');
+  const [notifGranted, setNotifGranted] = useState(false);
+  const [completing,   setCompleting]   = useState(false);
+
+  // ── Step 4 state ──────────────────────────────────────────────────────────
+  const [connections,        setConnections]        = useState([]);
+  const [connectionLoading,  setConnectionLoading]  = useState(null);
+  const [connectionError,    setConnectionError]    = useState('');
+  const [confirmingRemoveId, setConfirmingRemoveId] = useState(null);
+  const [appleGuideOpen,     setAppleGuideOpen]     = useState(false);
+  const [appleEmail,         setAppleEmail]         = useState('');
+  const [applePassword,      setApplePassword]      = useState('');
+  const [appleSubmitting,    setAppleSubmitting]    = useState(false);
+  const [appleMessage,       setAppleMessage]       = useState('');
+  const [appleIsError,       setAppleIsError]       = useState(false);
 
   // Pre-fill form from existing profile on mount
   useEffect(() => {
@@ -147,6 +168,24 @@ export default function Onboarding() {
       })
       .catch(() => {}); // silent — fields stay empty, user fills them in
   }, []);
+
+  // Load calendar connections when step 4 is reached
+  useEffect(() => {
+    if (step !== 4) return;
+    getCalendarConnections()
+      .then(data => setConnections(data.connections || []))
+      .catch(() => {}); // fail silently — step renders regardless
+  }, [step]);
+
+  // Dismiss the two-click remove confirmation when the user clicks outside
+  useEffect(() => {
+    if (!confirmingRemoveId) return;
+    function handleMouseDown(e) {
+      if (!e.target.closest('[data-remove-btn]')) setConfirmingRemoveId(null);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [confirmingRemoveId]);
 
   const setField = f => e => setForm(p => ({ ...p, [f]: e.target.value }));
 
@@ -260,8 +299,8 @@ export default function Onboarding() {
         // Non-fatal: push token registration failure should never block onboarding
         console.warn('[push] token registration failed:', err.message);
       }
-      // Brief pause so the user sees the success state before navigating away
-      setTimeout(() => completeOnboarding(true), 1200);
+      // Brief pause so the user sees the success state before advancing
+      setTimeout(() => { setNotifGranted(true); setStep(4); }, 1200);
     } else {
       setNotifStatus('denied');
     }
@@ -282,6 +321,80 @@ export default function Onboarding() {
       } catch {}
     } catch { /* best-effort — navigate regardless */ }
     navigate('/home', { replace: true });
+  }
+
+  // ── Step 4: calendar connection handlers ─────────────────────────────────
+  const refetchConnections = useCallback(() =>
+    getCalendarConnections()
+      .then(data => setConnections(data.connections || []))
+      .catch(err => { console.error('[refetchConnections] failed:', err); }),
+  []);
+
+  function showConnectionError(msg) {
+    setConnectionError(msg);
+    setTimeout(() => setConnectionError(''), 4000);
+  }
+
+  async function handleSetPrimary(id) {
+    setConnectionLoading(id);
+    setConfirmingRemoveId(null);
+    try {
+      await setPrimaryCalendarConnection(id);
+      await refetchConnections();
+    } catch (err) {
+      showConnectionError(err.message || 'Could not update primary calendar.');
+    } finally {
+      setConnectionLoading(null);
+    }
+  }
+
+  async function handleRemove(id) {
+    if (confirmingRemoveId !== id) {
+      setConfirmingRemoveId(id);
+      return;
+    }
+    setConnectionLoading(id);
+    setConfirmingRemoveId(null);
+    try {
+      await removeCalendarConnection(id);
+      await refetchConnections();
+    } catch (err) {
+      showConnectionError(err.message || 'Could not remove calendar.');
+    } finally {
+      setConnectionLoading(null);
+    }
+  }
+
+  async function handleAppleSubmit(e) {
+    if (e?.preventDefault) e.preventDefault();
+    setAppleSubmitting(true);
+    setAppleMessage('');
+    setAppleIsError(false);
+    try {
+      await connectAppleCalendar({ email: appleEmail, password: applePassword });
+      setAppleMessage('Apple Calendar connected! It now appears in your Connected Calendars list.');
+      setAppleIsError(false);
+      setAppleEmail('');
+      setApplePassword('');
+      await refetchConnections();
+    } catch (err) {
+      setAppleIsError(true);
+      const serverMsg = err.message || '';
+      if (err.status === 501) {
+        setAppleMessage('Apple Calendar support is coming soon.');
+      } else if (serverMsg.includes('already connected')) {
+        setAppleMessage('This Apple account is already connected — you can see it in the Connected Calendars list above.');
+      } else if (serverMsg && serverMsg !== 'Something went wrong. Please try again.') {
+        setAppleMessage(serverMsg);
+      } else {
+        setAppleMessage(
+          'Connection failed. Make sure you\'re using your iCloud email (not a Gmail or other address) ' +
+          'and an app-specific password from appleid.apple.com — not your regular Apple ID password.'
+        );
+      }
+    } finally {
+      setAppleSubmitting(false);
+    }
   }
 
   // ── Step 1 render ─────────────────────────────────────────────────────────
@@ -472,7 +585,7 @@ export default function Onboarding() {
   );
 
   // ── Step 3 render ─────────────────────────────────────────────────────────
-  return (
+  if (step === 3) return (
     <main className="page">
       <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
         <StepIndicator step={step} />
@@ -507,7 +620,7 @@ export default function Onboarding() {
 
         {notifStatus === 'granted' && (
           <div className="alert alert--success" style={{ textAlign: 'center', padding: '16px' }}>
-            You're all set! Taking you home…
+            You're all set! One more step…
           </div>
         )}
 
@@ -518,14 +631,168 @@ export default function Onboarding() {
             </div>
             <button
               className="btn btn--primary btn--lg"
-              onClick={() => completeOnboarding(false)}
-              disabled={completing}
+              onClick={() => setStep(4)}
               style={{ width: '100%' }}
             >
-              {completing ? 'Finishing up…' : 'Continue anyway'}
+              Continue anyway
             </button>
           </>
         )}
+      </div>
+    </main>
+  );
+
+  // ── Step 4 render ─────────────────────────────────────────────────────────
+  const calendarCard = (
+    <div className="card card-pad" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div className="form-section-title" style={{ marginBottom: 0 }}>Connected Calendars</div>
+        <a href={getGoogleConnectUrl()} className="btn btn--secondary btn--sm">Add Google Calendar</a>
+      </div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {connections.map(conn => {
+          const isLoading    = connectionLoading === conn.id;
+          const isConfirming = confirmingRemoveId === conn.id;
+          const anyLoading   = !!connectionLoading;
+          return (
+            <li key={conn.id} style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 10, flexWrap: 'wrap' }}>
+              <span className="badge badge--gray">{conn.provider}</span>
+              <span style={{ flex: 1 }}>{conn.account_email || conn.account_label}</span>
+              {conn.is_primary && (
+                <span className="badge badge--green">{conn.is_login_account ? 'Login account' : 'Primary'}</span>
+              )}
+              {!conn.is_primary && !conn.is_login_account && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => handleSetPrimary(conn.id)}
+                  disabled={isLoading || anyLoading}
+                >
+                  {isLoading ? '…' : 'Set as primary'}
+                </button>
+              )}
+              {!conn.is_login_account && (
+                <button
+                  type="button"
+                  data-remove-btn="true"
+                  className={`btn btn--sm ${isConfirming ? 'btn--danger' : 'btn--ghost'}`}
+                  onClick={() => handleRemove(conn.id)}
+                  disabled={isLoading || anyLoading}
+                >
+                  {isLoading ? '…' : isConfirming ? 'Confirm remove' : 'Remove'}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {connectionError && (
+        <div className="alert alert--error" style={{ marginTop: 10, marginBottom: 0 }}>{connectionError}</div>
+      )}
+
+      {/* ── Apple CalDAV setup guide ── */}
+      <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setAppleGuideOpen(o => !o)}
+          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          <span style={{ fontSize: 11 }}>{appleGuideOpen ? '▼' : '▶'}</span>
+          Connect Apple Calendar
+        </button>
+        {appleGuideOpen && (
+          <div style={{ marginTop: 12 }}>
+            <div className="form-section-title" style={{ marginBottom: 4 }}>Connect Apple Calendar</div>
+            <p className="form-hint" style={{ marginBottom: 12 }}>Apple Calendar uses app-specific passwords for third-party access.</p>
+            <ol style={{ paddingLeft: 18, margin: '0 0 14px 0', fontSize: 14, lineHeight: 1.7 }}>
+              <li>Go to <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">appleid.apple.com</a> and sign in</li>
+              <li>Under <strong>Security</strong>, tap <strong>App-Specific Passwords</strong> → <strong>Generate Password</strong></li>
+              <li>Label it <strong>Rendezvous</strong> and tap Create</li>
+              <li>Copy the 16-character password shown — you won't see it again</li>
+              <li>Enter your iCloud email and paste the password below</li>
+            </ol>
+            <div>
+              <div className="form-group" style={{ marginBottom: 10 }}>
+                <input
+                  type="email"
+                  className="form-control"
+                  placeholder="your@icloud.com"
+                  value={appleEmail}
+                  onChange={e => setAppleEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 10 }}>
+                <input
+                  type="password"
+                  className="form-control"
+                  placeholder="xxxx-xxxx-xxxx-xxxx"
+                  value={applePassword}
+                  onChange={e => setApplePassword(e.target.value)}
+                  required
+                />
+              </div>
+              {appleMessage && (
+                <div className={`alert alert--${appleIsError ? 'error' : 'success'}`} style={{ marginBottom: 10 }}>{appleMessage}</div>
+              )}
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                onClick={handleAppleSubmit}
+                disabled={appleSubmitting || !appleEmail || !applePassword}
+              >
+                {appleSubmitting ? 'Connecting…' : 'Connect Apple Calendar'}
+              </button>
+            </div>
+            <p className="form-hint" style={{ marginTop: 10, marginBottom: 6 }}>
+              This password only grants calendar access. You can revoke it anytime at{' '}
+              <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer">
+                appleid.apple.com → Security → App-Specific Passwords
+              </a>.
+            </p>
+            <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer" style={{ fontSize: 14 }}>
+              Open Apple ID settings →
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <main className="page">
+      <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
+        <StepIndicator step={step} />
+        <h1 className="page-title">Your calendars</h1>
+        <p className="page-subtitle" style={{ marginBottom: 28 }}>
+          Your Google Calendar is already connected. Add a work calendar, Apple Calendar, or another
+          Google account to make sure your availability is always accurate.
+        </p>
+
+        {calendarCard}
+
+        <button
+          type="button"
+          className="btn btn--primary btn--lg"
+          onClick={() => completeOnboarding(notifGranted)}
+          disabled={completing}
+          style={{ width: '100%' }}
+        >
+          {completing ? 'Finishing up…' : 'Done'}
+        </button>
+        <button
+          type="button"
+          onClick={() => completeOnboarding(notifGranted)}
+          disabled={completing}
+          style={{
+            display: 'block', margin: '14px auto 0',
+            background: 'none', border: 'none',
+            color: 'var(--text-3)', fontSize: '0.88rem', cursor: 'pointer',
+          }}
+        >
+          Skip for now
+        </button>
       </div>
     </main>
   );
