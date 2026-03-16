@@ -237,6 +237,10 @@ if (isStdio) {
 
       await mcpServer.connect(transport);
 
+      // handleRequest processes the initialize message and sets sessionId
+      await transport.handleRequest(req, res, req.body);
+
+      // Store session AFTER handleRequest so sessionId is available
       if (transport.sessionId) {
         streamableSessions[transport.sessionId] = {
           transport,
@@ -244,8 +248,6 @@ if (isStdio) {
           mcpServer,
         };
       }
-
-      return await transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error('[mcp] POST / error:', err.message, err.stack);
       if (!res.headersSent) {
