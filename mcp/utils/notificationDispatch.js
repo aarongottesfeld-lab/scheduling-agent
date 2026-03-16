@@ -9,7 +9,7 @@
 let _dispatchNotification;
 
 try {
-  _dispatchNotification = require('../../server/utils/notificationDispatch').dispatchNotification;
+  _dispatchNotification = require('../shared/notificationDispatch').dispatchNotification;
 } catch (err) {
   console.warn('[mcp/notificationDispatch] Could not load server notification dispatch:', err.message);
   console.warn('[mcp/notificationDispatch] Push notifications will be skipped; in-product notifications will still be inserted.');

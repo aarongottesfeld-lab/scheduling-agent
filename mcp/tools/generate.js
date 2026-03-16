@@ -305,7 +305,7 @@ function registerTools(server, supabase, config, userId) {
       let calendarEventId = null;
       if (config.getSessionBySupabaseId) {
         try {
-          const { createCalendarEventForUser } = require('../../server/utils/calendarUtils');
+          const { createCalendarEventForUser } = require('../shared/calendarUtils');
           const [orgSession, attSession] = await Promise.all([
             config.getSessionBySupabaseId(itin.organizer_id),
             config.getSessionBySupabaseId(itin.attendee_id),

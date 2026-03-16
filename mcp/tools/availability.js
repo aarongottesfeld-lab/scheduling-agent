@@ -6,7 +6,7 @@ const { z } = require('zod');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function registerTools(server, supabase, config, userId) {
-  const fetchBusyAggregated = require('../../server/utils/fetchBusyAggregated');
+  const fetchBusyAggregated = require('../shared/fetchBusyAggregated');
 
   server.tool(
     'get_availability',
