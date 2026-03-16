@@ -19,7 +19,11 @@
 
 'use strict';
 
+// Suppress dotenv v17's verbose stdout banner — breaks MCP client stdio transport.
+const _stdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = () => true;
 require('dotenv').config();
+process.stdout.write = _stdoutWrite;
 
 const express = require('express');
 const cors = require('cors');
