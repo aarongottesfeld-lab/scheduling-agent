@@ -320,7 +320,7 @@ export default function MyProfile() {
               {conn.is_primary && (
                 <span className="badge badge--green">{conn.is_login_account ? 'Login account' : 'Primary'}</span>
               )}
-              {!conn.is_primary && !conn.is_login_account && (
+              {!conn.is_primary && (
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm"

@@ -754,13 +754,15 @@ app.get('/calendar/connections', requireAuth, async (req, res) => {
   // It lives in the sessions table, not calendar_connections, but the user
   // expects to see it here. is_login_account: true tells the client to
   // render it as non-removable.
+  // is_primary is true only when no secondary connection holds the primary slot.
   const { email: loginEmail } = req.userSession;
+  const anySecondaryIsPrimary = (data || []).some(c => c.is_primary);
   const loginEntry = {
     id: 'primary-google',
     provider: 'google',
     account_email: loginEmail,
     account_label: 'Google Calendar',
-    is_primary: true,
+    is_primary: !anySecondaryIsPrimary,
     is_login_account: true,
     calendar_ids: [],
     created_at: null,
@@ -778,6 +780,21 @@ app.get('/calendar/connections', requireAuth, async (req, res) => {
  */
 app.patch('/calendar/connections/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
+
+  // Special case: 'primary-google' is the synthetic login account entry.
+  // Setting it as primary means clearing is_primary on all secondary connections
+  // so the login account becomes the de-facto primary again.
+  if (id === 'primary-google') {
+    const { error: clearErr } = await supabase
+      .from('calendar_connections')
+      .update({ is_primary: false })
+      .eq('user_id', req.userId);
+    if (clearErr) {
+      console.error('clear secondary primaries failed:', clearErr.message);
+      return res.status(500).json({ error: 'Could not update primary calendar.' });
+    }
+    return res.json({ ok: true });
+  }
 
   // Verify ownership before acting
   const { data: conn, error: fetchErr } = await supabase
