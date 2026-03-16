@@ -15,11 +15,18 @@ const express = require('express');
 // Safe for a single-process persistent server (not serverless).
 const pendingCodes = new Map();
 
-// Clean up expired codes every 5 minutes.
+// In-memory store for registered clients (client_id → { client_name, redirect_uris }).
+// Populated by POST /register, looked up by GET /oauth/client-info.
+const clientRegistry = new Map();
+
+// Clean up expired codes every 5 minutes + stale client registrations after 1 hour.
 setInterval(() => {
   const now = Date.now();
   for (const [code, entry] of pendingCodes) {
     if (now > entry.expiresAt) pendingCodes.delete(code);
+  }
+  for (const [id, entry] of clientRegistry) {
+    if (now > entry.expiresAt) clientRegistry.delete(id);
   }
 }, 5 * 60 * 1000);
 
@@ -85,14 +92,31 @@ function mountOAuthRoutes(app, supabase) {
       }
     }
 
+    const generatedClientId = crypto.randomBytes(16).toString('hex');
+    const resolvedName = client_name || 'Unknown Client';
+
+    // Store in registry so the consent page can look up the friendly name.
+    clientRegistry.set(generatedClientId, {
+      client_name: resolvedName,
+      redirect_uris,
+      expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour
+    });
+
     res.status(201).json({
-      client_id: crypto.randomBytes(16).toString('hex'),
-      client_name: client_name || 'Unknown Client',
+      client_id: generatedClientId,
+      client_name: resolvedName,
       redirect_uris,
       grant_types: ['authorization_code'],
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
     });
+  });
+
+  // GET /oauth/client-info — look up friendly client name for consent page
+  app.get('/oauth/client-info', (req, res) => {
+    const { client_id } = req.query;
+    const entry = client_id ? clientRegistry.get(client_id) : null;
+    res.json({ client_name: entry?.client_name || null });
   });
 
   // GET /oauth/authorize — AI client redirects user here

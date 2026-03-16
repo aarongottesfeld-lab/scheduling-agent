@@ -7,8 +7,8 @@
 // The user must be logged in. If not, they're redirected to / to sign in,
 // then bounced back here via sessionStorage key.
 //
-// On Allow: navigates to MCP server's /oauth/callback which completes
-// the code exchange and redirects to the AI client.
+// On Allow: shows a success screen, then navigates to MCP server's
+// /oauth/callback which completes the code exchange and redirects to the AI client.
 // On Deny: shows a brief message, then redirects to /home.
 
 import React, { useEffect, useState } from 'react';
@@ -97,10 +97,13 @@ export default function McpAuth() {
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState(false);
+  const [approved, setApproved] = useState(false);
+  const [callbackUrl, setCallbackUrl] = useState(null);
   const [denying, setDenying] = useState(false);
   const [error, setError] = useState(null);
   const [userName, setUserName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState(null);
+  const [clientName, setClientName] = useState(null);
 
   const authRequestId = searchParams.get('auth_request_id');
   const clientId = searchParams.get('client_id');
@@ -109,7 +112,7 @@ export default function McpAuth() {
 
   const hasRequiredParams = authRequestId && clientId && scope && challengeToken;
 
-  // Auth check + profile fetch
+  // Auth check + profile fetch + client name lookup
   useEffect(() => {
     if (!isAuthenticated()) {
       sessionStorage.setItem('mcp_auth_return_url', window.location.pathname + window.location.search);
@@ -123,22 +126,42 @@ export default function McpAuth() {
       return;
     }
 
-    client.get('/users/me')
+    // Fetch user profile and client name in parallel
+    const profilePromise = client.get('/users/me')
       .then(res => {
         setUserName(res.data.full_name || res.data.username || 'User');
         setAvatarUrl(res.data.avatar_url || null);
       })
       .catch(() => {
         setUserName('User');
+      });
+
+    const clientInfoPromise = fetch(`${MCP_SERVER_URL}/oauth/client-info?client_id=${encodeURIComponent(clientId)}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.client_name) setClientName(data.client_name);
       })
+      .catch(() => {});
+
+    Promise.all([profilePromise, clientInfoPromise])
       .finally(() => setLoading(false));
-  }, [hasRequiredParams]);
+  }, [hasRequiredParams, clientId]);
+
+  const displayName = clientName || (clientId && clientId.length > 40
+    ? clientId.slice(0, 40) + '...'
+    : clientId);
+
+  const clientLabel = clientName || 'your AI assistant';
 
   function handleAllow() {
     setApproving(true);
     const userId = getSupabaseId();
-    const callbackUrl = `${MCP_SERVER_URL}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
-    window.location.href = callbackUrl;
+    const url = `${MCP_SERVER_URL}/oauth/callback?auth_request_id=${encodeURIComponent(authRequestId)}&user_id=${encodeURIComponent(userId)}&challenge_token=${encodeURIComponent(challengeToken)}`;
+    setCallbackUrl(url);
+    setApproved(true);
+    setTimeout(() => {
+      window.location.href = url;
+    }, 800);
   }
 
   function handleDeny() {
@@ -148,9 +171,49 @@ export default function McpAuth() {
     }, 1500);
   }
 
-  const displayClientId = clientId && clientId.length > 40
-    ? clientId.slice(0, 40) + '...'
-    : clientId;
+  // Approved state — success screen
+  if (approved) {
+    return (
+      <div className="page-center">
+        <div className="card" style={{ ...cardStyle, textAlign: 'center' }}>
+          <Logomark />
+          <div style={{ color: 'var(--brand)', fontWeight: 800, fontSize: '1.1rem', marginBottom: 20 }}>
+            Rendezvous
+          </div>
+
+          <div style={{
+            width: 40, height: 40, borderRadius: '50%', background: 'var(--success-bg)',
+            color: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '1.4rem', fontWeight: 700, margin: '0 auto 16px', lineHeight: 1,
+          }}>&#10003;</div>
+
+          <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+            Connected successfully
+          </p>
+          <p className="form-hint" style={{ marginBottom: 24, textAlign: 'center' }}>
+            You can now use Rendezvous from {clientLabel}. This tab will close automatically.
+          </p>
+
+          <button
+            className="btn btn--primary btn--full"
+            onClick={() => { if (callbackUrl) window.location.href = callbackUrl; }}
+          >
+            Return to {clientLabel}
+          </button>
+
+          <a
+            href="/home"
+            style={{
+              display: 'block', textAlign: 'center', marginTop: 10,
+              fontSize: '0.85rem', color: 'var(--text-3)',
+            }}
+          >
+            Go to Rendezvous
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   // Denying state
   if (denying) {
@@ -212,7 +275,7 @@ export default function McpAuth() {
           fontSize: '1.05rem', fontWeight: 500, color: 'var(--text)',
           textAlign: 'center', marginBottom: 16, lineHeight: 1.45,
         }}>
-          <strong>{displayClientId}</strong> would like access to your Rendezvous account
+          <strong>{displayName}</strong> would like access to your Rendezvous account
         </p>
 
         {/* Signed-in account pill */}
