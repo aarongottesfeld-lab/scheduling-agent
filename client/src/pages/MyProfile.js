@@ -505,6 +505,11 @@ export default function MyProfile() {
         <span style={{ fontSize:'0.9rem', fontWeight:600, color:'var(--text-2)' }}>Appearance, notifications &amp; privacy</span>
         <span style={{ color:'var(--text-3)', fontSize:'0.85rem' }}>→</span>
       </Link>
+      {/* ── Help & FAQ link ── */}
+      <Link to="/help" className="card card-pad" style={{ marginBottom:16, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', color:'inherit' }}>
+        <span style={{ fontSize:'0.9rem', fontWeight:600, color:'var(--text-2)' }}>Help &amp; FAQ</span>
+        <span style={{ color:'var(--text-3)', fontSize:'0.85rem' }}>→</span>
+      </Link>
 
       {connectBanner === 'success' && (
         <div className="alert alert--success" style={{ marginBottom:12 }}>Google Calendar connected successfully.</div>

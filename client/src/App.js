@@ -55,6 +55,7 @@ import Onboarding          from './pages/Onboarding';
 import SharedProfile       from './pages/SharedProfile';
 import Settings            from './pages/Settings';
 import McpAuth             from './pages/McpAuth';
+import Help                from './pages/Help';
 import BugReportButton     from './components/BugReportButton';
 
 /**
@@ -196,6 +197,9 @@ export default function App() {
 
         {/* MCP OAuth consent — not ProtectedRoute; McpAuth.js handles its own auth check */}
         <Route path="/mcp-auth" element={<McpAuth />} />
+
+        {/* Help page — public sections visible to all, auth sections gated inside Help.js */}
+        <Route path="/help" element={<Help />} />
 
         {/* Onboarding — not wrapped in ProtectedRoute; Onboarding.js handles its own
             auth redirect. Part of the auth completion flow, not a protected feature. */}

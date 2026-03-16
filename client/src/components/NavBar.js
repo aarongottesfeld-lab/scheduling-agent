@@ -113,6 +113,7 @@ export default function NavBar() {
         <div className="navbar__links">
           <NavLink to="/friends" className={linkClass}>Friends</NavLink>
           <NavLink to="/groups"  className={linkClass}>Groups</NavLink>
+          <NavLink to="/help"   className={linkClass}>Help</NavLink>
           <NavLink to="/schedule/new" className={linkClass}>New Event</NavLink>
         </div>
 
