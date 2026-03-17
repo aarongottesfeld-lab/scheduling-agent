@@ -43,19 +43,26 @@ async function dispatchNotification(supabase, { userId, type, title, body, actio
   // 3. Insert in-product notification if enabled.
   if (inProductEnabled) {
     try {
-      await supabase.from('notifications').insert({
+      const row = {
         user_id:    userId,
         type,
-        tier:       tier || null,
         title,
         body,
         data:       data || null,
         action_url: actionUrl || null,
         ref_id:     refId || null,
         read:       false,
-      });
+      };
+      // Only include tier if explicitly provided — the DB column is NOT NULL
+      // with DEFAULT 1, so omitting it lets Postgres use the default.
+      if (tier != null) row.tier = tier;
+
+      const { error: insertErr } = await supabase.from('notifications').insert(row);
+      if (insertErr) {
+        console.warn('[notificationDispatch] in-product insert failed:', insertErr.message);
+      }
     } catch (e) {
-      console.warn('[notificationDispatch] in-product insert failed:', e.message);
+      console.warn('[notificationDispatch] in-product insert threw:', e.message);
     }
   }
 

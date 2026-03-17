@@ -40,19 +40,24 @@ try {
     // 3. Insert in-product notification only if enabled.
     if (inProductEnabled) {
       try {
-        await supabase.from('notifications').insert({
+        const row = {
           user_id: userId,
           type,
-          tier: tier || null,
           title,
           body,
           data: data || null,
           action_url: actionUrl || null,
           ref_id: refId || null,
           read: false,
-        });
+        };
+        if (tier != null) row.tier = tier;
+
+        const { error: insertErr } = await supabase.from('notifications').insert(row);
+        if (insertErr) {
+          console.warn('[mcp/notificationDispatch] in-product insert failed:', insertErr.message);
+        }
       } catch (e) {
-        console.warn('[mcp/notificationDispatch] in-product insert failed:', e.message);
+        console.warn('[mcp/notificationDispatch] in-product insert threw:', e.message);
       }
     }
 
