@@ -4,8 +4,7 @@
 
 const { z } = require('zod');
 const { dispatchNotification } = require('../utils/notificationDispatch');
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const { UUID_RE, sanitizeSearch } = require('../../server/utils/validation');
 
 function registerTools(server, supabase, _config, userId) {
 
@@ -32,7 +31,7 @@ function registerTools(server, supabase, _config, userId) {
         .in('id', friendIds);
 
       if (search && search.trim()) {
-        const safe = search.replace(/[()%,]/g, '').trim();
+        const safe = sanitizeSearch(search);
         if (safe.length >= 1) {
           query = query.or(`username.ilike.%${safe}%,full_name.ilike.%${safe}%`);
         }
@@ -59,7 +58,7 @@ function registerTools(server, supabase, _config, userId) {
       query: z.string().min(1).max(100).describe('Username or email to search for'),
     },
     async ({ query }) => {
-      const safe = query.replace(/[()%,]/g, '').trim();
+      const safe = sanitizeSearch(query);
       if (safe.length < 1) {
         return { content: [{ type: 'text', text: JSON.stringify({ users: [] }) }] };
       }

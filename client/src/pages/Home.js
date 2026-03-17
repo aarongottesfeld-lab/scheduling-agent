@@ -11,6 +11,7 @@ import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { getUserName, isOnboardingCompleted } from '../utils/auth';
 import client from '../utils/client';
+import { getInitials } from '../utils/formatting';
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -25,12 +26,6 @@ const SORT_OPTIONS = [
 // Natural default direction per sort key.
 // 'date' → ascending (soonest first); invite/active → descending (newest first).
 const SORT_DEFAULT_DIR = { date: 'asc', created: 'desc', recent: 'desc' };
-
-/* ── Helpers ────────────────────────────────────────────────── */
-
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
 
 function formatDate(dateStr) {
   if (!dateStr) return '';

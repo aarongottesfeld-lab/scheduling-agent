@@ -17,11 +17,10 @@
 
 'use strict';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
+const { isValidUUID } = require('../utils/validation');
+const { dispatchNotification } = require('../utils/notificationDispatch');
 
 const GROUP_SIZE_LIMIT = 15;
-const { dispatchNotification } = require('../utils/notificationDispatch');
 
 module.exports = function groupsRouter(app, supabase, requireAuth) {
 

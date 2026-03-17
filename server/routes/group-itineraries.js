@@ -31,6 +31,8 @@ const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = r
 const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
 const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
 const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
+const { isValidUUID, sanitizePromptInput } = require('../utils/validation');
+const { RATE_LIMIT_EXEMPT } = require('../utils/rateLimitExempt');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const IS_PROD   = process.env.NODE_ENV === 'production';
@@ -47,22 +49,7 @@ const RENDEZVOUS_SYSTEM_PROMPT =
   "the cooking project, the jam session — not just 'hang out at home'. " +
   "Always follow the JSON schema exactly as instructed.";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
-
 const MAX_CONTEXT = 500;
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
-
-// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
-// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
-const RATE_LIMIT_EXEMPT = new Set(
-  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
-);
-
-function sanitizePromptInput(text, maxLen = MAX_CONTEXT) {
-  if (!text || typeof text !== 'string') return '';
-  return text.replace(INJECTION_RE, '[removed]').trim().slice(0, maxLen);
-}
 
 // Month/day name tables — avoids locale-dependent toLocaleDateString across Lambda envs.
 const _MONTHS   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];

@@ -3,16 +3,8 @@
 'use strict';
 
 const { z } = require('zod');
-const crypto = require('crypto');
 const { dispatchNotification } = require('../utils/notificationDispatch');
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
-
-function sanitize(text, max = 500) {
-  if (!text || typeof text !== 'string') return '';
-  return text.replace(INJECTION_RE, '[removed]').trim().slice(0, max);
-}
+const { UUID_RE, sanitizePromptInput } = require('../../server/utils/validation');
 
 function registerTools(server, supabase, config, userId) {
 
@@ -42,7 +34,7 @@ function registerTools(server, supabase, config, userId) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Not friends with this user.' }) }] };
       }
 
-      const safeContext = sanitize(context_prompt);
+      const safeContext = sanitizePromptInput(context_prompt);
 
       // Insert itinerary row
       const { data: itin, error } = await supabase
@@ -152,7 +144,7 @@ function registerTools(server, supabase, config, userId) {
         .eq('id', itinerary_id);
 
       // Trigger reroll asynchronously
-      triggerReroll(itinerary_id, sanitize(feedback), config).catch(err => {
+      triggerReroll(itinerary_id, sanitizePromptInput(feedback), config).catch(err => {
         console.error('[mcp/generate] async reroll failed:', err.message);
       });
 

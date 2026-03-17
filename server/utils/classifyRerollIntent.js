@@ -29,12 +29,10 @@ function classifyRerollIntent(prompt) {
   try {
     // ── Ambiguous: empty / too short to classify reliably ──────────────────────
     if (!prompt || typeof prompt !== 'string') {
-      console.debug(`[classifyRerollIntent] (empty/null) → ambiguous`);
       return 'ambiguous';
     }
     const trimmed = prompt.trim();
     if (!trimmed) {
-      console.debug(`[classifyRerollIntent] (blank) → ambiguous`);
       return 'ambiguous';
     }
     // Single-word prompts are too sparse to classify reliably — treat as ambiguous.
@@ -42,7 +40,6 @@ function classifyRerollIntent(prompt) {
     // "closer to midtown" and "totally new ideas" (3 words each) are classified.
     const wordCount = trimmed.split(/\s+/).length;
     if (wordCount < 2) {
-      console.debug(`[classifyRerollIntent] "${trimmed}" (${wordCount} word < 2) → ambiguous`);
       return 'ambiguous';
     }
 
@@ -63,10 +60,7 @@ function classifyRerollIntent(prompt) {
     ];
 
     const isMicroAdjust = patterns.some(re => re.test(lower));
-    const result = isMicroAdjust ? 'micro_adjust' : 'full_replace';
-
-    console.debug(`[classifyRerollIntent] "${prompt.slice(0, 80)}" → ${result}`);
-    return result;
+    return isMicroAdjust ? 'micro_adjust' : 'full_replace';
 
   } catch (err) {
     console.error('[classifyRerollIntent] unexpected error:', err.message);

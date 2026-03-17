@@ -16,13 +16,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import PillInput from '../components/PillInput';
 import client from '../utils/client';
-
-/* ── Helpers ────────────────────────────────────────────────── */
-
-/** Produces two-letter uppercase initials from a full name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 /* ── Component ──────────────────────────────────────────────── */
 export default function FriendProfile() {

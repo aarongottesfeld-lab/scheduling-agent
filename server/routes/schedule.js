@@ -29,6 +29,8 @@ const { classifyRerollIntent } = require('../utils/classifyRerollIntent');
 const { dispatchNotification } = require('../utils/notificationDispatch');
 const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
 const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
+const { UUID_RE, isValidUUID, INJECTION_RE, sanitizePromptInput } = require('../utils/validation');
+const { RATE_LIMIT_EXEMPT } = require('../utils/rateLimitExempt');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
@@ -48,29 +50,6 @@ const RENDEZVOUS_SYSTEM_PROMPT =
 const IS_PROD = process.env.NODE_ENV === 'production';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL
   || (IS_PROD ? 'claude-sonnet-4-5-20250929' : 'claude-haiku-4-5-20251001');
-
-// UUID validation — used throughout this file to reject malformed IDs before
-// they reach Supabase.  The same pattern is used in friends.js and users.js;
-// keep the regex identical so behaviour is consistent across all routers.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Prompt injection patterns — phrases that attempt to override or escape the system prompt.
-// This is not exhaustive, but catches the most common attack vectors. The sanitizer is
-// applied to any user-supplied free-text that is interpolated into the Claude prompt
-// (contextPrompt, feedback). Matched segments are replaced with [removed].
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
-
-/**
- * Sanitize a user-supplied string before injecting it into the Claude prompt.
- * Strips common prompt-injection patterns and truncates to maxLen characters.
- * @param {string} text    - raw user input
- * @param {number} maxLen  - hard character cap (defaults to MAX_CONTEXT)
- */
-function sanitizePromptInput(text, maxLen = MAX_CONTEXT) {
-  if (!text || typeof text !== 'string') return '';
-  // Replace injection patterns first, then trim whitespace artifacts, then truncate.
-  return text.replace(INJECTION_RE, '[removed]').trim().slice(0, maxLen);
-}
 
 // Filler words excluded from keyword extraction in themeMatchesContextPrompt.
 // These are common English words that appear in prompts but carry no activity signal.
@@ -126,14 +105,6 @@ function themeMatchesContextPrompt(suggestions, contextPrompt) {
   }
 }
 
-// Emails exempt from all rate limits — useful for testing in production.
-// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
-// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
-const RATE_LIMIT_EXEMPT = new Set(
-  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
-);
-/** Returns true only if s is a well-formed UUID v4 string. */
-function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
 
 /**
  * Count venues with venue_verified === true across all suggestions.

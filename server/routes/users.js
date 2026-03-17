@@ -1,19 +1,7 @@
 // routes/users.js — user profile + search endpoints
 'use strict';
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Sanitize a string before interpolating it into a PostgREST `.or()` filter.
- * The risk is NOT SQL injection (PostgREST parameterizes queries internally)
- * but malformed filter strings: a comma splits conditions, parentheses break
- * grouping, and `%` adds extra wildcards that make the query expensive.
- * Strip all of those characters.  Normal search chars (letters, digits,
- * spaces, @, ., _, -, +) are preserved.
- */
-function sanitizeSearch(raw) {
-  return raw.replace(/[()%,]/g, '').trim();
-}
+const { sanitizeSearch } = require('../utils/validation');
 
 // Max field lengths (enforced both here and should mirror DB constraints).
 const MAX = {
@@ -327,8 +315,6 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
       const r = await fetch(url);
       const json = await r.json();
-      console.log('[geocode] status=%s results=%d error_message=%s', json.status, json.results?.length, json.error_message || 'none');
-
       // Walk address_components of the first result to find the most specific place name.
       // Preference order: neighborhood > sublocality > locality (city) > admin_area_level_2.
       let location = null;

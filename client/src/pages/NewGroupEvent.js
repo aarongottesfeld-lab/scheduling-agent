@@ -17,6 +17,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { getGroups, getGroup, createGroupItinerary, generateGroupSuggestions } from '../utils/api';
 import { getSupabaseId } from '../utils/auth';
+import { getInitials } from '../utils/formatting';
 
 /* ── Constants (mirrors NewEvent.js) ─────────────────────────────────── */
 
@@ -73,11 +74,6 @@ function today() {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${mm}-${dd}`;
-}
-
-/** Two uppercase initials from a name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
 /** 'YYYY-MM-DD' → 'Mar 20' */

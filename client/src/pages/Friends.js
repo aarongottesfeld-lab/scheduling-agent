@@ -9,11 +9,7 @@ import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { searchUserByEmail } from '../utils/api';
 import client from '../utils/client';
-
-/** Produces two-letter uppercase initials from a full name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 const APP_URL = process.env.REACT_APP_URL || window.location.origin;
 

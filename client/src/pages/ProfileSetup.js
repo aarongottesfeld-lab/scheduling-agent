@@ -10,36 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { saveProfile } from '../utils/api';
 import PillInput from '../components/PillInput';
 import client from '../utils/client';
-
-/* ── Constants ──────────────────────────────────────────────── */
-
-const ACTIVITY_SUGGESTIONS = [
-  // Food & Drink
-  'coffee', 'brunch', 'lunch spots', 'fine dining', 'street food',
-  'craft beer', 'wine bars', 'cocktail bars', 'rooftop bars', 'speakeasies',
-  // Arts & Culture
-  'Broadway shows', 'off-Broadway', 'comedy clubs', 'live music', 'concerts',
-  'jazz clubs', 'art museums', 'galleries', 'film screenings',
-  // Sports & Fitness
-  'golf', 'tennis', 'basketball', 'pickleball', 'cycling', 'running',
-  'yoga', 'rock climbing', 'boxing',
-  // Pro Sports
-  'Knicks games', 'Yankees games', 'Mets games', 'Rangers games', 'Brooklyn Nets', 'NYCFC',
-  // NYC Outdoors
-  'Central Park', 'hiking', 'kayaking', 'beach days', 'High Line', 'Governors Island',
-  // Other
-  'escape rooms', 'bowling', 'arcade bars', 'board game cafes',
-  'cooking classes', 'bookstores', 'flea markets', 'nightlife',
-];
-
-const DIETARY_OPTIONS = [
-  'vegetarian', 'vegan', 'gluten-free', 'halal', 'kosher',
-  'nut allergy', 'shellfish allergy', 'dairy-free', 'none',
-];
-
-const MOBILITY_OPTIONS = [
-  'wheelchair accessible required', 'no stairs', 'elevator required', 'none',
-];
+import { ACTIVITY_SUGGESTIONS, DIETARY_OPTIONS, MOBILITY_OPTIONS } from '../utils/profileOptions';
 
 const TIMEZONES = [
   { label: '─── United States ───', value: '', disabled: true },

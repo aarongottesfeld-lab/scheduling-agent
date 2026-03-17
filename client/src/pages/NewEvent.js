@@ -10,6 +10,7 @@ import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
 import { getSuggestions, getMe } from '../utils/api';
 import client from '../utils/client';
+import { getInitials } from '../utils/formatting';
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -87,11 +88,6 @@ function today() {
 function daysFromToday(endDate) {
   const ms = new Date(endDate) - new Date(today());
   return Math.max(1, Math.ceil(ms / (1000 * 60 * 60 * 24)));
-}
-
-/** Produces two-letter uppercase initials from a full name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
 /** 'YYYY-MM-DD' → 'Mar 20' */

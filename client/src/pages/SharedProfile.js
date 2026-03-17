@@ -12,10 +12,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
-
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 export default function SharedProfile() {
   const { username } = useParams();

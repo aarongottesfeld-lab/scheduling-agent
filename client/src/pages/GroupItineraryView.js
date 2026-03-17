@@ -29,13 +29,9 @@ import {
 } from '../utils/api';
 import client from '../utils/client';
 import { getSupabaseId } from '../utils/auth';
+import { getInitials } from '../utils/formatting';
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
-
-/** Two uppercase initials from a name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
 
 /**
  * Formats a YYYY-MM-DD date + optional time string into a human-readable label.

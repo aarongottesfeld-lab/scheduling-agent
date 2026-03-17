@@ -12,11 +12,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import { getGroups, createGroup } from '../utils/api';
-
-/** Two uppercase initials from a group name — used for the group avatar. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 export default function Groups() {
   const navigate = useNavigate();

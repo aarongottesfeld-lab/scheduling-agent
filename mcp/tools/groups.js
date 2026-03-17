@@ -4,14 +4,7 @@
 
 const { z } = require('zod');
 const { dispatchNotification } = require('../utils/notificationDispatch');
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INJECTION_RE = /\b(ignore\s+(previous|all|prior)\s+(instructions?|prompts?|context)|system\s*:|assistant\s*:|<\s*\/?\s*(system|assistant|user|prompt)\s*>|disregard\s+(the\s+)?(above|previous|prior)|you\s+are\s+now|new\s+instructions?|override\s+(the\s+)?(above|previous)|forget\s+(everything|all)|jailbreak|do\s+anything\s+now|DAN\b)/gim;
-
-function sanitize(text, max = 500) {
-  if (!text || typeof text !== 'string') return '';
-  return text.replace(INJECTION_RE, '[removed]').trim().slice(0, max);
-}
+const { UUID_RE, sanitizePromptInput } = require('../../server/utils/validation');
 
 function registerTools(server, supabase, config, userId) {
 
@@ -197,7 +190,7 @@ function registerTools(server, supabase, config, userId) {
           date_range_start,
           date_range_end,
           time_of_day: time_of_day || 'any',
-          context_prompt: sanitize(context_prompt),
+          context_prompt: sanitizePromptInput(context_prompt),
           suggestions: [],
           changelog: [],
           reroll_count: 0,
@@ -324,7 +317,7 @@ function registerTools(server, supabase, config, userId) {
           type: 'group_event_counter_proposal',
           tier: 2,
           title: `${profile?.full_name || 'Someone'} wants different plans`,
-          body: `Feedback: "${sanitize(feedback, 100)}"`,
+          body: `Feedback: "${sanitizePromptInput(feedback, 100)}"`,
           data: { group_itinerary_id },
           actionUrl: `/group-itineraries/${group_itinerary_id}`,
         });

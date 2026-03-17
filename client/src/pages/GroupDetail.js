@@ -16,11 +16,7 @@ import NavBar from '../components/NavBar';
 import { getGroup, inviteMember, updateMembership, removeMember, updateGroup } from '../utils/api';
 import { getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
-
-/** Two uppercase initials from a display name string. */
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 export default function GroupDetail() {
   const { id }    = useParams();

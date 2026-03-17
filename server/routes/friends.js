@@ -1,25 +1,8 @@
 // routes/friends.js — friendships, requests, profiles, annotations, shared interests
 'use strict';
 const { dispatchNotification } = require('../utils/notificationDispatch');
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isValidUUID(s) { return typeof s === 'string' && UUID_RE.test(s); }
-
-// A4-002: Exempted emails are read from RATE_LIMIT_EXEMPT_EMAILS env var (comma-separated).
-// Never hardcode personal emails in source — set the var in server/.env and Vercel dashboard.
-const RATE_LIMIT_EXEMPT = new Set(
-  (process.env.RATE_LIMIT_EXEMPT_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean)
-);
-
-/**
- * Sanitize before interpolating into a PostgREST .or() filter string.
- * Commas split conditions; parens break grouping; % adds unintended wildcards.
- */
-function sanitizeSearch(raw) {
-  return raw.replace(/[()%,]/g, '').trim();
-}
+const { isValidUUID, sanitizeSearch } = require('../utils/validation');
+const { RATE_LIMIT_EXEMPT } = require('../utils/rateLimitExempt');
 
 // Max lengths for free-text fields stored in friend_annotations
 const MAX_NICKNAME  = 50;

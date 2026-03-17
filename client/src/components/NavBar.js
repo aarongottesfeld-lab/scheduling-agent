@@ -9,10 +9,7 @@ import { logout } from '../utils/api';
 import NotificationBell from './NotificationBell';
 import { clearSession, getUserName, getAvatarUrl, setAvatarUrl } from '../utils/auth';
 import client from '../utils/client';
-
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
-}
+import { getInitials } from '../utils/formatting';
 
 // ── Tab icon SVGs (20×20, stroke-based, no external libraries) ───────────────
 function IconHome() {

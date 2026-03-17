@@ -6,30 +6,10 @@ import PillInput from '../components/PillInput';
 import client from '../utils/client';
 import { Link } from 'react-router-dom';
 import { getCalendarConnections, getGoogleConnectUrl, setPrimaryCalendarConnection, removeCalendarConnection, connectAppleCalendar } from '../utils/api';
+import { getInitials } from '../utils/formatting';
+import { ACTIVITY_SUGGESTIONS, DIETARY_OPTIONS, MOBILITY_OPTIONS } from '../utils/profileOptions';
 
 const APP_URL = process.env.REACT_APP_URL || window.location.origin;
-
-const ACTIVITY_SUGGESTIONS = [
-  'coffee','brunch','lunch spots','fine dining','street food',
-  'craft beer','wine bars','cocktail bars','rooftop bars','speakeasies',
-  'Broadway shows','off-Broadway','comedy clubs','live music','concerts',
-  'jazz clubs','art museums','galleries','film screenings',
-  'golf','tennis','basketball','pickleball','cycling','running',
-  'yoga','rock climbing','boxing',
-  'Knicks games','Yankees games','Mets games','Rangers games','Brooklyn Nets','NYCFC',
-  'Central Park','hiking','kayaking','beach days','High Line','Governors Island',
-  'escape rooms','bowling','arcade bars','board game cafes',
-  'cooking classes','bookstores','flea markets','nightlife',
-];
-
-const DIETARY_OPTIONS = [
-  'vegetarian','vegan','gluten-free','halal','kosher',
-  'nut allergy','shellfish allergy','dairy-free','none',
-];
-
-const MOBILITY_OPTIONS = [
-  'wheelchair accessible required','no stairs','elevator required','none',
-];
 
 const TIMEZONES = [
   { label: '─── United States ───', value: '', disabled: true },
@@ -61,10 +41,6 @@ function validateUsername(v) {
   if (v.length < 3) return 'At least 3 characters.';
   if (v.length > 30) return 'Max 30 characters.';
   return '';
-}
-
-function getInitials(name = '') {
-  return name.trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
 export default function MyProfile() {
@@ -271,7 +247,6 @@ export default function MyProfile() {
           const res = await client.get('/geocode', {
             params: { lat: coords.latitude, lng: coords.longitude },
           });
-          console.log('[handleUseLocation] /geocode response:', res.data);
           const resolved = res.data.location || '';
           setForm((prev) => ({ ...prev, location: resolved }));
           if (resolved) setLocSuccess(resolved);
