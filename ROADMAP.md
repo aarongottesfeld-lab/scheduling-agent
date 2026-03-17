@@ -1,5 +1,5 @@
 # Rendezvous — Product Roadmap
-Last updated: March 14, 2026 — reconciled against GCal save states and STATUS.md backfill
+Last updated: March 17, 2026 — refreshed against codebase, STATUS.md, and DEFERRED.md
 
 Full product roadmap: audit schedule, release gating, and the complete feature backlog
 in priority order. For detailed design specs on each sprint (architecture, data model,
@@ -141,6 +141,8 @@ Trigger: after multi-calendar support (phases 1-6) is complete and verified. By 
 - Confirm tags field audit-note (Audit 3 scope, deferred) has been resolved: either wired to UI filtering or removed from Claude schema
 
 **Audit 5 — Before App Store submission**
+> ✅ DONE — March 16, 2026. Scope was PWA security (MCP server, notification dispatch, calendar connections), not App Store submission as originally planned. 33 items checked: A5-029 notification settings enforcement, A5-030 tier NOT NULL fix, plus MCP auth/input validation across all tools. Deferred items (A5-001, A5-003, A5-007, A5-022, A5-033) logged in DEFERRED.md.
+
 Trigger: when React Native migration is complete and App Store submission is being
 prepared. Scope shifts to include Apple's data privacy requirements, privacy nutrition
 label accuracy, ATT (App Tracking Transparency) if applicable, deep link security, and
@@ -263,10 +265,10 @@ event schema we're building is compatible.
 
 **Limited-time & live events (new sprint — do after venue quality)**
 > Differentiating feature: a concert suggestion that's actually playing when the user is free is a completely different value prop than a generic venue recommendation.
-- [ ] **Ticketmaster Discovery API** — free tier (5,000 calls/day). Fetch concerts, shows, sports by location + date range. Register at developer.ticketmaster.com. Store as `TICKETMASTER_API_KEY`.
-- [ ] **Eventbrite API** — local festivals, pop-ups, neighborhood events. Register at eventbrite.com/platform. Store as `EVENTBRITE_API_KEY`.
-- [ ] Build `fetchLocalEvents(location, dateRangeStart, dateRangeEnd, interests)` in `server/utils/events.js`. Calls both APIs concurrently, dedupes, filters by relevance to user interests, returns top 5–8 events with name, date/time, venue, category, URL.
-- [ ] Inject into `buildSuggestPrompt` as a third content source: "AVAILABLE TIME-SENSITIVE EVENTS (happening during the suggested window): [list]". Instruct Claude to anchor a suggestion around a live event when it matches user interests or contextPrompt.
+- [x] **Ticketmaster Discovery API** — DONE (March 15). Wired in `server/utils/events.js` with `fetchLocalEvents()`.
+- [x] **Eventbrite API** — DONE (March 15). Integrated alongside Ticketmaster in `events.js`.
+- [x] Build `fetchLocalEvents(location, dateRangeStart, dateRangeEnd, interests)` in `server/utils/events.js`. DONE — calls both APIs concurrently, returns events with name, date/time, venue, category, URL.
+- [x] Inject into `buildSuggestPrompt` as a third content source: "AVAILABLE TIME-SENSITIVE EVENTS" block. DONE — wired in both schedule.js and group-itineraries.js.
 - [ ] Add 1-hour caching layer per (location, date_range) using a module-scoped Map or Supabase row.
 - [ ] Add `event_source` field to suggestion JSONB: `ticketmaster | eventbrite | places | home`. Render 🎟 badge on event-anchored cards with deep link to purchase/info.
 - [ ] Privacy: event API keys in `server/.env` only. Only location + date range sent to event APIs — no user data.
@@ -276,20 +278,15 @@ event schema we're building is compatible.
 > a sports game, TV premiere, award show, or movie release — itinerary dates should anchor
 > to when that event actually happens. "Watch the Knicks" should suggest plans around the
 > actual next game, not a random available slot.
-- [ ] Build `extractCulturalSignal(contextPrompt, activityPreferences)` helper — detection layer
-  returning `{ type, entity }` (sports / tv / film / awards / concert)
-- [ ] Add `fetchSportsSchedule(team, dateRangeStart, dateRangeEnd)` — ESPN unofficial API
-  (no key), covers NBA / MLB / NFL / NHL / MLS
-- [ ] Wire PRIORITY EVENT block into `buildSuggestPrompt` — higher priority than general events block
-- [ ] Add 🔴 Live badge to ItineraryView: `🔴 Live · Knicks tip-off 7:30 PM`
-  Same rendering pattern as 🎟 Ticketmaster and 🎾 activity badges
-- [ ] Extend `suggestion_telemetry` JSONB: cultural_signal_detected, cultural_signal_type,
-  cultural_event_found, cultural_anchor_used
+- [x] Build `extractCulturalSignal(contextPrompt, activityPreferences)` helper — DONE (March 15, commit 32efae4). Detects sports teams (100+) and awards (14) in contextPrompt + activityPreferences.
+- [x] Add `fetchSportsSchedule(team, dateRangeStart, dateRangeEnd)` — DONE (March 15). ESPN scoreboard handler (no key, 4h cache, multi-league concurrent fetch). Implemented as `fetchCulturalEvent.js`.
+- [x] Wire PRIORITY EVENT block into `buildSuggestPrompt` — DONE. Higher priority than general events block. Full parity: schedule.js (25 refs) and group-itineraries.js (17 refs).
+- [x] Add 🔴 Live badge to ItineraryView — DONE. Renders on `suggestion.priority_event` field in both ItineraryView.js and GroupItineraryView.js.
+- [x] Extend `suggestion_telemetry` JSONB — DONE. cultural_signal_detected, cultural_signal_type, cultural_signal_entity, cultural_event_found, cultural_anchor_used all wired.
 - [ ] TMDB API integration — TV premiere dates + film release dates (free tier, themoviedb.org)
   Store as `TMDB_API_KEY`
-- [ ] Awards show constants file — Oscars / Grammys / Emmys / Golden Globes annual dates
-  (no API needed, simple lookup table updated annually)
-- [ ] Privacy: only team/show/movie names sent to external APIs — no user data ever
+- [x] Awards show constants — DONE (March 15). 14 awards detected in `extractCulturalSignal.js`. MediaWiki opensearch handler in `fetchCulturalEvent.js` for date/venue lookup.
+- [x] Privacy: only team/show/movie names sent to external APIs — no user data ever. DONE.
 
 **Route logic and sequencing**
 - [ ] Use Distance Matrix to validate venue sequence is geographically sensible (no zigzagging)
@@ -306,17 +303,7 @@ event schema we're building is compatible.
 **Re-roll experience**
 - [ ] Use `edit_history` rejection signals to improve the next prompt, not just retry blindly
 - [ ] After 2+ rerolls, proactively surface a prompt asking for more context
-- [ ] **Micro-adjustment reroll support** — when a user's reroll prompt contains relative
-  modifiers ("same vibe but 30 minutes later", "a bit more casual", "closer to us",
-  "slightly earlier"), the current prompt treats these as full replacements of context.
-  Instead, detect relative modifier language and inject a MICRO-ADJUSTMENT instruction
-  block that explicitly tells Claude to keep the existing itinerary structure and only
-  modify the specified dimension. Examples:
-  - "same vibe, 30 min later" → preserve venues/activity, shift time only
-  - "a bit more casual" → preserve structure, soften venue tier/vibe
-  - "somewhere closer" → preserve activity type, re-anchor location
-  Detection: keyword list in classifyRerollIntent() (new helper alongside classifyIntent)
-  returning 'micro_adjust' | 'full_replace' | 'ambiguous'
+- [x] **Micro-adjustment reroll support** — DONE (March 15). `classifyRerollIntent()` in `server/utils/classifyRerollIntent.js` returns `'micro_adjust' | 'full_replace' | 'ambiguous'`. Pattern matching for temporal modifiers, vibe modifiers, distance modifiers, swap signals, and explicit preservers. Wired into both schedule.js (3 refs) and group-itineraries.js (3 refs). Micro-adjust path injects prior suggestions as reference context with MICRO-ADJUSTMENT instruction block.
 
 ### Travel Mode — Multi-Day Itinerary Quality (prompt fix, no new infrastructure)
 > Current state: Claude generates all days in a single call but front-loads Day 1 and leaves subsequent days thin. The days[] JSONB schema and ItineraryView day-grouped rendering already support multi-day output — this is purely a prompt improvement.
@@ -352,19 +339,21 @@ event schema we're building is compatible.
 - [ ] Trip mode: detect when destination is outside user's metro, add flight/train/lodging estimates
 
 ### MCP Server
+> ✅ Core MCP server DONE — March 16, 2026. Deployed on Railway. 5 tool modules: friends, groups, generate, itineraries, availability. OAuth2 dynamic client registration (RFC 7591), challenge-token auth flow. Audit 5 security review complete.
+>
 > End state: "Bobby and I want to go on a golf trip" → destinations, logistics, cost breakdown, calendar invite.
-- [ ] MCP server — thin auth wrapper around existing API endpoints
-- [ ] Tool: `resolve_friend(name)` — fuzzy first-name match → UUID
-- [ ] Tool: `create_itinerary_proposal(friend_ids, activity, date_range, context)`
-- [ ] Tool: `list_pending_itineraries()`
-- [ ] Tool: `get_itinerary(id)`
-- [ ] Tool: `accept_itinerary(id)` / `decline_itinerary(id)`
+- [x] MCP server — thin auth wrapper around existing API endpoints. DONE.
+- [x] Tool: `get_friends` / `search_users` / `send_friend_request` / `get_friend_requests` / `respond_to_friend_request` — DONE (mcp/tools/friends.js).
+- [x] Tool: `create_itinerary_request` + `get_itinerary_job` (poll) — DONE (mcp/tools/generate.js).
+- [x] Tool: `get_itineraries` / `get_itinerary` / `reroll_itinerary` / `respond_to_itinerary` / `lock_itinerary` — DONE (mcp/tools/itineraries.js).
+- [x] Tool: `get_availability` — DONE (mcp/tools/availability.js).
+- [x] Tool: `create_group` / `invite_member` / `remove_member` / `leave_group` / `get_group_members` / `update_group` — DONE (mcp/tools/groups.js).
+- [x] MCP auth — OAuth2 dynamic client registration, challenge-token flow, scoped per user. DONE.
 - [ ] Tool: `get_cost_estimate(destination, activity, party_size, dates)`
 - [ ] Tool: `book_or_deeplink(venue, party_size, datetime)`
 - [ ] `conversation_context` param — injected alongside structured profile data
 - [ ] Context priority: explicit instruction > conversation context > shared interests > individual interests
 - [ ] Profile update prompting — surface "save this to your profile?" when Claude infers preferences
-- [ ] MCP auth — token-based, scoped per user, revocable
 - [ ] Register with Claude.ai as available MCP connector
 - [ ] Prompt-triggered agent — "set up plans with Jamie" → tools called in sequence → itinerary proposed
 
@@ -398,7 +387,7 @@ early-user phase where feedback on functionality is the priority.
 
 **PWA phase (current target)**
 - [ ] PWA config — manifest.json + service worker (already in deployment checklist)
-- [ ] Push notifications via Web Push API — needed for real-time nudges without the app open
+- [x] Push notifications — DONE (March 15). FCM-based, 8 triggers, stale token cleanup.
 - [ ] Onboarding copy: "Google Calendar supported, Apple Calendar coming soon"
 - [ ] Test PWA install flow on iOS Safari and Android Chrome
 
@@ -497,55 +486,40 @@ CASA assessment adds 1–2 weeks if not done in advance. Start the CASA assessme
 - Tie behavior: "Lock it in anyway" or "Skip the suggestion"
 - Radio card pattern with brand-highlighted active selection
 
-**3. Remote mode (new planning mode — no travel required)**
+**3. Remote mode (new planning mode — no travel required) — ✅ DONE (March 14, commit b9fe605)**
 - Third mode alongside Local and Travel for virtual hangouts
 - Suggests at-home/remote activities (video calls, multiplayer games, watch parties, etc.)
 - No venue suggestions, no travel specs, no location preference needed
 - Toggle button next to Local/Travel on NewEvent and NewGroupEvent
-- Full prompt with parity instructions in CLAUDE_CODE_PROMPTS.md
+- Full parity across 1:1 and group, DB constraints updated
 
-**4. Delete draft button — 1:1 and group itinerary views**
-- Inline confirmation (no modal) in ItineraryView and GroupItineraryView
+**4. Delete draft button — 1:1 and group itinerary views — ✅ DONE (March 14, commit 6d89f8d)**
+- Inline confirmation (no modal) in both ItineraryView and GroupItineraryView
 - Organizer only, unsent drafts only, navigate home on confirm
-- Server route already exists for 1:1; new DELETE /group-itineraries/:id needed for group
-- Full prompt with parity instructions in CLAUDE_CODE_PROMPTS.md
+- Both 1:1 and group delete routes working with correct guards
 
-**5. Micro-adjustment reroll support**
-- See re-roll experience section below
+**5. Micro-adjustment reroll support — ✅ DONE (March 15)**
+- See re-roll experience section above. `classifyRerollIntent()` shipped with full parity.
 
-**6. Manual busy blocks (organizer + attendee)**
-- See manual busy blocks section below
-- Prerequisite for MCP server and guest mode — builds the shared exclusion block format both will reuse
+**6. Manual busy blocks (organizer + attendee) — ✅ DONE (March 15, commit ac48ca9)**
+- See manual busy blocks section below. buildExcludedWindowsBlock + buildAttendeeNotesBlock shipped in both schedule.js and group-itineraries.js.
 
-**7. Web push notifications**
-- push_subscriptions table and permission grant path exist; delivery not built
-- Full spec: server-side web push via web-push npm package, VAPID keys in .env
-- Triggers: friend request received, group invite, itinerary sent to you, itinerary locked
-- See notification tiers in SPRINT_SPECS.md
+**7. Push notifications — ✅ DONE (March 15, commits 24d6471 + 8a64ca4)**
+- Firebase Cloud Messaging (FCM) — not Web Push / VAPID as originally specced
+- 8 triggers: friend request received/accepted, group invite, itinerary sent/declined/locked, suggest alternative, group counter-proposal
+- FCM token re-registration on app load for users who completed onboarding pre-push
+- Stale token auto-cleanup on registration-not-registered error
+- `server/utils/pushNotifications.js` — firebase-admin, never throws
 
-**8. Other calendars (Apple Calendar + multi-calendar support)**
-- Build the calendar_connections DB schema first — unblocks both multi-Google and Apple CalDAV
-- See Apple Calendar and Multi-calendar support sections below for full spec
-- Implementation phases (must be done in order):
-  1. DB schema — calendar_connections table (additive, sessions table untouched)
-  2. OAuth connect flow — secondary Google account connection route
-  3. Availability aggregation — merge freebusy across all connections per user
-  4. Calendar write path — write events to is_primary connection
-  5. Connected Calendars UI — list/add/remove connections in profile settings
-     - Apple Calendar connection requires an inline step-by-step setup guide in the UI
-       (non-technical users need hand-holding through the app-specific password flow):
-       Step 1: Go to appleid.apple.com and sign in
-       Step 2: Under Security, tap "App-Specific Passwords" → "Generate Password"
-       Step 3: Label it "Rendezvous" and tap Create
-       Step 4: Copy the 16-character password and paste it here
-       Step 5: Enter your iCloud email address (the one tied to your Apple ID)
-     - Guide should include a direct link to appleid.apple.com
-     - Make clear the password only grants calendar access, not full Apple ID access
-     - Note that the password can be revoked at any time from Apple ID settings
-  6. Apple CalDAV — app-specific passwords path (PWA only; EventKit available after React Native migration)
-- Apple Calendar is confirmed blocking adoption — Phase 6 is not speculative
-- Apple auth note: on the web, only CalDAV + app-specific passwords is viable (EventKit is iOS-native only). UX requires user to manually generate a password in Apple ID settings. React Native migration unlocks EventKit and a cleaner auth flow — that's the right time to make Apple Calendar fully first-class. For PWA, CalDAV is the only path.
-- Decision gate on Apple CalDAV itself removed — build it after phases 1-5 are verified
+**8. Other calendars (Apple Calendar + multi-calendar support) — ✅ All 6 phases DONE (March 15)**
+- Implementation phases all shipped:
+  1. ✅ DB schema — calendar_connections table (commit 39f6cba)
+  2. ✅ OAuth connect flow — GET /auth/google/connect with account picker
+  3. ✅ Availability aggregation — `fetchBusyAggregated.js`, Promise.allSettled per connection
+  4. ✅ Calendar write path — writes to is_primary connection via `calendarUtils.js`
+  5. ✅ Connected Calendars UI — list/add/remove/set primary in MyProfile.js, Apple setup guide inline
+  6. ✅ Apple CalDAV — `appleCalendarUtils.js`, POST /calendar/connections/apple, credential validation, freebusy + event write
+- ICS download button also shipped (commit d23f860) — client-side .ics generation for locked itineraries in both 1:1 and group views
 
 **9. Live events integration**
 
@@ -625,14 +599,9 @@ Privacy: only location + date range sent to event APIs — no user data
 **Pre-login home page (marketing/landing page) — moved to Tier 2**
 > See Tier 2 for full spec.
 
-**Help page (`/help`)**
-- Accessible from nav (logged in and logged out) and from onboarding
-- Four sections:
-  1. **How it works** — brief walkthrough of the core flow (connect calendar → add friends → create event → get itinerary → lock plans)
-  2. **FAQ** — anticipated questions: "What does Rendezvous do with my calendar?", "Can my friends see my events?", "What if I don't have Google Calendar?", "How do group events work?", "What's Remote mode?"
-  3. **What's coming** — lightweight roadmap/vision section: group trip planning, booking integrations, MCP/AI chat interface. Keep it honest and high-level — not a commitment, just a direction
-  4. **Privacy policy** — full text inline (not a separate page, but anchor-linkable as `/help#privacy`) — see privacy policy item below
-- Static page, no backend. Can be built as a simple React component.
+**Help page (`/help`) — ✅ DONE (March 16)**
+- Accessible from nav (logged in and logged out) and from Login.js landing page
+- `client/src/pages/Help.js` — static React component with How it works, FAQ, What's coming, and Privacy sections
 - The FAQ should be seeded from beta feedback — update it as real questions come in
 
 **Privacy policy (external-facing, required for Google OAuth verification)**
@@ -650,37 +619,18 @@ Privacy: only location + date range sent to event APIs — no user data
 - Link it from the pre-login landing page and from the Help page
 - This is a blocker for Google OAuth verification — do before submitting
 
-**Notification settings page**
-- Users need per-type toggles before you have many users
-- See spec below
-- Two channels: in-product (bell) and push. Each has its own global on/off toggle plus per-type overrides.
-- Structure:
-  - In-product notifications: [global on/off] → per-type toggles for all 8 types
-  - Push notifications: [global on/off] → per-type toggles for all 8 types
-- 8 notification types:
-  - Friend request received
-  - Friend request accepted
-  - Group invite received
-  - Itinerary sent to you
-  - Itinerary declined
-  - Suggest alternative received
-  - Group counter-proposal
-  - Itinerary locked
-- Global off overrides all per-type settings for that channel — no need to toggle each one individually
-- Per-type toggles only visible/active when global is on
-- Server checks preferences before both the notifications insert (in-product) and the sendPush call (push) — two independent checks, not one shared flag
-- Store as two jsonb columns on profiles: notification_preferences_inapp and notification_preferences_push, each a map of type → boolean. Global toggle stored as a top-level key (e.g. { enabled: true, friend_request: false, ... })
+**Notification settings page — ✅ DONE (March 16)**
+- Shipped as part of combined Settings page (`client/src/pages/Settings.js`)
+- Per-type toggles for in-product and push channels
+- Stored as `notification_settings` jsonb on profiles (opt-out model: missing key = enabled)
+- Server checks `notification_settings` before insert (in-product) and sendPush (push) via `dispatchNotification()` in both server and MCP
 
-**User privacy settings (new — added March 14, 2026)**
-- Separate from notification settings — controls who can interact with the user's account
-- Ship alongside notification settings page as a combined Settings screen, or as a distinct tab within it
+**User privacy settings (new — added March 14, 2026) — ✅ DONE (March 16)**
+- Shipped as part of combined Settings page (`client/src/pages/Settings.js`) — privacy section with toggle
 - Toggle: **Allow group invites from non-friends** (default: ON)
-  - When OFF: POST /groups/:id/members returns 403 if the invitee has no accepted friendship with the organizer
-  - Server enforcement is required — client-side only is not sufficient (API is accessible directly)
-  - Store as `allow_non_friend_group_invites` boolean on the profiles table (default true)
-  - Check this flag in the group invite route before inserting the membership row
-  - If the invite is blocked, return a clear error the organizer can understand: "This person only accepts group invites from friends."
-  - The invitee should never be notified that a blocked invite was attempted — silent reject on the server
+  - `allow_non_friend_group_invites` boolean on profiles table (migration 20260316000001)
+  - Server enforcement confirmed: `groups.js:331-334` checks flag before inserting membership row
+  - Returns 403 "This user only accepts group invites from friends." when blocked
 - Additional privacy toggles to consider for the same screen (placeholder, not yet specced):
   - Allow friend requests from anyone vs. friends-of-friends only
   - Profile visibility (anyone with link vs. friends only)
@@ -719,7 +669,7 @@ Privacy: only location + date range sent to event APIs — no user data
 - [x] Frontend renders group_invite type with inline Accept/Decline — DONE March 14 (Tier 1)
 
 **Voting rules visible in group event planning screen**
-- [ ] Quorum threshold and tie_behavior never shown to organizer in NewGroupEvent UI — Tier 2, see above
+- [x] Quorum threshold and tie_behavior visible and configurable in NewGroupEvent UI — DONE (March 15, commit 2866f66). See Tier 2 item #2.
 
 **Group event creation entry points (UX gap)**
 - Currently the only way to create a group event is from a saved group's detail page — there's no way to start a group event from the Home screen's "+ New Event" button or from a friend's profile
@@ -758,38 +708,24 @@ Privacy: only location + date range sent to event APIs — no user data
   (e.g. show ItineraryView tooltip only to users who haven't triggered itinerary_locked)
 - [ ] Do NOT over-engineer — 3–4 targeted tooltips beats a full product tour wizard
 
-### Manual busy blocks (organizer + attendee)
-> Users sometimes have informal commitments that aren't on their calendar.
-> This lets them communicate constraints without polluting their Google Calendar.
->
-> **MCP / conversational scheduling note (added March 14, 2026):** Manual busy blocks become
-> especially critical once the MCP server is live. A conversational user saying "I'm busy
-> Thursday morning" or "skip anything before noon" needs that constraint honored without
-> requiring them to open Google Calendar. The free-text parsing infrastructure built here
-> should be the same path the MCP `create_itinerary_proposal` tool uses when a
-> `conversation_context` param includes time constraints — not a separate code path.
-> Design the input format and injection block to be callable from both the UI and the MCP layer.
+### Manual busy blocks (organizer + attendee) — ✅ DONE (March 15, commit ac48ca9)
+> Shipped: `buildExcludedWindowsBlock()` + `buildAttendeeNotesBlock()` helpers in schedule.js. Both injected after AVAILABLE TIME WINDOWS in prompt. Reroll re-injects from DB row. Full parity in group-itineraries.js.
 
 **Organizer — at event creation time**
-- [ ] Add a "Block off times" optional section in NewEvent below the date range picker
-- [ ] Allow free-text entry of time ranges to exclude: "Don't book 3/15 9–11 AM"
-- [ ] Parse and inject as an exclusion block in the Claude prompt:
-  EXCLUDED WINDOWS (organizer has blocked these off — do not suggest plans during these times):
-  - March 15, 9:00–11:00 AM
-- [ ] Store as manual_busy_blocks jsonb on the itinerary row (new column, nullable)
-- [ ] Reroll: re-inject the same exclusion block so it persists across rerolls
+- [x] "Block off times" section in NewEvent — free-text entry of time ranges to exclude
+- [x] Parsed and injected as EXCLUDED WINDOWS block in Claude prompt
+- [x] Stored as manual_busy_blocks jsonb on itinerary row
+- [x] Reroll: re-injects from DB row on every reroll
 
 **Attendee — when declining or suggesting an alternative**
-- [ ] When an attendee declines or hits "Suggest something else", surface an optional
-  text field: "Any times that don't work for you?" (e.g. "I can't do Saturday morning")
-- [ ] Inject this as an additional exclusion signal in the attendee-side reroll prompt
-- [ ] Store as attendee_busy_notes text on the itinerary row (nullable)
-- [ ] Privacy: these notes are visible to the organizer (they're scheduling context),
-  clearly labeled as such in the UI
+- [x] Optional text field on decline: "Any times that don't work for you?"
+- [x] Injected as additional exclusion signal in attendee-side reroll prompt
+- [x] Stored as attendee_busy_notes text on itinerary row
+- [x] Privacy: notes visible to organizer (scheduling context)
 
 **DB changes**
-- [ ] Add manual_busy_blocks jsonb (nullable) to itineraries table
-- [ ] Add attendee_busy_notes text (nullable) to itineraries table
+- [x] manual_busy_blocks jsonb (nullable) on itineraries table
+- [x] attendee_busy_notes text (nullable) on itineraries table
 
 
 > Before building any Maps JS embedded component, split the current single Maps API key into two separate keys. The existing key is used server-side (Geocoding, Distance Matrix, Places) and must not have HTTP referrer restrictions because server-side fetch() calls don't send a Referer header. The Maps JavaScript API is loaded client-side and should be locked to the Rendezvous domain. Using the same key for both makes it impossible to apply referrer restrictions safely.
@@ -881,7 +817,7 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [ ] HTTP referrer restriction on Maps API key — **PARTIALLY DONE (March 14, 2026).** New browser-specific key created, referrer restriction applied to `https://rendezvous-gamma.vercel.app/*`, added to Vercel as `REACT_APP_GOOGLE_MAPS_JS_KEY` (prod only). No client wiring needed yet — Maps JS API is not loaded in the client (existing maps links are plain `maps.google.com` deep-links, no API key required). `REACT_APP_GOOGLE_MAPS_JS_KEY` will be wired in during the route visualization sprint (Tier 2 / Embedded Views). Server-side key unchanged.
 - [ ] Tighten notifications RLS — `notifications_service_role_all` USING(true); verify if fixed in Audit 2 or still outstanding
 - [ ] PWA config — manifest.json + service worker (needed before push notifications)
-- [ ] Push notifications (PWA web push) — push_subscriptions infrastructure exists, delivery not built (Tier 2)
+- [x] Push notifications — DONE (March 15). FCM-based (not Web Push / VAPID). 8 triggers, stale token cleanup.
 
 ---
 
@@ -989,16 +925,15 @@ Revisit after sharing with first users and collecting signal on what actually ma
 - [ ] **[AUTO]** Reroll reads travel fields from DB, not req.body: inspect reroll route handler and assert travel_mode, destination, trip_duration_days sourced from DB fetch, not request body.
 - [ ] **[AUTO]** Geographic containment rule in prompt: call buildSuggestPrompt with travel_mode='travel', assert GEOGRAPHIC CONTAINMENT RULE block present in returned prompt string.
 
-### Notification settings page
-> Users need a way to control what they get notified about. Build before wider rollout.
+### Notification settings page — ✅ DONE (March 16)
+> Shipped as combined Settings page with appearance, notification, and privacy sections.
 
-- [ ] Build client/src/pages/NotificationSettings.js
-- [ ] Toggles per notification type: friend requests, group invites, itinerary invites,
-  itinerary locked, nudges — each independently on/off
-- [ ] Store preferences in notification_preferences jsonb column on profiles table
-- [ ] Server: check preferences before inserting notifications — skip if user disabled that type
-- [ ] Link to notification settings from notification bell / profile menu
-- [ ] Default all to ON for new users
+- [x] Built as `client/src/pages/Settings.js` (combined with privacy settings)
+- [x] Per-type toggles for in-product and push channels
+- [x] Stored as `notification_settings` jsonb on profiles (migration 20260316000001)
+- [x] Server: `dispatchNotification()` checks settings before insert and push
+- [x] Accessible from nav
+- [x] Default all to ON (opt-out model — missing key = enabled)
 
 ### Web push QA
 - [ ] Verify push permission prompt fires correctly on step 3 of onboarding (mobile Safari,
