@@ -198,7 +198,7 @@ export default function Groups() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   {/* Name + admin badge */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{group.name}</span>
+                    <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#fff' }}>{group.name}</span>
                     {group.my_role === 'admin' && (
                       <span
                         className="badge"
