@@ -143,6 +143,9 @@ export default function NewGroupEvent() {
   // UI state
   const [generating, setGenerating] = useState(false);
   const [error,      setError]      = useState('');
+  // Conflict confirmation flow — mirrors NewEvent.js awaitingConflictOk pattern
+  const [awaitingConflictOk, setAwaitingConflictOk] = useState(false);
+  const [pendingItineraryId, setPendingItineraryId] = useState(null);
 
   // Load the user's groups list for the group-selector dropdown (no URL groupId case)
   useEffect(() => {
@@ -241,52 +244,68 @@ export default function NewGroupEvent() {
    *
    * The form is locked (spinner overlay) once submission starts to prevent duplicates.
    */
-  async function handleSubmit(e) {
-    e.preventDefault();
+  async function handleSubmit(e, confirmedOrganizerConflict = false) {
+    if (e) e.preventDefault();
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
 
     setGenerating(true);
     setError('');
+    setAwaitingConflictOk(false);
     try {
-      const timePayload = timeOfDay === 'custom'
-        ? { type: 'custom', time: customTime, windowMinutes: customWindow }
-        : { type: timeOfDay };
+      // If retrying after conflict confirmation, reuse the already-created itinerary.
+      let itineraryId = pendingItineraryId;
 
-      const attendeeIds       = attendees.map(a => a.user_id);
-      const totalParticipants = attendeeIds.length + 1; // attendees + organizer
-      const majorityDefault   = Math.ceil(totalParticipants / 2);
-      const quorumThreshold   = quorumMode === 'unanimous'
-        ? totalParticipants
-        : (parseInt(customQuorum, 10) || majorityDefault); // empty → majority default
+      if (!itineraryId) {
+        const timePayload = timeOfDay === 'custom'
+          ? { type: 'custom', time: customTime, windowMinutes: customWindow }
+          : { type: timeOfDay };
 
-      const { itineraryId } = await createGroupItinerary({
-        group_id:            selectedGroupId,
-        attendee_user_ids:   attendeeIds,
-        date_range_start:    startDate,
-        date_range_end:      endDate,
-        time_of_day:         timePayload,
-        max_travel_minutes:  travelMode === 'remote' ? null : (maxTravel || null),
-        context_prompt:      context || null,
-        event_title:         eventTitle.trim() || null,
-        travel_mode:         travelMode,
-        location_preference: travelMode === 'remote' ? null : locationPreference,
-        destination:         travelMode === 'remote'
-          ? null
-          : (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
-            ? destination.trim()
-            : null,
-        trip_duration_days:  tripDurationDays,
-        quorum_threshold:    quorumThreshold,
-        tie_behavior:        tieBehavior,
-        nudge_after_hours:   parseInt(nudgeAfterHours),
-        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
-        manual_busy_blocks:  busyBlocks.length > 0 ? busyBlocks : undefined,
+        const attendeeIds       = attendees.map(a => a.user_id);
+        const totalParticipants = attendeeIds.length + 1; // attendees + organizer
+        const majorityDefault   = Math.ceil(totalParticipants / 2);
+        const quorumThreshold   = quorumMode === 'unanimous'
+          ? totalParticipants
+          : (parseInt(customQuorum, 10) || majorityDefault); // empty → majority default
+
+        const result = await createGroupItinerary({
+          group_id:            selectedGroupId,
+          attendee_user_ids:   attendeeIds,
+          date_range_start:    startDate,
+          date_range_end:      endDate,
+          time_of_day:         timePayload,
+          max_travel_minutes:  travelMode === 'remote' ? null : (maxTravel || null),
+          context_prompt:      context || null,
+          event_title:         eventTitle.trim() || null,
+          travel_mode:         travelMode,
+          location_preference: travelMode === 'remote' ? null : locationPreference,
+          destination:         travelMode === 'remote'
+            ? null
+            : (travelMode === 'travel' && locationPreference === 'destination' && destination.trim())
+              ? destination.trim()
+              : null,
+          trip_duration_days:  tripDurationDays,
+          quorum_threshold:    quorumThreshold,
+          tie_behavior:        tieBehavior,
+          nudge_after_hours:   parseInt(nudgeAfterHours),
+          timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+          manual_busy_blocks:  busyBlocks.length > 0 ? busyBlocks : undefined,
+        });
+        itineraryId = result.itineraryId;
+      }
+
+      // Generate AI suggestions. May return { needsConfirmation: true } if organizer
+      // is fully blocked — in that case, pause and show a confirmation dialog.
+      const suggestResult = await generateGroupSuggestions(itineraryId, {
+        confirmedOrganizerConflict,
       });
 
-      // Generate AI suggestions immediately after creation.
-      // The itinerary stays in organizer_draft until the organizer explicitly sends it.
-      await generateGroupSuggestions(itineraryId);
+      if (suggestResult?.needsConfirmation) {
+        setPendingItineraryId(itineraryId);
+        setAwaitingConflictOk(true);
+        setGenerating(false);
+        return;
+      }
 
       navigate(`/group-itineraries/${itineraryId}`);
     } catch (e) {
@@ -304,6 +323,21 @@ export default function NewGroupEvent() {
           <p className="page-subtitle">Plan something with the crew.</p>
 
           {error && <div className="alert alert--error">{error}</div>}
+
+          {/* Conflict confirmation — organizer is fully blocked in the selected window */}
+          {awaitingConflictOk && (
+            <div className="alert alert--warning" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <span>Looks like you have a scheduling conflict during this window. Are you sure this works for you?</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn btn--sm btn--primary" onClick={() => handleSubmit(null, true)}>
+                  Yes, generate anyway
+                </button>
+                <button type="button" className="btn btn--sm btn--ghost" onClick={() => { setAwaitingConflictOk(false); setPendingItineraryId(null); }}>
+                  Go back
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Generating spinner overlay — replaces submit button once in-flight */}
           {generating && (

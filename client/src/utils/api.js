@@ -171,8 +171,10 @@ export async function createGroupItinerary(payload) {
  * Organizer-only. Returns { suggestions: [...] }.
  * Itinerary stays in organizer_draft after this — organizer reviews before sending.
  */
-export async function generateGroupSuggestions(itineraryId) {
-  const res = await client.post(`/group-itineraries/${itineraryId}/suggest`);
+export async function generateGroupSuggestions(itineraryId, { confirmedOrganizerConflict } = {}) {
+  const res = await client.post(`/group-itineraries/${itineraryId}/suggest`, {
+    ...(confirmedOrganizerConflict ? { confirmedOrganizerConflict: true } : {}),
+  });
   return res.data;
 }
 
