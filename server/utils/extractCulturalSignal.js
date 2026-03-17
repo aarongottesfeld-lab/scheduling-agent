@@ -68,34 +68,35 @@ const AWARDS_KEYWORDS = [
 ];
 
 /**
- * Detect a cultural signal in a context prompt and/or activity preferences.
+ * Detect a cultural signal in a context prompt.
+ *
+ * Only the explicit context prompt is scanned — activity preferences are NOT
+ * included.  A member liking "yankees games" in their profile should not cause
+ * every itinerary to anchor to the next Yankees game; the user must mention the
+ * team/event in their scheduling prompt for temporal anchoring to kick in.
  *
  * Detection order (return on first match):
  *   1. Awards ceremonies — checked first because they are unambiguous.
  *   2. Sports team names — checked longest-string-first to avoid partial matches.
  *
  * @param {string}   contextPrompt        - free-text user context (e.g. "watch the Knicks")
- * @param {string[]} activityPreferences  - flat array of preference strings from user profiles
+ * @param {string[]} _activityPreferences - DEPRECATED, ignored. Kept for call-site compat.
  * @returns {{ type: 'sports'|'awards', entity: string } | null}
  */
-function extractCulturalSignal(contextPrompt, activityPreferences = []) {
+function extractCulturalSignal(contextPrompt, _activityPreferences = []) {
   try {
     const promptLower = (contextPrompt || '').toLowerCase();
-    const prefsLower  = (activityPreferences || [])
-      .map(p => (p || '').toLowerCase())
-      .join(' ');
-    const combined = `${promptLower} ${prefsLower}`;
 
     // ── 1. Awards ──────────────────────────────────────────────────────────────
     for (const keyword of AWARDS_KEYWORDS) {
-      if (combined.includes(keyword)) {
+      if (promptLower.includes(keyword)) {
         return { type: 'awards', entity: keyword };
       }
     }
 
     // ── 2. Sports ──────────────────────────────────────────────────────────────
     for (const team of SORTED_SPORTS_TEAMS) {
-      if (combined.includes(team)) {
+      if (promptLower.includes(team)) {
         return { type: 'sports', entity: team };
       }
     }

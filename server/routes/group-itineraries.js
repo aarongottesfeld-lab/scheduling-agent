@@ -68,10 +68,12 @@ function fmtWindowDate(d) {
 }
 
 function timeOfDayHours(tod) {
-  if (!tod || tod === 'any') return [8, 23];
-  if (tod === 'morning')     return [8, 12];
-  if (tod === 'afternoon')   return [12, 17];
-  if (tod === 'evening')     return [17, 23];
+  // DB stores time_of_day as {"type":"evening"} (object) — normalise to plain string.
+  const val = (tod && typeof tod === 'object' && tod.type) ? tod.type : tod;
+  if (!val || val === 'any') return [8, 23];
+  if (val === 'morning')     return [8, 12];
+  if (val === 'afternoon')   return [12, 17];
+  if (val === 'evening')     return [17, 23];
   return [8, 23];
 }
 
