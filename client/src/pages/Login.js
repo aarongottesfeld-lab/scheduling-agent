@@ -259,6 +259,23 @@ function LandingPage() {
         <AuthButton />
         <p className="form-hint" style={{ marginTop: 8, textAlign: 'center' }}>After signing in, you can connect Apple Calendar and additional Google calendars from your profile settings.</p>
         <PrivacyNote />
+        <div style={{
+          marginTop: 32,
+          paddingTop: 16,
+          borderTop: '1px solid rgba(255,255,255,0.08)',
+          textAlign: 'center',
+        }}>
+          <a
+            href="/help"
+            style={{
+              fontSize: '0.8rem',
+              color: 'rgba(255,255,255,0.4)',
+              textDecoration: 'none',
+            }}
+          >
+            How it works · Help & FAQ
+          </a>
+        </div>
         <div className="lp-scroll-hint" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M8 3v10M4 9l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -301,6 +318,23 @@ function LandingPage() {
           <AuthButton />
           <p className="form-hint" style={{ marginTop: 8, textAlign: 'center' }}>After signing in, you can connect Apple Calendar and additional Google calendars from your profile settings.</p>
           <PrivacyNote />
+          <div style={{
+            marginTop: 32,
+            paddingTop: 16,
+            borderTop: '1px solid rgba(255,255,255,0.08)',
+            textAlign: 'center',
+          }}>
+            <a
+              href="/help"
+              style={{
+                fontSize: '0.8rem',
+                color: 'rgba(255,255,255,0.4)',
+                textDecoration: 'none',
+              }}
+            >
+              How it works · Help & FAQ
+            </a>
+          </div>
         </div>
       </section>
 
