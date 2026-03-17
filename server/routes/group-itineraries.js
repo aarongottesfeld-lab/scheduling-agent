@@ -199,6 +199,29 @@ function formatTime12h(t) { // '14:00' → '2:00 PM'
 }
 
 /**
+ * Split blocks whose timeEnd < timeStart (midnight-crossing) into two entries:
+ *   { date: D, timeStart: '17:00', timeEnd: '01:00' }
+ * becomes:
+ *   { date: D,   timeStart: '17:00', timeEnd: '23:59' }
+ *   { date: D+1, timeStart: '00:00', timeEnd: '01:00' }
+ */
+function splitMidnightBlocks(blocks) {
+  const out = [];
+  for (const b of blocks) {
+    if (b.timeStart && b.timeEnd && b.timeEnd < b.timeStart) {
+      out.push({ ...b, timeEnd: '23:59' });
+      const d = new Date(b.date + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      const nextDate = d.toISOString().slice(0, 10);
+      out.push({ ...b, date: nextDate, timeStart: '00:00' });
+    } else {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
+/**
  * Build the EXCLUDED WINDOWS block for the Claude prompt.
  * Returns empty string when blocks is empty — no injection occurs.
  * Handles both full-day blocks and specific time ranges.
@@ -443,7 +466,7 @@ async function fetchGroupHistory(groupId, supabase, limit = 3) {
  * @param {object} sessionStore - { getSessionBySupabaseId }
  * @returns {object[]} suggestions array, ready for DB write
  */
-async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '', priorityEventBlock = '' } = {}) {
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '', priorityEventBlock = '', confirmedOrganizerConflict = false } = {}) {
   const start = itin.date_range_start;
   const end   = itin.date_range_end;
   const startISO = new Date(start + 'T00:00:00').toISOString();
@@ -471,16 +494,30 @@ async function generateGroupSuggestions(itin, members, organizerId, supabase, se
     allBusySlots, start, end, itin.time_of_day, 20, 0, durationMinutes
   ).filter(w => new Date(w.start).getTime() >= windowFloorMs);
 
-  // If strict-all-members yields no windows, fall back to organizer-only availability
-  // so generation doesn't fail entirely — this mirrors the confirmedOrganizerConflict
-  // path in schedule.js. Log the fallback so it's observable.
+  // If strict-all-members yields no windows, the organizer may have a scheduling conflict.
+  // Mirror the confirmedOrganizerConflict flow from schedule.js:
+  //   1. Compute organizer-only windows to check if it's the organizer who's blocked.
+  //   2. If organizer-only windows exist but all-member windows don't, and the organizer
+  //      hasn't confirmed, signal needsConfirmation so the UI can prompt.
+  //   3. If organizer confirmed, proceed with organizer-only windows.
   if (freeWindows.length === 0) {
-    console.warn('[group-itineraries] No shared-all windows found; falling back to organizer-only windows');
+    console.warn('[group-itineraries] No shared-all windows found; checking organizer-only windows');
     const organizerIdx  = members.findIndex(m => m.id === organizerId);
     const organizerBusy = organizerIdx >= 0 ? allBusySlots[organizerIdx] : [];
-    freeWindows = findFreeWindowsForGroup(
+    const organizerOnlyWindows = findFreeWindowsForGroup(
       [organizerBusy], start, end, itin.time_of_day, 20, 0, durationMinutes
     ).filter(w => new Date(w.start).getTime() >= windowFloorMs);
+
+    if (organizerOnlyWindows.length === 0) {
+      // Everyone is blocked — no windows at all. Return empty so caller can handle.
+      // (Fall through with empty freeWindows — Claude will get no windows.)
+    } else if (!confirmedOrganizerConflict) {
+      // Organizer has conflicts but other members may have time — ask for confirmation.
+      return { needsConfirmation: true };
+    } else {
+      // Organizer confirmed override — use organizer-only windows.
+      freeWindows = organizerOnlyWindows;
+    }
   }
 
   // Derive geo context for live events and activity venues.
@@ -631,6 +668,47 @@ ${JSON.stringify(
   const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
   suggestions  = (parsed.suggestions || []).map(s => ({ ...s, id: randomUUID() }));
 
+  // ── Post-generation window filter ───────────────────────────────────────
+  // Validate Claude's suggestions against computed free windows.
+  // Claude occasionally picks times outside the provided window list.
+  // Drop any suggestion whose date+time doesn't overlap with at least one free window.
+  if (freeWindows.length > 0) {
+    const suggestionsBeforeWindowFilter = suggestions.slice();
+    suggestions = suggestions.filter(s => {
+      if (!s.date || !s.time) return true; // can't validate, keep it
+      const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (!match) return true;
+      let h = parseInt(match[1]);
+      const min = parseInt(match[2]);
+      const ampm = match[3].toUpperCase();
+      if (ampm === 'PM' && h !== 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      const [sy, sm, sd] = s.date.split('-').map(Number);
+      const utcStart = new Date(Date.UTC(sy, sm - 1, sd, h, min, 0));
+      const durMs    = (s.durationMinutes || durationMinutes) * 60000;
+      const utcEnd   = new Date(utcStart.getTime() + durMs);
+      const inWindow = freeWindows.some(w =>
+        utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+      );
+      if (!inWindow) {
+        console.warn(`[group-itineraries] Dropping hallucinated suggestion: ${s.date} ${s.time} (UTC ${utcStart.toISOString()})`);
+      }
+      return inWindow;
+    });
+
+    // Backfill if filter dropped us below 3 (same strategy as schedule.js).
+    if (suggestions.length < 3 && suggestionsBeforeWindowFilter.length > suggestions.length) {
+      const keptTitles = new Set(suggestions.map(s => s.title));
+      const dropped = suggestionsBeforeWindowFilter.filter(s => !keptTitles.has(s.title));
+      for (const fb of dropped) {
+        if (suggestions.length >= 3) break;
+        console.warn(`[group-itineraries] Backfilling window-filtered suggestion to reach 3: ${fb.date} ${fb.time}`);
+        suggestions.push(fb);
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Enrich venues via Google Places. Best-effort.
   try {
     suggestions = await enrichVenues(suggestions, cityCtx);
@@ -694,21 +772,24 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const VALID_NUDGE_HOURS    = new Set([24, 48, 72, 168]);
 
     // manual_busy_blocks: array of { date: 'YYYY-MM-DD', label?: string }. Cap at 20 entries.
-    const manualBusyBlocks = Array.isArray(rawBusyBlocks)
-      ? rawBusyBlocks
-          .slice(0, 20)
-          .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
-          .map(b => {
-            const entry = { date: b.date };
-            if (typeof b.label === 'string' && b.label.trim())
-              entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
-            if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
-              entry.timeStart = b.timeStart;
-            if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
-              entry.timeEnd = b.timeEnd;
-            return entry;
-          })
-      : [];
+    // Midnight-crossing blocks (timeEnd < timeStart) are split into two date entries.
+    const manualBusyBlocks = splitMidnightBlocks(
+      Array.isArray(rawBusyBlocks)
+        ? rawBusyBlocks
+            .slice(0, 20)
+            .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
+            .map(b => {
+              const entry = { date: b.date };
+              if (typeof b.label === 'string' && b.label.trim())
+                entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
+              if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
+                entry.timeStart = b.timeStart;
+              if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
+                entry.timeEnd = b.timeEnd;
+              return entry;
+            })
+        : []
+    );
 
     const travelMode       = VALID_TRAVEL_MODES.has(rawTravelMode)   ? rawTravelMode  : 'local';
     const locationPref     = VALID_LOCATION_PREFS.has(rawLocationPref) ? rawLocationPref : 'system_choice';
@@ -850,11 +931,22 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       : '';
     // ─────────────────────────────────────────────────────────────────────
 
+    const confirmedOrganizerConflict = !!req.body.confirmedOrganizerConflict;
+
     let suggestions;
     try {
-      suggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+      const result = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
         priorityEventBlock: groupPriorityEventBlock,
+        confirmedOrganizerConflict,
       });
+
+      // If generateGroupSuggestions returns { needsConfirmation: true }, the organizer
+      // is fully blocked. Signal the client to prompt for confirmation.
+      if (result && result.needsConfirmation) {
+        return res.status(200).json({ needsConfirmation: true });
+      }
+
+      suggestions = result;
     } catch (e) {
       console.error('[group-itineraries] generateGroupSuggestions failed:', e.message);
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
@@ -1316,14 +1408,22 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     let newSuggestions;
     try {
-      newSuggestions = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+      const rerollResult = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
         rerollType,
         existingSuggestions,
         singleCard:         isSingleCard,
         targetSuggestion:   targetSuggestion,
         contextPrompt:      rerollContextPrompt,
         priorityEventBlock: rerollGroupPriorityEventBlock,
+        confirmedOrganizerConflict: true, // rerolls auto-confirm — organizer already accepted conflict on initial suggest
       });
+
+      // needsConfirmation should not happen on rerolls (auto-confirmed above), but handle gracefully.
+      if (rerollResult && rerollResult.needsConfirmation) {
+        return res.status(200).json({ needsConfirmation: true });
+      }
+
+      newSuggestions = rerollResult;
     } catch (e) {
       console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
       return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });

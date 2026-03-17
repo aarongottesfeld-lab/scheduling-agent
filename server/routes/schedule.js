@@ -458,6 +458,31 @@ function formatTime12h(t) { // '14:00' → '2:00 PM'
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
 
+/**
+ * Split blocks whose timeEnd < timeStart (midnight-crossing) into two entries:
+ *   { date: D, timeStart: '17:00', timeEnd: '01:00' }
+ * becomes:
+ *   { date: D,   timeStart: '17:00', timeEnd: '23:59' }
+ *   { date: D+1, timeStart: '00:00', timeEnd: '01:00' }
+ */
+function splitMidnightBlocks(blocks) {
+  const out = [];
+  for (const b of blocks) {
+    if (b.timeStart && b.timeEnd && b.timeEnd < b.timeStart) {
+      // First half: original date until end of day
+      out.push({ ...b, timeEnd: '23:59' });
+      // Second half: next day from midnight until original end time
+      const d = new Date(b.date + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      const nextDate = d.toISOString().slice(0, 10);
+      out.push({ ...b, date: nextDate, timeStart: '00:00' });
+    } else {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
 function buildExcludedWindowsBlock(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';
   const lines = blocks.map(b => {
@@ -826,21 +851,24 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       ? rawDestination.trim().slice(0, 100) || null
       : null;
     // manual_busy_blocks: array of { date: 'YYYY-MM-DD', label?: string }. Cap at 20 entries.
-    const manualBusyBlocks = Array.isArray(rawBusyBlocks)
-      ? rawBusyBlocks
-          .slice(0, 20)
-          .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
-          .map(b => {
-            const entry = { date: b.date };
-            if (typeof b.label === 'string' && b.label.trim())
-              entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
-            if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
-              entry.timeStart = b.timeStart;
-            if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
-              entry.timeEnd = b.timeEnd;
-            return entry;
-          })
-      : [];
+    // Midnight-crossing blocks (timeEnd < timeStart) are split into two date entries.
+    const manualBusyBlocks = splitMidnightBlocks(
+      Array.isArray(rawBusyBlocks)
+        ? rawBusyBlocks
+            .slice(0, 20)
+            .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
+            .map(b => {
+              const entry = { date: b.date };
+              if (typeof b.label === 'string' && b.label.trim())
+                entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
+              if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
+                entry.timeStart = b.timeStart;
+              if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
+                entry.timeEnd = b.timeEnd;
+              return entry;
+            })
+        : []
+    );
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required.' });
 
     // Validate UUID format before any DB queries — mirrors the check in friends.js.
