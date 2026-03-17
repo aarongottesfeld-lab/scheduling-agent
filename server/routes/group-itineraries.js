@@ -68,8 +68,13 @@ function fmtWindowDate(d) {
 }
 
 function timeOfDayHours(tod) {
-  // DB stores time_of_day as {"type":"evening"} (object) — normalise to plain string.
-  const val = (tod && typeof tod === 'object' && tod.type) ? tod.type : tod;
+  // DB column is text — client sends {type:"evening"} which lands as the JSON
+  // string '{"type":"evening"}'. Parse string→object, then extract .type.
+  let parsed = tod;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { /* use raw string */ }
+  }
+  const val = (parsed && typeof parsed === 'object' && parsed.type) ? parsed.type : parsed;
   if (!val || val === 'any') return [8, 23];
   if (val === 'morning')     return [8, 12];
   if (val === 'afternoon')   return [12, 17];
