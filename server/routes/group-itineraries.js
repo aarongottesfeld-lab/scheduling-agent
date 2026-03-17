@@ -333,6 +333,7 @@ function buildGroupSuggestPrompt({ groupName, groupDescription, members, freeWin
 
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for a group of ${members.length} people.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
+ADDRESS ACCURACY (strictly enforced): Every venue address must be real and correct. Do NOT fabricate or guess street addresses — if you are not confident a venue exists at a specific address, use only the venue name and neighborhood without a numbered street address. In New York City, be precise about boroughs: Manhattan venues must have Manhattan/New York addresses, Brooklyn venues must have Brooklyn addresses. Do NOT place a Manhattan venue at a Brooklyn address or vice versa.
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
 GROUP: ${groupName}${groupDescription ? `\nGROUP CONTEXT: ${groupDescription}` : ''}
 GROUP SIZE: ${members.length} people — suggest venues with adequate capacity for this group size. Reserve-friendly spots are preferred over walk-in-only.

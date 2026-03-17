@@ -627,6 +627,7 @@ function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTrave
 
   return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
 ${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
+ADDRESS ACCURACY (strictly enforced): Every venue address must be real and correct. Do NOT fabricate or guess street addresses — if you are not confident a venue exists at a specific address, use only the venue name and neighborhood without a numbered street address. In New York City, be precise about boroughs: Manhattan venues must have Manhattan/New York addresses, Brooklyn venues must have Brooklyn addresses. Do NOT place a Manhattan venue at a Brooklyn address or vice versa.
 ${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
 
 ${contextPrompt
