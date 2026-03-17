@@ -12,6 +12,8 @@ import NavBar from '../components/NavBar';
 import { getUserName, isOnboardingCompleted } from '../utils/auth';
 import client from '../utils/client';
 import { getInitials } from '../utils/formatting';
+import { registerPushToken } from '../utils/api';
+import { messaging, getToken } from '../firebase';
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -222,6 +224,42 @@ export default function Home() {
   const [sortBy,  setSortBy]  = useState(() => localStorage.getItem('rendezvous_home_sort') || 'date');
   const [sortDir, setSortDir] = useState(() => localStorage.getItem('rendezvous_home_sort_dir') || SORT_DEFAULT_DIR[localStorage.getItem('rendezvous_home_sort') || 'date']);
 
+  // ── Push re-prompt banner (Item 5) ──────────────────────────────────────
+  const [showPushBanner, setShowPushBanner] = useState(false);
+  useEffect(() => {
+    if (!isOnboardingCompleted()) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+    if (localStorage.getItem('rendezvous_push_banner_dismissed')) return;
+    const count = parseInt(sessionStorage.getItem('rendezvous_push_banner_shown_count') || '0', 10);
+    if (count >= 3) return;
+    sessionStorage.setItem('rendezvous_push_banner_shown_count', String(count + 1));
+    setShowPushBanner(true);
+  }, []);
+
+  async function handlePushBannerEnable() {
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        try {
+          const token = await getToken(messaging, {
+            vapidKey: process.env.REACT_APP_FIREBASE_VAPID_KEY,
+            serviceWorkerRegistration: await navigator.serviceWorker.register('/firebase-messaging-sw.js'),
+          });
+          if (token) await registerPushToken(token);
+        } catch (err) {
+          console.warn('[push] token registration failed:', err.message);
+        }
+      }
+    } catch { /* non-fatal */ }
+    localStorage.setItem('rendezvous_push_banner_dismissed', '1');
+    setShowPushBanner(false);
+  }
+
+  function dismissPushBanner() {
+    localStorage.setItem('rendezvous_push_banner_dismissed', '1');
+    setShowPushBanner(false);
+  }
+
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -334,6 +372,20 @@ export default function Home() {
   return (
     <>
       <NavBar />
+      {showPushBanner && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 10, padding: '8px 16px',
+          background: 'var(--surface-2)', borderBottom: '1px solid var(--border)',
+          fontSize: '0.85rem', color: 'var(--text-2)',
+        }}>
+          <span>Enable notifications to get real-time updates from friends.</span>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button className="btn btn--primary btn--sm" onClick={handlePushBannerEnable}>Enable</button>
+            <button className="btn btn--ghost btn--sm" onClick={dismissPushBanner}>✕</button>
+          </div>
+        </div>
+      )}
       <main className="page">
         <div className="container">
           <div style={{ marginBottom: 28 }}>

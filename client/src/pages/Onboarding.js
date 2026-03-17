@@ -1,10 +1,19 @@
-// Onboarding.js — 4-step new-user onboarding flow
-// Step 1: Profile setup (name, username, activities, dietary, mobility, bio)
-// Step 2: Location (required to proceed) + timezone
-// Step 3: Notifications (opt-in, never blocks progression)
-// Step 4: Calendar connections (secondary calendars, optional)
+// Onboarding.js — Platform-aware onboarding flow
+// Step order varies by platform (see detectPlatform). Push is skipped on iOS
+// Safari browser (useless without PWA); an "Add to Home Screen" step is
+// injected instead. Android Chrome gets both push + A2HS (5 steps).
+//
+// Resume: on mount the furthest-incomplete step is detected from /users/me so
+// users who dropped off don't re-enter saved data.
+//
 // Privacy: only boolean/count properties sent to PostHog — no PII, no location string
-import React, { useEffect, useState, useCallback } from 'react';
+//
+// TODO [username-availability]: Add async username availability check on blur
+// in Step 1 — debounced GET /users/check-username?username=foo, show inline
+// error if taken. Needs a new server route.
+// TODO [step-transitions]: Add CSS fade/slide transition between steps for a
+// less abrupt step change. Client-only polish pass.
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import posthog from 'posthog-js';
 import PillInput from '../components/PillInput';
@@ -20,6 +29,27 @@ import {
   connectAppleCalendar,
 } from '../utils/api';
 import { ACTIVITY_SUGGESTIONS, DIETARY_OPTIONS, MOBILITY_OPTIONS } from '../utils/profileOptions';
+
+// ── Platform detection ──────────────────────────────────────────────────────
+// Called once on mount; result stored in a ref (never changes mid-session).
+function detectPlatform() {
+  const ua = navigator.userAgent || '';
+  if (/iphone|ipad|ipod/i.test(ua)) {
+    if (window.navigator.standalone) return 'ios-pwa';
+    if (/safari/i.test(ua) && !/chrome|crios|fxios/i.test(ua)) return 'ios-safari-browser';
+  }
+  if (/android/i.test(ua) && /chrome/i.test(ua) && !/edg/i.test(ua)) return 'android-chrome';
+  return 'other';
+}
+
+// ── Step sequences by platform ──────────────────────────────────────────────
+// Each value is an ordered list of logical step keys.
+const STEP_SEQUENCES = {
+  'ios-safari-browser': ['profile', 'location', 'a2hs', 'calendar'],
+  'ios-pwa':            ['profile', 'location', 'push', 'calendar'],
+  'android-chrome':     ['profile', 'location', 'push', 'a2hs', 'calendar'],
+  'other':              ['profile', 'location', 'push', 'calendar'],
+};
 
 const TIMEZONES = [
   { label: '─── United States ───', value: '', disabled: true },
@@ -54,10 +84,10 @@ function validateUsername(v) {
 }
 
 // ── Step indicator ────────────────────────────────────────────────────────────
-function StepIndicator({ step }) {
+function StepIndicator({ step, totalSteps = 4 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 28 }}>
-      {[1, 2, 3, 4].map(s => (
+      {Array.from({ length: totalSteps }, (_, i) => i + 1).map(s => (
         <div
           key={s}
           style={{
@@ -74,7 +104,7 @@ function StepIndicator({ step }) {
         />
       ))}
       <span style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginLeft: 4 }}>
-        Step {step} of 4
+        Step {step} of {totalSteps}
       </span>
     </div>
   );
@@ -88,6 +118,17 @@ export default function Onboarding() {
   useEffect(() => {
     if (!isAuthenticated()) navigate('/', { replace: true });
   }, [navigate]);
+
+  // Platform detection — stable for the session
+  const platformRef = useRef(detectPlatform());
+  const platform = platformRef.current;
+  const stepSequence = STEP_SEQUENCES[platform];
+  const totalSteps = stepSequence.length;
+
+  // Map from visual step number (1-based) to logical step key
+  const stepKeyAt = (n) => stepSequence[n - 1];
+  // Map from logical key to visual step number
+  const stepNumberFor = (key) => stepSequence.indexOf(key) + 1;
 
   const [step, setStep] = useState(1);
 
@@ -110,13 +151,17 @@ export default function Onboarding() {
   const [savingLoc,        setSavingLoc]        = useState(false);
   const [saveLocErr,       setSaveLocErr]       = useState('');
 
-  // ── Step 3 state ──────────────────────────────────────────────────────────
+  // ── Push step state ───────────────────────────────────────────────────────
   // 'idle' | 'granted' | 'denied'
   const [notifStatus,  setNotifStatus]  = useState('idle');
   const [notifGranted, setNotifGranted] = useState(false);
   const [completing,   setCompleting]   = useState(false);
 
-  // ── Step 4 state ──────────────────────────────────────────────────────────
+  // ── A2HS step state ───────────────────────────────────────────────────────
+  const deferredPromptRef = useRef(null);
+  const [a2hsPromptReady, setA2hsPromptReady] = useState(false);
+
+  // ── Calendar step state ───────────────────────────────────────────────────
   const [connections,        setConnections]        = useState([]);
   const [connectionLoading,  setConnectionLoading]  = useState(null);
   const [connectionError,    setConnectionError]    = useState('');
@@ -128,11 +173,30 @@ export default function Onboarding() {
   const [appleMessage,       setAppleMessage]       = useState('');
   const [appleIsError,       setAppleIsError]       = useState(false);
 
-  // Pre-fill form from existing profile on mount
+  // Listen for Android beforeinstallprompt
+  useEffect(() => {
+    if (platform !== 'android-chrome') return;
+    function handler(e) {
+      e.preventDefault();
+      deferredPromptRef.current = e;
+      setA2hsPromptReady(true);
+    }
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, [platform]);
+
+  // Pre-fill form from existing profile + resume from last incomplete step
   useEffect(() => {
     client.get('/users/me')
       .then(res => {
         const d = res.data;
+
+        // If onboarding already completed, go straight to home
+        if (d.onboarding_completed_at) {
+          navigate('/home', { replace: true });
+          return;
+        }
+
         setForm({
           full_name:  d.full_name  || '',
           username:   d.username   || '',
@@ -143,17 +207,40 @@ export default function Onboarding() {
         });
         setLocation(d.location  || '');
         setTimezone(d.timezone  || '');
-      })
-      .catch(() => {}); // silent — fields stay empty, user fills them in
-  }, []);
 
-  // Load calendar connections when step 4 is reached
+        // Item 4: auto-detect timezone if not already set
+        if (!d.timezone) {
+          try {
+            const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            if (detected) setTimezone(detected);
+          } catch { /* silent */ }
+        }
+
+        // Item 2: resume from furthest incomplete step
+        if (d.location && d.location.trim()) {
+          // Location done → jump to first step after location (push or a2hs)
+          setStep(3);
+        }
+        // Otherwise start at step 1
+      })
+      .catch(() => {
+        // silent — fields stay empty, user fills them in
+        // Still auto-detect timezone
+        try {
+          const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (detected) setTimezone(detected);
+        } catch { /* silent */ }
+      });
+  }, [navigate]);
+
+  // Load calendar connections when the calendar step is reached
+  const calendarStepNum = stepNumberFor('calendar');
   useEffect(() => {
-    if (step !== 4) return;
+    if (step !== calendarStepNum) return;
     getCalendarConnections()
       .then(data => setConnections(data.connections || []))
       .catch(() => {}); // fail silently — step renders regardless
-  }, [step]);
+  }, [step, calendarStepNum]);
 
   // Dismiss the two-click remove confirmation when the user clicks outside
   useEffect(() => {
@@ -174,6 +261,9 @@ export default function Onboarding() {
     });
   }, []);
 
+  // Helper: advance to the next logical step
+  const advanceFrom = (currentStep) => setStep(currentStep + 1);
+
   // ── Step 1: save and advance ──────────────────────────────────────────────
   async function handleStep1Continue(e) {
     e.preventDefault();
@@ -193,7 +283,7 @@ export default function Onboarding() {
         location,
         timezone,
       });
-      setStep(2);
+      advanceFrom(step);
     } catch (err) {
       setSaveErr(err.response?.data?.error || err.message || 'Could not save. Try again.');
     } finally {
@@ -246,7 +336,7 @@ export default function Onboarding() {
     setSaveLocErr('');
     try {
       await client.patch('/users/location', { location: location.trim(), timezone });
-      setStep(3);
+      advanceFrom(step);
     } catch (err) {
       setSaveLocErr(err.response?.data?.error || err.message || 'Could not save. Try again.');
     } finally {
@@ -278,7 +368,8 @@ export default function Onboarding() {
         console.warn('[push] token registration failed:', err.message);
       }
       // Brief pause so the user sees the success state before advancing
-      setTimeout(() => { setNotifGranted(true); setStep(4); }, 1200);
+      const pushStepNum = stepNumberFor('push');
+      setTimeout(() => { setNotifGranted(true); advanceFrom(pushStepNum); }, 1200);
     } else {
       setNotifStatus('denied');
     }
@@ -375,11 +466,28 @@ export default function Onboarding() {
     }
   }
 
-  // ── Step 1 render ─────────────────────────────────────────────────────────
-  if (step === 1) return (
+  // ── Current logical step key ──────────────────────────────────────────────
+  const currentKey = stepKeyAt(step);
+
+  // ── A2HS auto-advance ────────────────────────────────────────────────────
+  // Must be placed before any early returns so hooks are called unconditionally.
+  const a2hsShouldAutoAdvance = currentKey === 'a2hs' && (
+    (platform === 'android-chrome' && !a2hsPromptReady) ||
+    (platform === 'ios-safari-browser' && !!localStorage.getItem('rendezvous_a2hs_dismissed'))
+  );
+  useEffect(() => {
+    if (!a2hsShouldAutoAdvance) return;
+    localStorage.setItem('rendezvous_a2hs_dismissed', '1');
+    advanceFrom(step);
+  }, [a2hsShouldAutoAdvance, step]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (a2hsShouldAutoAdvance) return null;
+
+  // ── Step 1 render (profile) ─────────────────────────────────────────────
+  if (currentKey === 'profile') return (
     <main className="page">
       <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
-        <StepIndicator step={step} />
+        <StepIndicator step={step} totalSteps={totalSteps} />
         <h1 className="page-title">Tell us about yourself</h1>
         <p className="page-subtitle" style={{ marginBottom: 28 }}>
           This helps us suggest the right places and activities.
@@ -471,7 +579,7 @@ export default function Onboarding() {
             </button>
             <button
               type="button"
-              onClick={() => setStep(2)}
+              onClick={() => advanceFrom(step)}
               style={{
                 display: 'block', margin: '14px auto 0',
                 background: 'none', border: 'none',
@@ -486,11 +594,11 @@ export default function Onboarding() {
     </main>
   );
 
-  // ── Step 2 render ─────────────────────────────────────────────────────────
-  if (step === 2) return (
+  // ── Step 2 render (location) ──────────────────────────────────────────────
+  if (currentKey === 'location') return (
     <main className="page">
       <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
-        <StepIndicator step={step} />
+        <StepIndicator step={step} totalSteps={totalSteps} />
         <h1 className="page-title">Where are you based?</h1>
         <p className="page-subtitle" style={{ marginBottom: 28 }}>
           Used only to suggest nearby venues. Never shared with other users.
@@ -562,14 +670,109 @@ export default function Onboarding() {
     </main>
   );
 
-  // ── Step 3 render ─────────────────────────────────────────────────────────
-  if (step === 3) return (
+  // ── A2HS render ──────────────────────────────────────────────────────────
+  if (currentKey === 'a2hs') {
+
+    const handleA2hsAdvance = () => {
+      localStorage.setItem('rendezvous_a2hs_dismissed', '1');
+      advanceFrom(step);
+    };
+
+    const handleAndroidInstall = async () => {
+      if (deferredPromptRef.current) {
+        deferredPromptRef.current.prompt();
+        await deferredPromptRef.current.userChoice;
+      }
+      handleA2hsAdvance();
+    };
+
+    if (platform === 'android-chrome') {
+      return (
+        <main className="page">
+          <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
+            <StepIndicator step={step} totalSteps={totalSteps} />
+            <h1 className="page-title">Add Rendezvous to your home screen</h1>
+            <p className="page-subtitle" style={{ marginBottom: 28 }}>
+              For quick access, add Rendezvous to your home screen.
+            </p>
+            <button
+              className="btn btn--primary btn--lg"
+              onClick={handleAndroidInstall}
+              style={{ width: '100%' }}
+            >
+              Add to home screen
+            </button>
+            <button
+              type="button"
+              onClick={handleA2hsAdvance}
+              style={{
+                display: 'block', margin: '14px auto 0',
+                background: 'none', border: 'none',
+                color: 'var(--text-3)', fontSize: '0.88rem', cursor: 'pointer',
+              }}
+            >
+              Skip
+            </button>
+          </div>
+        </main>
+      );
+    }
+
+    // ios-safari-browser
+    return (
+      <main className="page">
+        <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
+          <StepIndicator step={step} totalSteps={totalSteps} />
+          <h1 className="page-title">Add Rendezvous to your home screen</h1>
+          <p className="page-subtitle" style={{ marginBottom: 28 }}>
+            For the best experience — and to receive notifications — install Rendezvous on your home screen.
+          </p>
+          <div
+            className="card"
+            style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 12,
+              padding: '16px 20px',
+              marginBottom: 24,
+              fontSize: '0.92rem',
+              color: 'var(--text-2)',
+              lineHeight: 1.6,
+            }}
+          >
+            Tap the share icon (□↑) at the bottom of Safari, then tap <strong>"Add to Home Screen"</strong>.
+          </div>
+          <button
+            className="btn btn--primary btn--lg"
+            onClick={handleA2hsAdvance}
+            style={{ width: '100%' }}
+          >
+            I've added it
+          </button>
+          <button
+            type="button"
+            onClick={handleA2hsAdvance}
+            style={{
+              display: 'block', margin: '14px auto 0',
+              background: 'none', border: 'none',
+              color: 'var(--text-3)', fontSize: '0.88rem', cursor: 'pointer',
+            }}
+          >
+            Skip for now
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Push enablement render ──────────────────────────────────────────────
+  if (currentKey === 'push') return (
     <main className="page">
       <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
-        <StepIndicator step={step} />
+        <StepIndicator step={step} totalSteps={totalSteps} />
         <h1 className="page-title">Stay in the loop</h1>
         <p className="page-subtitle" style={{ marginBottom: 28 }}>
-          We'll only notify you when a friend invites you to a plan or your plan locks in.
+          Get notified when a friend invites you to a plan or your plans lock in. Most users enable this — you'll miss real-time updates without it.
         </p>
 
         <div className="card card-pad" style={{ marginBottom: 24 }}>
@@ -605,11 +808,11 @@ export default function Onboarding() {
         {notifStatus === 'denied' && (
           <>
             <div style={{ padding: '12px 0', color: 'var(--text-2)', fontSize: '0.9rem', textAlign: 'center' }}>
-              No worries — you can enable them later in your browser settings.
+              You can enable notifications later in Settings → Notifications.
             </div>
             <button
               className="btn btn--primary btn--lg"
-              onClick={() => setStep(4)}
+              onClick={() => advanceFrom(step)}
               style={{ width: '100%' }}
             >
               Continue anyway
@@ -620,7 +823,13 @@ export default function Onboarding() {
     </main>
   );
 
-  // ── Step 4 render ─────────────────────────────────────────────────────────
+  // ── Calendar step render ─────────────────────────────────────────────────
+  // Item 3: show connected Google email in subtitle
+  const loginConnection = connections.find(c => c.is_login_account) || connections.find(c => c.is_primary);
+  const calendarSubtitle = loginConnection?.account_email
+    ? `Your Google Calendar is connected as ${loginConnection.account_email}. Add a work calendar, Apple Calendar, or another Google account to make sure your availability is always accurate.`
+    : 'Your Google Calendar is already connected. Add a work calendar, Apple Calendar, or another Google account to make sure your availability is always accurate.';
+
   const calendarCard = (
     <div className="card card-pad" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -741,11 +950,10 @@ export default function Onboarding() {
   return (
     <main className="page">
       <div className="container container--sm" style={{ paddingBottom: 40, paddingTop: 32 }}>
-        <StepIndicator step={step} />
+        <StepIndicator step={step} totalSteps={totalSteps} />
         <h1 className="page-title">Your calendars</h1>
         <p className="page-subtitle" style={{ marginBottom: 28 }}>
-          Your Google Calendar is already connected. Add a work calendar, Apple Calendar, or another
-          Google account to make sure your availability is always accurate.
+          {calendarSubtitle}
         </p>
 
         {calendarCard}
