@@ -31,3 +31,13 @@ supabase/.temp/
 
 # Private project notes — never commit
 DEFERRED.md
+README.internal.md
+STATUS.md
+ROADMAP.md
+SPRINT_SPECS.md
+CLAUDE_CODE_PROMPTS.md
+MONETIZATION.md
+GROUP_MODE_SCHEMA.md
+BETA_TESTING.md
+audit-*.md
+competitive/

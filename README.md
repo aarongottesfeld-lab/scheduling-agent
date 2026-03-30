@@ -1,62 +1,91 @@
-# Rendezvous — scheduling-agent
+# Rendezvous
 
-Full-stack AI scheduling app. React/CRA frontend, Express 5 backend, Supabase + Postgres, Google OAuth, Google Maps, Anthropic Claude.
+**AI-powered scheduling that finds when you're free and plans what to do.**
 
-**Production:** https://rendezvous-gamma.vercel.app
-**Supabase:** bgeqxnrwrphbzenfrbdb (us-east-1)
-**Vercel project:** prj_ik4LGx6e3UScndzVsIj7ul9BWglr, team: team_CzvVldNaVWk7WAkpXX99eu9K
-**GitHub:** aarongottesfeld-lab/scheduling-agent (branch: main)
+[Try it live](https://rendezvous-gamma.vercel.app/)
 
----
-
-## Reference file map
-
-Load these at the start of any planning or architecture session. Each file's scope is described below so you know which ones are relevant to a given question.
-
-| File | Purpose |
-|---|---|
-| `ROADMAP.md` | Full feature backlog, prioritization, audit schedule, release gating. Start here for any roadmap or sequencing question. |
-| `SPRINT_SPECS.md` | Deep-dive design specs for each feature sprint — prompt engineering, venue quality, live events, activity venues, group scheduling, location/travel mode, timezone, cultural moment scheduling. Reference when implementing a specific feature. |
-| `BETA_TESTING.md` | Beta plan, tester management process, feedback form links, bug bash format, PostHog analysis approach. |
-| `GROUP_MODE_SCHEMA.md` | Full proposed DB schema for group mode — tables, RLS, triggers, indexes, design decisions. Reference when touching group mode DB. |
-| `CLAUDE_CODE_PROMPTS.md` | Saved Claude Code prompts ready to execute for upcoming roadmap items. Each prompt is self-contained with parity instructions. |
-| `MONETIZATION.md` | Pricing model thinking. Intentionally separate from the build — reference only when upkeep costs make revenue a real consideration. |
-| `competitive/MOAT.md` | Competitive positioning and long-term moat thinking. Intentionally separate from the build. |
-| `competitive/` | Folder for all competitive and positioning docs. Currently contains MOAT.md. |
-| `audit-2026-03-12.md` | Audit 2 results — security/privacy/DR findings, severity ratings, and resolution status. |
-| `STATUS.md` | Session-by-session dev notes and completed work log. Updated at the end of every significant session alongside a Google Calendar save state. ROADMAP.md takes precedence if the two conflict. |
+Rendezvous connects to your Google Calendar, finds mutual availability between you and your friends, and generates personalized itinerary suggestions using Claude. It handles everything from a casual dinner for two to a group outing with quorum-based voting.
 
 ---
 
-## Key identifiers (for new sessions)
+## What it does
+
+- **Calendar sync** — connects to Google Calendar (with support for multiple accounts) and Apple Calendar (via CalDAV) to read busy/free times, then writes confirmed events back
+- **AI itinerary generation** — Claude generates venue-specific suggestions tailored to each person's preferences, dietary restrictions, mobility needs, location, and activity interests
+- **Venue enrichment** — Google Maps integration validates and enriches venue suggestions with real addresses, ratings, and hours
+- **Group scheduling** — groups with invite flows, quorum-based voting on suggestions, and conflict detection across all members' calendars
+- **Smart rerolls** — when a suggestion doesn't land, the reroll system classifies intent (different vibe, different area, different time, etc.) and regenerates accordingly
+- **Push notifications** — Firebase Cloud Messaging for itinerary updates, friend requests, group invites, and nudges
+- **MCP server** — a standalone Model Context Protocol server exposing scheduling tools for use in Claude Desktop and other MCP clients
+
+## Architecture
 
 ```
-Project root:   ~/Documents/scheduling-agent
-Production:     https://rendezvous-gamma.vercel.app
-Supabase:       bgeqxnrwrphbzenfrbdb (us-east-1)
-Vercel project: prj_ik4LGx6e3UScndzVsIj7ul9BWglr
-Vercel team:    team_CzvVldNaVWk7WAkpXX99eu9K
-GitHub:         aarongottesfeld-lab/scheduling-agent (main)
+client/          React 19 SPA (Create React App)
+server/          Express 5 API (Node.js, CommonJS)
+mcp/             MCP server (OAuth 2.1, standalone deployment)
+supabase/        Postgres migrations and RLS policies
 ```
 
-## Dev test users (Supabase — use dev switcher at localhost:3001/dev/users)
+The app deploys as a single Vercel project. The React frontend and Express backend share a domain — `vercel.json` routes `/api/*` to the serverless function and everything else to the SPA. The server runs identically in local dev (`node server/index.js`) and in Vercel's serverless runtime.
 
-| Username | UUID | Location | Vibe |
-|---|---|---|---|
-| jamiec | 11111111-1111-1111-1111-111111111111 | Upper West Side | Sports, golf, rooftop bars |
-| mrivera | 22222222-2222-2222-2222-222222222222 | Brooklyn Heights | Broadway, jazz, fine dining, vegetarian |
-| tkim | 33333333-3333-3333-3333-333333333333 | Midtown East | Tennis, golf, concerts |
-| alexp | 44444444-4444-4444-4444-444444444444 | Astoria | Mets, escape rooms, gluten-free |
+### Key technical decisions
 
-Aaron's Supabase UUID: `b522125b-2698-4c74-bc24-a441754f1a12`
+- **HTTP-only cookie sessions** backed by a Supabase `sessions` table (no JWTs, no in-memory state, serverless-safe)
+- **Row-level security** on all Supabase tables — the server uses a service role key, but every table has RLS policies so even direct DB access is scoped to the authenticated user
+- **Claude prompt engineering** for itinerary generation — structured system prompts with user context injection, venue validation rules, and cultural moment awareness
+- **Rate limiting** with per-user daily caps on AI generation endpoints
+- **Atomic database operations** via Postgres RPCs for race-prone flows (voting, calendar connection switching)
 
-## AI model config
-- Dev (localhost): `claude-haiku-4-5-20251001`
-- Prod (Vercel): `claude-sonnet-4-5-20250929`
+## Tech stack
 
-## Save state system
-Project state is saved using two parallel mechanisms that should stay in sync:
-1. **Google Calendar** — all-day event titled `Rendezvous Save State — [description]`. Contains git SHA, completed work, and what's next. Used as mobile fallback when STATUS.md can't be updated directly.
-2. **STATUS.md** — append an entry with the same info at the end of each session.
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 19, React Router 7, Axios, PostHog, Firebase |
+| Backend | Express 5, Node.js |
+| AI | Anthropic Claude (Haiku for dev, Sonnet for prod) |
+| Database | Supabase (Postgres), with RLS and stored procedures |
+| Auth | Google OAuth 2.0 (Calendar + profile scopes) |
+| Maps | Google Maps Platform (Places, Geocoding) |
+| Notifications | Firebase Cloud Messaging |
+| MCP | Custom OAuth 2.1 server with tool endpoints |
+| Deployment | Vercel (serverless) |
+| Analytics | PostHog |
 
-At the start of each session, check GCal for save states newer than the last STATUS.md entry and backfill before proceeding. If the two are out of sync, GCal is the fallback source of truth.
+## MCP server
+
+The `mcp/` directory contains a standalone MCP server that exposes Rendezvous functionality as tools for AI assistants. It supports:
+
+- Checking availability and finding free times
+- Generating and managing itineraries
+- Friend and group management
+- Full OAuth 2.1 flow for third-party MCP clients
+
+See [`mcp/README.md`](mcp/README.md) for setup and usage.
+
+## Local development
+
+```bash
+# Clone and install
+git clone https://github.com/aarongottesfeld-lab/scheduling-agent.git
+cd scheduling-agent
+cd server && npm install && cd ../client && npm install
+
+# Configure environment
+cp server/.env.example server/.env   # fill in your keys
+cp client/.env.example client/.env   # optional
+
+# Run (two terminals)
+cd server && npm run dev             # Express on :3001
+cd client && npm start               # React on :3000
+```
+
+Required environment variables for the server:
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
+- `ANTHROPIC_API_KEY`
+- `GOOGLE_MAPS_API_KEY`
+
+## License
+
+This project is source-available for portfolio and reference purposes. Not licensed for commercial use or redistribution.
