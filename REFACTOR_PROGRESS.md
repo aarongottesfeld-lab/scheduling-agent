@@ -23,11 +23,22 @@ Started: 2026-04-18
   - [x] Extract `server/utils/availability.js` — DONE (commit 970739c)
     - Exports: timeOfDayHours, findFreeWindows, findFreeWindowsForGroup, fmtWindowDate, formatTime12h, splitMidnightBlocks, fetchBusy, inferDurationMinutes
   - [x] Fix merge_attendee_vote RPC → unified itineraries table — DONE (commit 970739c)
-  - [ ] Extract `server/utils/promptBuilder.js` — agent may have completed, check for file
+  - [x] Extract `server/utils/promptBuilder.js` — DONE (commit e43691b)
     - Should export: RENDEZVOUS_SYSTEM_PROMPT, CLAUDE_MODEL, THEME_FILLER, themeMatchesContextPrompt, classifyIntent, extractVenueName, buildVenueSubstitutionBlock, buildExcludedWindowsBlock, buildAttendeeNotesBlock, deriveGeoContext, buildSuggestPrompt, buildGroupSuggestPrompt, getProfileName, fetchAcceptedPairHistory, and group-specific helpers (fetchGroupHistory, buildGroupAttendeeNotesBlock)
-  - [ ] Update schedule.js to import from extracted utils and reference unified `itineraries` table with mode='pair'
-  - [ ] Update group-itineraries.js table references to unified `itineraries` table with mode='group'
-  - [ ] Merge group route handlers into schedule.js
+  - [x] Update schedule.js to import from extracted utils — DONE (commit 4253e9f)
+    - Removed 767 lines of inline functions, added imports from availability.js and promptBuilder.js
+    - Added mode='pair' to INSERT, itinerary_status transitions to send/decline/lock routes
+    - attendee_busy_notes now writes as jsonb map
+  - [x] Update group-itineraries.js — DONE (commit e43691b + 4253e9f)
+    - All 21 table references changed from group_itineraries to itineraries
+    - mode='group' added to INSERT
+    - Removed 383 lines of inline functions, imports from extracted utils
+  - [x] Update groups.js ghost-vote cleanup to use unified table — DONE (commit 4253e9f)
+  - [ ] Merge group route handlers into schedule.js — REMAINING
+    - group-itineraries.js has ~1428 lines remaining (route handlers + fetchGroupHistory)
+    - Move all app.post/get/patch/delete handlers into schedule.js's scheduleRouter function
+    - Keep route paths as-is for now (client still uses /group-itineraries/* URLs)
+    - OR add new /schedule/* equivalents and keep old paths as aliases during transition
   - [ ] Delete group-itineraries.js, update server/index.js
 
 - [ ] **Phase 3: MCP tools update**
