@@ -275,7 +275,7 @@ function CommentThread({ itineraryId, suggestionId, isOpen, onToggle }) {
                 <div className="avatar avatar--sm" style={{ width: 22, height: 22, fontSize: '0.65rem' }}>
                   {getInitials(c.author?.full_name || '')}
                 </div>
-                <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text)' }}>
                   {c.author?.full_name || 'Member'}
                 </span>
                 <span style={{ fontSize: '0.72rem', color: 'var(--text-4)' }}>
@@ -1376,7 +1376,7 @@ export default function GroupItineraryView() {
                           {getInitials(name)}
                         </div>
                       )}
-                      <span style={{ flex: 1, fontSize: '0.88rem', fontWeight: 600 }}>
+                      <span style={{ flex: 1, fontSize: '0.88rem', fontWeight: 600, color: 'var(--text)' }}>
                         {name}
                         {entry.is_organizer && (
                           <span style={{ marginLeft: 6, fontSize: '0.72rem', color: 'var(--text-3)', fontWeight: 400 }}>

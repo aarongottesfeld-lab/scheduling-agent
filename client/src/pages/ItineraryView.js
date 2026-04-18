@@ -386,7 +386,7 @@ function SuggestionCard({
 
         {/* Status badges inside the header */}
         {isConfirmed && (
-          <div style={{ marginTop: 8, fontSize: '0.82rem', fontWeight: 700, opacity: .9 }}>✓ Confirmed plan</div>
+          <div style={{ marginTop: 8, fontSize: '0.82rem', fontWeight: 700, opacity: .9, color: 'var(--text)' }}>✓ Confirmed plan</div>
         )}
         {isPicked && !isConfirmed && isOrganizer && (
           <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.85)', background: 'rgba(0,0,0,0.18)', borderRadius: 6, display: 'inline-block', padding: '2px 10px' }}>

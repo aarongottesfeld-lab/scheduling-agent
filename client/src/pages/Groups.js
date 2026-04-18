@@ -94,7 +94,7 @@ export default function Groups() {
           {/* Inline create-group form — shown when "+ Create Group" is tapped */}
           {showCreate && (
             <div className="card" style={{ marginBottom: 24, padding: '16px 20px' }}>
-              <div style={{ fontWeight: 700, marginBottom: 14 }}>New Group</div>
+              <div style={{ fontWeight: 700, marginBottom: 14, color: 'var(--text)' }}>New Group</div>
               {createError && (
                 <div className="alert alert--error" style={{ marginBottom: 12 }}>{createError}</div>
               )}

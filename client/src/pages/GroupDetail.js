@@ -618,7 +618,7 @@ export default function GroupDetail() {
                   )}
 
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text)' }}>
                       {name}{isMe ? ' (you)' : ''}
                     </div>
                     <div style={{ display: 'flex', gap: 5, marginTop: 3, flexWrap: 'wrap' }}>

@@ -394,7 +394,7 @@ export default function NewGroupEvent() {
                         >
                           <div className="avatar avatar--sm">{getInitials(g.name)}</div>
                           <div>
-                            <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>{g.name}</div>
+                            <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text)' }}>{g.name}</div>
                             {g.description && <div style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>{g.description}</div>}
                           </div>
                         </button>
@@ -440,7 +440,7 @@ export default function NewGroupEvent() {
                           {getInitials(name)}
                         </div>
                       )}
-                      <span style={{ flex: 1, fontSize: '0.88rem', fontWeight: 600 }}>{name}</span>
+                      <span style={{ flex: 1, fontSize: '0.88rem', fontWeight: 600, color: 'var(--text)' }}>{name}</span>
                       {/* Allow organizer to remove individuals before submitting */}
                       <button
                         type="button"

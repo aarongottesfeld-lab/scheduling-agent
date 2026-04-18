@@ -336,7 +336,7 @@ export default function NewEvent() {
                         <button key={f.id} type="button" onMouseDown={() => selectFriend(f)}
                           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
                           <div className="avatar avatar--sm">{getInitials(f.name)}</div>
-                          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>{f.name}</span>
+                          <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text)' }}>{f.name}</span>
                           {f.username && <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>@{f.username}</span>}
                         </button>
                       ))}
