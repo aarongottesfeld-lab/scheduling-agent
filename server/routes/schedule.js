@@ -18,10 +18,10 @@
 //   organizer/attendee calendar event creation).
 
 'use strict';
+const { randomUUID } = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const { createOAuth2Client, createCalendarEventForUser } = require('../utils/calendarUtils');
-const fetchBusyAggregated = require('../utils/fetchBusyAggregated');
 const { enrichVenues, extractCityFromGeoContext } = require('../utils/venueEnrichment');
 const { fetchLocalEvents } = require('../utils/events');
 const { extractActivityType, fetchActivityVenues, buildActivityVenuesBlock } = require('../utils/activityVenues');
@@ -31,80 +31,11 @@ const { extractCulturalSignal } = require('../utils/extractCulturalSignal');
 const fetchCulturalEvent = require('../utils/fetchCulturalEvent');
 const { UUID_RE, isValidUUID, INJECTION_RE, sanitizePromptInput } = require('../utils/validation');
 const { RATE_LIMIT_EXEMPT } = require('../utils/rateLimitExempt');
+const { timeOfDayHours, findFreeWindows, findFreeWindowsForGroup, fmtWindowDate, formatTime12h, splitMidnightBlocks, fetchBusy, inferDurationMinutes } = require('../utils/availability');
+const { RENDEZVOUS_SYSTEM_PROMPT, CLAUDE_MODEL, THEME_FILLER, themeMatchesContextPrompt, classifyIntent, extractVenueName, buildVenueSubstitutionBlock, buildExcludedWindowsBlock, buildAttendeeNotesBlock, buildGroupAttendeeNotesBlock, deriveGeoContext, buildSuggestPrompt, buildGroupSuggestPrompt, getProfileName, fetchAcceptedPairHistory } = require('../utils/promptBuilder');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MAX_CONTEXT  = 500;  // contextPrompt / feedback chars
-
-// System prompt shared by both the suggest and reroll Claude calls.
-// Defines the voice, constraints, and output contract for every generation.
-// Kept as a constant so changes here apply to all routes simultaneously.
-const RENDEZVOUS_SYSTEM_PROMPT =
-  "You are Rendezvous, a sharp, well-connected activity planner who knows cities intimately. " +
-  "You make plans like a trusted local friend — specific, opinionated, and practical. " +
-  "You never use marketing language. You never say 'vibrant', 'perfect blend', 'iconic', or 'unique'. " +
-  "You name real places, real activities, and real reasons why something works for two specific people. " +
-  "When suggesting home-based plans, you describe what they'll actually do — the specific game, " +
-  "the cooking project, the jam session — not just 'hang out at home'. " +
-  "Always follow the JSON schema exactly as instructed.";
-// Use Haiku in dev (cheap, fast for testing), Sonnet in production (quality suggestions)
-const IS_PROD = process.env.NODE_ENV === 'production';
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL
-  || (IS_PROD ? 'claude-sonnet-4-5-20250929' : 'claude-haiku-4-5-20251001');
-
-// Filler words excluded from keyword extraction in themeMatchesContextPrompt.
-// These are common English words that appear in prompts but carry no activity signal.
-const THEME_FILLER = new Set([
-  'want', 'something', 'with', 'just', 'like', 'lets', "let's", 'going', 'maybe',
-  'some', 'have', 'that', 'this', 'would', 'could', 'should', 'think', 'feel',
-  'really', 'kind', 'sort', 'maybe', 'around', 'about', 'very', 'much', 'more',
-]);
-
-/**
- * Check whether at least one Claude suggestion plausibly matches the organizer's intent.
- * Used as a short-circuit to trigger a retry when Claude ignores an activity_specific prompt.
- *
- * Only meaningful for 'activity_specific' intents (e.g. "golf", "sushi dinner", "escape room").
- * Returns true (bypass retry) for: absent/blank contextPrompt, 'home_likely', 'ambiguous'.
- *
- * Matching is intentionally simple — no external calls, no NLP:
- *   1. Extract keywords from contextPrompt (words >3 chars, not in filler list).
- *   2. Concatenate each suggestion's title + narrative + tags into one lowercase string.
- *   3. Return true if ANY keyword appears in ANY suggestion's combined text.
- *
- * Never throws — returns true (skip retry) on any error so a bug here never blocks responses.
- *
- * @param {Array}  suggestions   - parsed suggestion objects from Claude
- * @param {string} contextPrompt - organizer's raw context string
- * @returns {boolean}
- */
-function themeMatchesContextPrompt(suggestions, contextPrompt) {
-  try {
-    if (!contextPrompt || !contextPrompt.trim()) return true;
-    // Only validate activity_specific intents — home/ambiguous are too open-ended to keyword-match.
-    if (classifyIntent(contextPrompt) !== 'activity_specific') return true;
-    if (!suggestions || suggestions.length === 0) return false;
-
-    // Extract meaningful keywords: lowercase words longer than 3 chars, not in the filler set.
-    const keywords = contextPrompt.toLowerCase()
-      .split(/\s+/)
-      .map(w => w.replace(/[^a-z]/g, '')) // strip punctuation
-      .filter(w => w.length > 3 && !THEME_FILLER.has(w));
-
-    if (keywords.length === 0) return true; // nothing meaningful to check — skip retry
-
-    // Build a searchable blob per suggestion from title + narrative + tags.
-    const blobs = suggestions.map(s =>
-      [s.title, s.narrative, ...(s.tags || [])].join(' ').toLowerCase()
-    );
-
-    // Pass if ANY keyword matches ANY suggestion blob.
-    return keywords.some(kw => blobs.some(blob => blob.includes(kw)));
-  } catch {
-    // Safety net: any unexpected error skips the retry to avoid blocking the response.
-    return true;
-  }
-}
-
 
 /**
  * Count venues with venue_verified === true across all suggestions.
@@ -130,701 +61,309 @@ function countUnverified(suggestions) {
     n + (s.venues || []).filter(v => v.venue_verified === false).length, 0);
 }
 
-/* ── Helpers ──────────────────────────────────────────────────────── */
-
 /**
- * Fetch busy slots for a user. Uses real Google Calendar if tokens exist,
- * otherwise falls back to mock_busy_slots from the profile row (test users).
- *
- * Throws if we have tokens but the Google API call fails — so the caller
- * can surface an error rather than treating a calendar failure as "no busy slots"
- * and generating suggestions against incorrect availability data.
+ * Fetch past accepted group itineraries as taste signal for Claude.
+ * Best-effort — returns [] on any error.
  */
-async function fetchBusy(session, startISO, endISO, supabase, userId) {
-  // Real calendar path — aggregate across all connected calendars for this user
-  if (session?.tokens?.access_token) {
-    return fetchBusyAggregated(supabase, userId, session.tokens, startISO, endISO);
-  }
-  // Mock fallback for test users (no OAuth tokens)
-  if (userId && supabase) {
-    try {
-      const { data } = await supabase
-        .from('profiles')
-        .select('mock_busy_slots')
-        .eq('id', userId)
-        .single();
-      const slots = data?.mock_busy_slots || [];
-      const start = new Date(startISO);
-      const end   = new Date(endISO);
-      return slots
-        .filter(s => new Date(s.end) > start && new Date(s.start) < end)
-        .map(s => ({ start: s.start, end: s.end }));
-    } catch (e) {
-      console.warn('fetchBusy (mock) failed:', e.message);
-    }
-  }
-  return [];
-}
-
-/**
- * Parse a time-of-day filter into [startHour, endHour] in the user's LOCAL time (24h).
- * The returned hours are in local time and must be converted to UTC before use.
- */
-function timeOfDayHours(tod) {
-  if (!tod || tod.type === 'any') return [8, 23];
-  if (tod.type === 'morning')   return [8, 12];
-  if (tod.type === 'afternoon') return [12, 17];
-  if (tod.type === 'evening')   return [17, 23];
-  if (tod.type === 'custom') {
-    const [timePart, ampm] = tod.time.split(' ');
-    let [h] = timePart.split(':').map(Number);
-    if (ampm === 'PM' && h !== 12) h += 12;
-    if (ampm === 'AM' && h === 12) h = 0;
-    const winHours = Math.ceil((Number(tod.windowMinutes) || 60) / 60);
-    return [Math.max(0, h - winHours), Math.min(23, h + winHours)];
-  }
-  return [8, 23];
-}
-
-/**
- * Generate candidate 2-hour windows across a date range that don't overlap busy slots.
- *
- * Hours are computed in UTC throughout. The caller must convert local time-of-day
- * preferences to UTC using timezoneOffsetMinutes (from the client's
- * Intl.DateTimeFormat().resolvedOptions().timeZone converted to an offset, or
- * new Date().getTimezoneOffset()). getTimezoneOffset() returns minutes WEST of UTC,
- * so EDT = +240. To convert local hour → UTC: utcHour = localHour + offset/60.
- *
- * Busy slots from Google Calendar freebusy are already in UTC, so the overlap
- * check is a straight UTC-vs-UTC comparison.
- */
-/**
- * Classify the organizer's intent based on the context prompt.
- * Used to decide how many home-based vs. venue-based itineraries Claude should generate.
- *
- * Returns one of:
- *   'home_likely'      — contextPrompt is absent or implies staying in
- *                        (e.g. "hang out", "chill", "come over", "game night")
- *   'activity_specific'— contextPrompt implies a specific out-of-home activity
- *                        (e.g. "dinner", "concert", "golf", "drinks", "museum")
- *   'ambiguous'        — doesn't clearly fit either category
- */
-function classifyIntent(contextPrompt) {
-  // No prompt at all → ambiguous (no signal to classify; let the prompt builder decide the home/venue split)
-  if (!contextPrompt || !contextPrompt.trim()) return 'ambiguous';
-  const text = contextPrompt.toLowerCase();
-
-  // Single-card reroll patterns: "go to [place]" or "watch [title]" are near-literal
-  // instructions — treat as activity_specific so Claude focuses on the named thing.
-  // "go to" almost always means a specific venue, even if no venue name follows.
-  if (/^\s*go\s+to\b/.test(text)) return 'activity_specific';
-
-  // "watch [something] at [Named Venue]" — attending a live event (game, concert, show) at a
-  // specific place.  The original-case text is used so uppercase venue names are detected.
-  // e.g. "watch the Knicks at MSG", "watch the game at Madison Square Garden" → activity_specific.
-  if (/\bwatch\b/.test(text) && /\bat [A-Z]/.test(contextPrompt)) {
-    return 'activity_specific';
-  }
-  // "watch [something]" with no named venue → home streaming / movie night.
-  // Still exempt explicit theater/cinema mentions so "watch a movie at the cinema" stays correct.
-  if (/\bwatch\b/.test(text) && !/\b(theater|cinema|movie theater|imax)\b/.test(text)) {
-    return 'home_likely';
-  }
-
-  // Keywords that strongly imply going out to a venue
-  if (/\b(dinner|lunch|brunch|restaurant|bar|bars|drinks|cocktails|concert|show|museum|gallery|golf|bowling|movie theater|cinema|club|lounge|arcade|escape room|spa|class|workout|gym|hike|beach|park outing|sporting event|game night out|rooftop)\b/.test(text)) {
-    return 'activity_specific';
-  }
-
-  // Keywords that suggest staying in / home-based hangout.
-  // The possessive proper-noun check ("at Aaron's", "at Jamie's") uses the original-case
-  // text so the capital letter is preserved, but is evaluated after the venue-name check
-  // above — extractVenueName handles "at Carmine's" (named venue) while this catches
-  // informal first-name possessives that clearly mean someone's home.
-  const homePhrases =
-    /\b(hang(ing)? out|chill|come over|just hang|at (my|your|his|her|their|our) (place|apartment|apt|house|flat|spot)|home|house|apartment|cook(ing)?|bake|movie night|netflix|jam(ming)?|game night|board games?|video games?|play(ing)? games?|night in|stay in|order in|take(out|away)|come (over|through|by)|head (over|to mine|to yours))\b/.test(text);
-  // Possessive proper noun: "at Aaron's", "at Jamie's" — implies going to that person's place.
-  // Deliberately excludes venue-style names (already caught by extractVenueName).
-  const possessiveHome = /\bat [A-Z][a-z]+'s\b/.test(contextPrompt);
-  if (homePhrases || possessiveHome) return 'home_likely';
-
-  return 'ambiguous';
-}
-
-/**
- * Attempt to extract a specific named venue from a user-supplied context prompt.
- * Returns the extracted name string, or null if no specific venue is detected.
- *
- * Detection patterns (applied to the original-case text, not lowercased):
- *   "go to [Venue Name]"              — strongest signal
- *   "at [Venue Name]" / "dinner at"   — activity + preposition pattern
- *
- * The captured name is limited to 2–50 characters and must start with a capital
- * letter so that generic phrases like "go to a bar" are not mistakenly extracted.
- */
-function extractVenueName(text) {
-  if (!text) return null;
-  // "go to [Venue Name]" — capture the capitalized phrase after "go to"
-  let m = text.match(/\bgo\s+to\s+([A-Z][^.!?\n,]{1,49})/);
-  if (m) return m[1].trim();
-  // "[preposition] [Venue Name]" — "drinks at", "dinner at", "meet at", etc.
-  m = text.match(/\b(?:at|dinner at|drinks at|lunch at|meet at|brunch at|going to)\s+([A-Z][^.!?\n,]{1,49})/);
-  if (m) return m[1].trim();
-  return null;
-}
-
-/**
- * Build the venue-substitution instruction block for a named venue.
- * Injected into the Claude prompt when a specific venue is referenced so Claude
- * doesn't silently drop it or return a generic suggestion if the venue can't be used.
- */
-function buildVenueSubstitutionBlock(venueName) {
-  return `VENUE SUBSTITUTION RULE: If "${venueName}" is unavailable, closed during the requested time window, or cannot be confirmed as a real place, do NOT omit it silently or return a generic suggestion. Instead, find the closest alternative that matches on ALL of these dimensions:
-  - Vibe and atmosphere (e.g. speakeasy-style, casual dive, upscale cocktail bar)
-  - Price point (use the same general tier)
-  - Neighborhood or proximity to the original venue's location
-  - Relevant to the same time of day and occasion
-In the suggestion output, include a note field explaining the substitution: "${venueName} is closed at this time — [Substitute] has a similar [vibe/price/location]." The note should be honest and specific, not generic.`;
-}
-
-/**
- * Infer event duration in minutes from the event title and optional context.
- * Used to size free-window slots and as a hint to Claude for durationMinutes.
- * Errs toward the typical activity length; defaults to 2 hours.
- */
-function inferDurationMinutes(eventTitle, contextPrompt) {
-  const text = `${eventTitle || ''} ${contextPrompt || ''}`.toLowerCase();
-  if (/\bday[ -]?trip\b|full[ -]?day\b|all[ -]?day\b/.test(text))                          return 360;
-  if (/\bhike\b|\bbiking\b|\bsurfing\b|\bclimbing\b/.test(text))                            return 240;
-  if (/\bmovie\b|\bfilm\b|\bconcert\b|\bshow\b|\bgame\b|\bmatch\b|\bknicks\b|\bmets\b|\byankees\b|\bgiants\b|\bjets\b|\bnets\b/.test(text)) return 180;
-  if (/\bdinner\b|\bdate\b|\bnight\s+out\b|\beverning\s+out\b/.test(text))                  return 120;
-  if (/\blunch\b|\bbrunch\b/.test(text))                                                     return 90;
-  if (/\bcoffee\b|\bdrinks\b|\bcatch[ -]?up\b|\bquick\b|\bchat\b/.test(text))               return 60;
-  return 120;
-}
-
-/**
- * Return free time windows within a date range that don't overlap any busy slot.
- * Both busyA (organizer) and busyB (attendee) can be passed — pass [] to skip one.
- * Windows are sized to durationMinutes so Claude gets slots the event will actually fit in.
- *
- * @param {Array}  busyA                - organizer busy slots [{start, end}]
- * @param {Array}  busyB                - attendee busy slots
- * @param {string} startDate            - "YYYY-MM-DD" inclusive
- * @param {string} endDate              - "YYYY-MM-DD" inclusive
- * @param {object} todFilter            - { type: 'morning'|'afternoon'|'evening'|'any' }
- * @param {number} maxWindows           - cap on returned windows (default 20)
- * @param {number} timezoneOffsetMinutes - client's getTimezoneOffset() value (EDT=240)
- * @param {number} durationMinutes      - slot size in minutes (default 120)
- */
-function findFreeWindows(busyA, busyB, startDate, endDate, todFilter, maxWindows = 20, timezoneOffsetMinutes = 0, durationMinutes = 120) {
-  const [localStart, localEnd] = timeOfDayHours(todFilter);
-  // Convert local hours to UTC hours using the client's timezone offset.
-  const offsetHours  = timezoneOffsetMinutes / 60;  // positive = west of UTC (e.g. EDT = +4)
-  const utcStart     = Math.max(0,  localStart + offsetHours);
-  const utcEnd       = Math.min(47, localEnd   + offsetHours); // 47 allows wrapping past midnight UTC
-  const durationHours = durationMinutes / 60;
-  const durationMs   = durationMinutes * 60000;
-
-  // Collect up to 100 candidate windows sequentially, then sample across 3 equal buckets
-  // to ensure suggestions are spread across the full date range rather than clustered early.
-  const INTERNAL_CAP = 100;
-  const allWindows = [];
-  // Use UTC date construction so the loop is timezone-agnostic on any server.
-  const [sy, sm, sd] = startDate.split('-').map(Number);
-  const [ey, em, ed] = endDate.split('-').map(Number);
-  const cur = new Date(Date.UTC(sy, sm - 1, sd));
-  const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59));
-
-  while (cur <= end && allWindows.length < INTERNAL_CAP) {
-    // Step by 1 hour through the day; each window spans durationMinutes from that hour.
-    for (let h = utcStart; h + durationHours <= utcEnd; h += 1) {
-      const wStart = new Date(cur);
-      wStart.setUTCHours(h, 0, 0, 0);
-      const wEnd = new Date(wStart.getTime() + durationMs);
-
-      const overlaps = (slots) => slots.some(s => {
-        const sStart = new Date(s.start);
-        const sEnd   = new Date(s.end);
-        return sStart < wEnd && sEnd > wStart;
-      });
-
-      if (!overlaps(busyA) && !overlaps(busyB)) {
-        allWindows.push({ start: wStart.toISOString(), end: wEnd.toISOString() });
-        if (allWindows.length >= INTERNAL_CAP) break;
-      }
-    }
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-
-  if (allWindows.length === 0) return [];
-
-  // Divide all found windows into 3 equal buckets and sample up to 7 from each.
-  // This spreads returned windows across early, mid, and late portions of the date range.
-  const bucketSize = Math.ceil(allWindows.length / 3);
-  const buckets = [
-    allWindows.slice(0, bucketSize),
-    allWindows.slice(bucketSize, bucketSize * 2),
-    allWindows.slice(bucketSize * 2),
-  ];
-  const perBucket = 7;
-  const sampled = [];
-  // First pass: take up to perBucket from each bucket.
-  const remainders = buckets.map(b => {
-    const take = b.slice(0, perBucket);
-    sampled.push(...take);
-    return b.slice(perBucket); // leftover windows
-  });
-  // Second pass: fill remainder quota from adjacent buckets (left to right) until maxWindows.
-  for (const leftover of remainders) {
-    for (const w of leftover) {
-      if (sampled.length >= maxWindows) break;
-      sampled.push(w);
-    }
-    if (sampled.length >= maxWindows) break;
-  }
-
-  return sampled.slice(0, maxWindows);
-}
-
-/**
- * Build the Claude prompt for generating itinerary suggestions.
- * Window strings include the year (e.g. "Wed, Mar 12, 2026") to prevent Claude from
- * defaulting to the prior year when the free windows span a year boundary or when
- * Claude's training data year differs from the current calendar year.
- */
-// Month/day name tables for unambiguous UTC date formatting in the Claude prompt.
-// We avoid toLocaleDateString/toLocaleTimeString because ICU data availability
-// varies across Lambda environments and can produce unexpected formats.
-const _MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const _WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-
-/** Format a UTC Date as "Friday, 2026-03-13, 5:00 PM" */
-function fmtWindowDate(d) {
-  const year  = d.getUTCFullYear();
-  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day   = String(d.getUTCDate()).padStart(2, '0');
-  const weekday = _WEEKDAYS[d.getUTCDay()];
-  const monthName = _MONTHS[d.getUTCMonth()];
-  let h = d.getUTCHours(), m = d.getUTCMinutes();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  if (h > 12) h -= 12; else if (h === 0) h = 12;
-  return `${weekday}, ${year}-${month}-${day} (${monthName} ${d.getUTCDate()}), ${h}:${String(m).padStart(2,'0')} ${ampm}`;
-}
-
-/**
- * Derive a human-readable city/area string from two location strings.
- * Used to give Claude geographic context without hardcoding NYC.
- * Returns empty string if neither user has a location set.
- */
-function deriveGeoContext(userA, userB) {
-  const locA = userA.location?.trim();
-  const locB = userB.location?.trim();
-  if (!locA && !locB) return ''; // no locations — omit geographic anchoring entirely
-  if (locA && locB && locA !== locB) {
-    return `${userA.name} is based in ${locA}; ${userB.name} is based in ${locB}.`;
-  }
-  return `Both users are based in ${locA || locB}.`;
-}
-
-/**
- * Build the Claude prompt for generating itinerary suggestions.
- *
- * Parameter additions vs. original:
- *   sharedInterests    {string[]} — interests tagged on this friendship (from friend_annotations);
- *                                  injected explicitly so Claude can weight them highly.
- *   organizerFirstName {string}  — first name of the organizer, used in home-based agenda copy.
- *   attendeeFirstName  {string}  — first name of the attendee, used in home-based agenda copy.
- *
- * Structural changes:
- *   1. contextPrompt moved to top with "MOST IMPORTANT" framing so Claude treats it as
- *      the primary constraint before reading any profile data.
- *   2. sharedInterests injected as an explicit line if present.
- *   3. Dietary and mobility restrictions promoted from soft suggestions to hard NEVER constraints.
- *   4. NYC / Manhattan / New York hardcoding removed; geographic context derived from user
- *      profile locations instead. If locations are absent, city anchoring is omitted.
- *   5. classifyIntent() drives a home vs. venue instruction block so home-based suggestions
- *      are generated when the intent is casual/vague, and venue-focused when specific.
- *   6. location_type field added to the JSON schema so the client can badge home vs. venue cards.
- */
-/**
- * Build the EXCLUDED WINDOWS block for the Claude prompt.
- * Returns empty string when blocks is empty — no injection occurs.
- * Handles both full-day blocks and specific time ranges.
- */
-function formatTime12h(t) { // '14:00' → '2:00 PM'
-  const [h, m] = t.split(':').map(Number);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
-}
-
-/**
- * Split blocks whose timeEnd < timeStart (midnight-crossing) into two entries:
- *   { date: D, timeStart: '17:00', timeEnd: '01:00' }
- * becomes:
- *   { date: D,   timeStart: '17:00', timeEnd: '23:59' }
- *   { date: D+1, timeStart: '00:00', timeEnd: '01:00' }
- */
-function splitMidnightBlocks(blocks) {
-  const out = [];
-  for (const b of blocks) {
-    if (b.timeStart && b.timeEnd && b.timeEnd < b.timeStart) {
-      // First half: original date until end of day
-      out.push({ ...b, timeEnd: '23:59' });
-      // Second half: next day from midnight until original end time
-      const d = new Date(b.date + 'T00:00:00');
-      d.setDate(d.getDate() + 1);
-      const nextDate = d.toISOString().slice(0, 10);
-      out.push({ ...b, date: nextDate, timeStart: '00:00' });
-    } else {
-      out.push(b);
-    }
-  }
-  return out;
-}
-
-function buildExcludedWindowsBlock(blocks) {
-  if (!Array.isArray(blocks) || blocks.length === 0) return '';
-  const lines = blocks.map(b => {
-    let line = `- ${b.date}`;
-    if (b.timeStart && b.timeEnd) line += ` from ${formatTime12h(b.timeStart)} to ${formatTime12h(b.timeEnd)}`;
-    else if (b.timeStart)         line += ` from ${formatTime12h(b.timeStart)} onwards`;
-    if (b.label) line += ` — ${b.label}`;
-    return line;
-  }).join('\n');
-  return `\nEXCLUDED WINDOWS (strictly enforced):\nDo NOT suggest plans on any of these organizer-blocked dates:\n${lines}`;
-}
-
-/**
- * Build the ATTENDEE CONSTRAINTS block for the Claude prompt.
- * Only injected on rerolls after an attendee has declined and left notes.
- */
-function buildAttendeeNotesBlock(notes) {
-  if (!notes || typeof notes !== 'string' || !notes.trim()) return '';
-  return `\nATTENDEE CONSTRAINTS (from previous decline):\nThe attendee noted: "${notes.trim()}"`;
-}
-
-function buildSuggestPrompt({ userA, userB, freeWindows, contextPrompt, maxTravelMinutes, eventTitle, durationMinutes, sharedInterests, organizerFirstName, attendeeFirstName, pastHistory = [], localEvents = [], activityVenuesBlock = '', locationPreference = 'system_choice', travelMode = 'local', tripDurationDays = 1, destination = null, excludedWindowsBlock = '', attendeeBusyNotesBlock = '', priorityEventBlock = '' }) {
-  const windowList = freeWindows.slice(0, 15).map(w => {
-    const s = new Date(w.start);
-    const e = new Date(w.end);
-    let eh = e.getUTCHours(), em2 = e.getUTCMinutes();
-    const eampm = eh >= 12 ? 'PM' : 'AM';
-    if (eh > 12) eh -= 12; else if (eh === 0) eh = 12;
-    return `- ${fmtWindowDate(s)} – ${eh}:${String(em2).padStart(2,'0')} ${eampm}`;
-  }).join('\n');
-
-  // Geographic context derived from user profiles — no hardcoded city.
-  // If neither user has a location, this is empty and the geo line is omitted.
-  const geoContext = deriveGeoContext(userA, userB);
-
-  // Classify the organizer's intent so Claude knows how many home vs. venue plans to generate.
-  // The first names are interpolated into the instruction so Claude can say "at Aaron's place".
-  const orgFirst = organizerFirstName || userA.name?.split(' ')[0] || 'the organizer';
-  const attFirst = attendeeFirstName  || userB.name?.split(' ')[0] || 'the attendee';
-
-  // Remote mode: skip classifyIntent entirely and override with a virtual-only instruction.
-  let intentBlock;
-  if (travelMode === 'remote') {
-    intentBlock = `REMOTE MODE: These people are not meeting in person. Suggest virtual/remote activities only — video calls with a shared activity (cooking the same recipe, watching a film simultaneously, playing an online game together), multiplayer game sessions, collaborative playlists, watch parties, etc. Do NOT suggest any physical venues, restaurants, bars, or activities that require being in the same location. All 3 suggestions should be remote-friendly. Set location_type to "home" for all suggestions since no venue is involved.`;
-  } else {
-    const intent = classifyIntent(contextPrompt);
-    intentBlock = intent === 'home_likely'
-      ? `HOME VS. VENUE SPLIT: Generate 2 of the 3 itineraries as home-based plans — one at ${orgFirst}'s place and one at ${attFirst}'s place. Include what they'd do (cook together, watch a game, jam, play games, etc.) based on their shared interests. The 3rd itinerary should be a venue-based option as an alternative. Do not suggest restaurants or bars as the primary activity for home-based agendas. Set location_type to "home" for home plans and "venue" for the venue option.`
-      : intent === 'ambiguous'
-      ? `HOME VS. VENUE SPLIT: Generate at least 1 of the 3 itineraries as a home-based plan. The others may be venue-based. Set location_type accordingly.`
-      : `HOME VS. VENUE SPLIT: All 3 itineraries should be venue-based. Focus on the specific activity requested. Set location_type to "venue" for all.`;
-  }
-
-  // Dietary restrictions as hard NEVER constraints, one per person.
-  // Filtered to non-empty, non-"none" values so we only emit real restrictions.
-  const dietaryA = (userA.dietary_restrictions || []).filter(r => r && r !== 'none');
-  const dietaryB = (userB.dietary_restrictions || []).filter(r => r && r !== 'none');
-  const dietaryConstraints = [
-    ...(dietaryA.length ? [`NEVER suggest any venue that cannot fully accommodate ${userA.name}'s dietary restrictions: ${dietaryA.join(', ')}. This is a hard requirement, not a preference.`] : []),
-    ...(dietaryB.length ? [`NEVER suggest any venue that cannot fully accommodate ${userB.name}'s dietary restrictions: ${dietaryB.join(', ')}. This is a hard requirement, not a preference.`] : []),
-  ].join('\n');
-
-  // Mobility restrictions as hard NEVER constraints, same pattern as dietary above.
-  const mobilityA = (userA.mobility_restrictions || []).filter(r => r && r !== 'none');
-  const mobilityB = (userB.mobility_restrictions || []).filter(r => r && r !== 'none');
-  const mobilityConstraints = [
-    ...(mobilityA.length ? [`NEVER suggest venues that do not meet ${userA.name}'s accessibility needs: ${mobilityA.join(', ')}. This is a hard requirement, not a preference.`] : []),
-    ...(mobilityB.length ? [`NEVER suggest venues that do not meet ${userB.name}'s accessibility needs: ${mobilityB.join(', ')}. This is a hard requirement, not a preference.`] : []),
-  ].join('\n');
-
-  const hardConstraints = [dietaryConstraints, mobilityConstraints].filter(Boolean).join('\n');
-
-  // ── Location anchoring block ───────────────────────────────────────────────
-  // Tells Claude which geographic area to anchor venue suggestions to.
-  // closer_to_organizer / closer_to_attendee: use that user's profile location.
-  //   If that location is missing, fall through to system_choice silently.
-  // system_choice: use the derived geo context (equidistant / best connected area).
-  // orgFirst / attFirst are already declared above (intent block) — reused here.
-  // Remote mode: skip entirely — no physical location is relevant.
-  const orgLocation = userA.location?.trim();
-  const attLocation = userB.location?.trim();
-
-  let locationAnchorBlock;
-  if (travelMode === 'remote') {
-    locationAnchorBlock = '';
-  } else if (locationPreference === 'closer_to_organizer' && orgLocation) {
-    locationAnchorBlock =
-      `\nLOCATION ANCHORING\nSuggest venues in or near ${orgLocation}. ` +
-      `${orgFirst} wants plans closer to their side of the city.`;
-  } else if (locationPreference === 'closer_to_attendee' && attLocation) {
-    locationAnchorBlock =
-      `\nLOCATION ANCHORING\nSuggest venues in or near ${attLocation}. ` +
-      `${orgFirst} wants plans closer to ${attFirst}'s side of the city.`;
-  } else {
-    // system_choice (default), or fallback when the requested location is missing.
-    // Only emit the block when geoContext is available — no point repeating an empty string.
-    locationAnchorBlock = geoContext
-      ? `\nLOCATION ANCHORING\nBoth users are located in: ${geoContext}. ` +
-        `Suggest venues in a convenient area between them — consider neighborhoods ` +
-        `that are roughly equidistant or well-connected by transit.`
-      : '';
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // ── Travel mode block (Step 6) ─────────────────────────────────────────────
-  // Injected after LOCATION ANCHORING. Local mode emits no block.
-  // Travel mode tells Claude this is a multi-day trip and enforces the geographic
-  // containment rule: all stops must stay within a single region across all days.
-  // Null destination falls back to organizer's profile location to prevent Claude
-  // from choosing an arbitrary anchor — the root cause of city-hopping itineraries.
-  let travelModeBlock = '';
-  if (travelMode === 'travel') {
-    const geoAnchor    = destination || orgLocation || attLocation || 'the destination';
-    const durationLabel = tripDurationDays === 1 ? '1-day'
-      : tripDurationDays === 2 ? 'weekend'
-      : `${tripDurationDays}-day`;
-    travelModeBlock =
-      `\nTRAVEL MODE: This is a ${durationLabel} trip. ` +
-      (destination
-        ? `The destination is: ${destination}. Generate all venue suggestions in or near ${destination}.`
-        : `No destination specified — anchor all venue suggestions near ${orgLocation || 'the organizer\'s location'}.`) +
-      `\nGEOGRAPHIC CONSTRAINT (strictly enforced): All stops across all days must remain within ` +
-      `a single city or metro region. Home base: ${geoAnchor}. ` +
-      `Do NOT suggest travel between different cities on different days. ` +
-      `Day trips must return to the home base — never treat a day trip as a pivot to a new region for subsequent days.` +
-      (tripDurationDays >= 2
-        ? ` A "Weekend" trip means 2 days in one place, not a multi-city tour. ` +
-          `Day 1 (arrival) and last day (departure): account for travel logistics — no full-day activity schedules on travel days unless the destination is driveable.`
-        : '');
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // ── Multi-day JSON schema (Step 5) ────────────────────────────────────────
-  // For multi-day trips (tripDurationDays > 1), Claude must return a days array
-  // per suggestion instead of a flat venues array. Single-day still uses venues
-  // (write side wraps to days structure before DB save; read side has backward-compat shim).
-  const isMultiDay = tripDurationDays > 1;
-  const multiDayInstructionsBlock = isMultiDay
-    ? `MULTI-DAY TRIP INSTRUCTIONS (strictly enforced for all ${tripDurationDays} days):
-- Generate a complete, distinct activity plan for EVERY day — not just Day 1.
-- Each day must have at least 2 named stops with real venue names and addresses.
-- Follow a logical day structure: morning activity → afternoon activity → evening/dinner. Not every day needs all three, but each day should feel like a full, considered plan.
-- Day 1 is typically arrival — keep it lighter (1-2 activities, afternoon/evening only unless the destination is driveable same-day). Last day is typically departure — keep it to morning only.
-- Every day across the trip must use completely different venues. Do not repeat a venue across days.
-- Vary the energy level across days — not every day should be the same intensity. Mix active days with relaxed days where appropriate.
-- The narrative for each day should describe what makes that specific day's plan worth doing, not just list the venues.`
-    : '';
-  const venueSchema = isMultiDay
-    ? `"days": [
-        { "day": 1, "label": "Arrival afternoon", "stops": [
-            { "name": "Venue Name", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State" },
-            { "name": "Dinner Spot", "type": "restaurant", "address": "456 Oak Ave, City, State" }
-          ]
-        },
-        { "day": 2, "label": "Main day", "stops": [
-            { "name": "Morning Activity", "type": "activity", "address": "789 Park Rd, City, State" },
-            { "name": "Lunch Spot", "type": "restaurant", "address": "321 River St, City, State" },
-            { "name": "Evening Venue", "type": "bar", "address": "654 Main St, City, State" }
-          ]
-        }
-      ]
-      // ... repeat structure for all tripDurationDays days`
-    : `"venues": [
-        { "name": "Venue Name or Person's Home", "type": "bar|restaurant|activity|venue|home", "address": "123 Main St, City, State (omit for home)" }
-      ]`;
-  // ──────────────────────────────────────────────────────────────────────────
-
-  return `You are Rendezvous, an activity planner. Generate exactly 3 itinerary suggestions for two people to meet up.
-${geoContext ? `GEOGRAPHIC CONTEXT: ${geoContext}` : ''}
-ADDRESS ACCURACY (strictly enforced): Every venue address must be real and correct. Do NOT fabricate or guess street addresses — if you are not confident a venue exists at a specific address, use only the venue name and neighborhood without a numbered street address. In New York City, be precise about boroughs: Manhattan venues must have Manhattan/New York addresses, Brooklyn venues must have Brooklyn addresses. Do NOT place a Manhattan venue at a Brooklyn address or vice versa.
-${eventTitle ? `EVENT NAME: "${eventTitle}"` : ''}
-
-${contextPrompt
-  // contextPrompt is placed first and framed as the primary constraint so Claude
-  // treats the user's explicit intent above all profile-derived preferences.
-  ? `MOST IMPORTANT — treat this as the primary constraint above all other preferences: ${contextPrompt}\n`
-  : ''}
-PERSON A: ${userA.name}
-Location: ${userA.location || 'not specified'}
-Into: ${(userA.activity_preferences || []).join(', ') || 'general activities'}
-
-PERSON B: ${userB.name}
-Location: ${userB.location || 'not specified'}
-Into: ${(userB.activity_preferences || []).join(', ') || 'general activities'}
-${
-  // Inject shared interests explicitly — these are interests the organizer has tagged on
-  // this specific friendship and should be weighted more heavily than general preferences.
-  sharedInterests && sharedInterests.length > 0
-    ? `\nInterests this pair has in common: ${sharedInterests.join(', ')}`
-    : ''
-}${locationAnchorBlock}${travelModeBlock}${
-  // Past accepted plans for this pair — used as a taste signal so Claude can avoid
-  // repeating plans they've already done and learn what kinds of things they enjoy.
-  // Injected as context, not as a template: the instruction explicitly says not to repeat.
-  pastHistory && pastHistory.length > 0
-    ? `\nWHAT HAS WORKED FOR THIS PAIR BEFORE (accepted plans — use as context, not as a template to repeat):\n` +
-      pastHistory.map(p =>
-        `- ${p.title}: ${p.neighborhood || 'unspecified area'}, venues: ${p.venues.join(', ') || 'N/A'}, tags: ${p.tags.join(', ') || 'none'}`
-      ).join('\n') +
-      `\nUse this as a taste signal only. Do NOT suggest these specific plans or revisit these venues.`
-    : ''
-}${priorityEventBlock}${
-  // Live events block — only injected when events were found. If empty, omit entirely:
-  // never send Claude a "no events found" message, which could bias output toward apology.
-  // Events are optional context: Claude should only anchor a suggestion on one if it
-  // genuinely fits both users' interests and the requested date range.
-  localEvents && localEvents.length > 0
-    ? `${priorityEventBlock ? '\n' : ''}\nAVAILABLE TIME-SENSITIVE EVENTS\nThe following real events are happening during the requested date range. If any align well with the users' interests and context, you MAY anchor one suggestion around an event. This is optional — only use an event if it genuinely fits. Do not force events that don't match.\n` +
-      localEvents.map(ev =>
-        `- ${ev.title} at ${ev.venue_name || 'TBD'} (${ev.date}${ev.time ? ' at ' + ev.time : ''}) — ${ev.category || 'Event'} — Ticket link: ${ev.url}`
-      ).join('\n') +
-      `\nIf you use an event as the anchor for a suggestion, set "event_source": "${localEvents[0]?.source || 'ticketmaster'}" (or "eventbrite" as appropriate) and include the ticket URL in a top-level "event_url" field on that suggestion object.`
-    : ''
-}${
-  // Activity venues block — injected when the context prompt references a specific
-  // physical activity or hobby and real nearby venues were found via Places API.
-  // Claude should anchor at least one suggestion to these venues when present.
-  activityVenuesBlock || ''
-}
-AVAILABLE TIME WINDOWS (use one per suggestion):
-${windowList || 'Flexible — pick reasonable times in the next 2 weeks'}${excludedWindowsBlock}${attendeeBusyNotesBlock}
-
-MAX TRAVEL TIME: ${maxTravelMinutes ? maxTravelMinutes + ' minutes each way' : 'no limit'}
-EVENT DURATION: Set durationMinutes based on the actual activity planned (e.g. coffee/drinks=60, lunch=75-90, dinner=90-120, bar night=120, concert/game/show=150-180, hike/full day=240-360). Do not default to 120 for everything — reason about what the activity actually takes.
-
-${intentBlock}
-${hardConstraints ? `\nHARD REQUIREMENTS — these are non-negotiable:\n${hardConstraints}` : ''}${multiDayInstructionsBlock ? `\n${multiDayInstructionsBlock}` : ''}
-Return ONLY a JSON object (no markdown, no preamble) in this exact shape:
-{
-  "suggestions": [
-    {
-      "id": "s1",
-      "title": "Short catchy title",
-      "date": "YYYY-MM-DD",
-      "time": "7:00 PM",
-      "durationMinutes": 120,
-      "location_type": "home|venue|mixed",
-      "neighborhood": "Neighborhood extracted from the first venue's address (e.g. 'Williamsburg' not 'Brooklyn', 'Flatiron' not 'Manhattan') — must match where the primary venue actually is",
-      ${venueSchema},
-      "narrative": "2-3 sentences. Be specific and direct — name the actual activity and why the spot is good. Skip the flowery adjectives. No 'perfect blend', 'vibrant', or similar filler. Just tell them what they're doing and why it makes sense for both people.",
-      "estimatedTravelA": "15 min",
-      "estimatedTravelB": "20 min",
-      // AUDIT-NOTE: tags are generated by Claude but not currently consumed by the
-      // client. Before Audit 3, evaluate whether to wire tags into filtering/display
-      // or remove them from the schema to reduce hallucination surface area and token
-      // waste. If unused at that point, remove.
-      "tags": ["cocktails", "rooftop"],
-      // Optional — only set when this suggestion is anchored on a real event fetched
-      // from Ticketmaster or Eventbrite. Omit entirely for venue-based or home suggestions.
-      "event_source": "ticketmaster|eventbrite|places|home",
-      // Optional — deep link to the event's ticket/detail page. Only present when
-      // event_source is 'ticketmaster' or 'eventbrite'. Rendered as "Get tickets →" in the UI.
-      "event_url": "https://...",
-      // Optional — only set when this suggestion is anchored to a venue from the
-      // activity-specific Places API discovery pass. Omit for all other suggestions.
-      "activity_source": "places_activity",
-      // Optional — the detected activity type key (e.g. 'tennis', 'pottery', 'board_games').
-      // Only present alongside activity_source. Used for badge rendering in the UI.
-      "activity_type": "tennis",
-      // Optional — website URL for the activity venue, from the Places Details API.
-      // Rendered as "Reserve / Book →" in the UI. Omit if no website was found.
-      "venue_url": "https://...",
-      // Optional — only set when this suggestion is anchored to a PRIORITY EVENT.
-      // Shape: { title, date, time }. Claude should populate this on the anchored suggestion only.
-      "priority_event": { "title": "Knicks vs. Pacers", "date": "March 18, 2026", "time": "7:30 PM ET" }
-    }
-  ]
-}
-
-Rules:
-- All venues must be real, currently open establishments
-- Spread suggestions across different vibes (e.g. chill, active, social)
-- Generate exactly 3 suggestions. Use different time windows and spread them across different parts of the scheduling window — do not cluster all suggestions near the earliest available dates. If fewer than 3 windows are available, reuse windows and vary activity, neighborhood, and vibe across suggestions instead. Never return fewer than 3 suggestions.
-- Venue variety: do not default to the most popular or highest-rated spots. Mix well-known places with neighborhood spots and less obvious choices. Avoid recommending the same venues repeatedly across sessions.
-- Free and public options are valid and often preferred: parks, public courts, piers, plazas, beaches, trails, free museum nights, open-air markets. If the activity is naturally free (spikeball, frisbee, picnic, running), suggest a specific named park or public space — not a paid venue. Do not bias toward paid experiences.
-- Cost range across suggestions: aim for a mix — at least one low-cost or free option per set of suggestions when the context allows it. Users should not feel like every plan requires spending money.
-- Narrative tone: direct and practical, like a friend who knows the area recommending something. Name specific things about the venues. No marketing language, no "perfect blend of X and Y", no "vibrant" or "iconic". Just what it is and why it works.
-- No venue should appear in more than one suggestion within this generated set. Each suggestion must use a completely distinct set of venues. This rule applies when generating multiple suggestions simultaneously (initial generation, full reroll, append). It does NOT apply to single-card rerolls — when replacing one card, the user may intentionally direct Claude toward a venue already shown on another card, and that is allowed.`;
-}
-
-
-/**
- * Looks up a user's first name by their Supabase UUID.
- * Used for notification body text (e.g. "Jamie rolled new suggestions").
- * Falls back to 'Someone' if the profile can't be found.
- */
-async function getProfileName(userId, supabase) {
-  const { data } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
-  return data?.full_name?.split(' ')[0] || 'Someone';
-}
-
-/**
- * Fetch the last N accepted itineraries shared between two users (in either direction).
- * Used to give Claude context on what this pair has already done together, so new
- * suggestions feel fresh rather than repeating plans they've already made.
- *
- * Returns a lightweight array of objects: { title, neighborhood, venues[], tags[] }.
- * Never throws — returns [] on any error so a DB hiccup never blocks generation.
- *
- * @param {string} organizerId - UUID of the current organizer
- * @param {string} attendeeId  - UUID of the current attendee
- * @param {object} supabase    - Supabase client
- * @param {number} limit       - max past itineraries to return (default 3)
- */
-async function fetchAcceptedPairHistory(organizerId, attendeeId, supabase, limit = 3) {
+async function fetchGroupHistory(groupId, supabase, limit = 3) {
+  if (!groupId) return [];
   try {
-    // Query itineraries where either user was the organizer, both accepted, and the plan locked.
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('itineraries')
-      .select('id, suggestions, selected_suggestion_id, context_prompt, locked_at')
-      .or(
-        `and(organizer_id.eq.${organizerId},attendee_id.eq.${attendeeId}),` +
-        `and(organizer_id.eq.${attendeeId},attendee_id.eq.${organizerId})`
-      )
-      .eq('organizer_status', 'accepted')
-      .eq('attendee_status', 'accepted')
+      .select('id, suggestions, selected_suggestion_id')
+      .eq('group_id', groupId)
+      .eq('itinerary_status', 'locked')
       .not('locked_at', 'is', null)
       .order('locked_at', { ascending: false })
       .limit(limit);
 
-    if (error || !data) return [];
-
-    // For each itinerary, extract the selected suggestion (matched by selected_suggestion_id).
-    // Fall back to the first suggestion if the ID can't be matched (shouldn't happen in practice).
+    if (!data) return [];
     return data.flatMap(itin => {
       const suggestions = itin.suggestions || [];
-      const selected = suggestions.find(s => s.id === itin.selected_suggestion_id)
-        || suggestions[0];
+      const selected = suggestions.find(s => s.id === itin.selected_suggestion_id) || suggestions[0];
       if (!selected) return [];
       return [{
-        title:        selected.title        || '',
+        title:        selected.title || '',
         neighborhood: selected.neighborhood || '',
-        // Step 5 backward-compat: new rows store venues in days[0].stops; older rows use flat venues[].
-        // Use days[0].stops when present, fall back to venues for pre-migration rows.
         venues:       (selected.days?.[0]?.stops ?? selected.venues ?? []).map(v => v.name).filter(Boolean),
-        tags:         selected.tags         || [],
+        tags:         selected.tags || [],
       }];
     });
   } catch (err) {
-    console.warn('fetchAcceptedPairHistory failed:', err.message);
+    console.warn('[group-itineraries] fetchGroupHistory failed:', err.message);
     return [];
   }
+}
+
+
+/**
+ * Core suggestion generation logic shared by /suggest and /reroll.
+ * Fetches member calendars, finds free windows, calls Claude, enriches venues.
+ *
+ * @param {object} itin        - group_itineraries row from DB
+ * @param {object[]} members   - array of member profile objects with isOrganizer flag
+ * @param {string} organizerId - UUID of the organizer
+ * @param {object} supabase    - Supabase client
+ * @param {object} sessionStore - { getSessionBySupabaseId }
+ * @returns {object[]} suggestions array, ready for DB write
+ */
+async function generateGroupSuggestions(itin, members, organizerId, supabase, sessionStore, { rerollType = 'both', existingSuggestions = [], singleCard = false, targetSuggestion = null, contextPrompt: rerollContextPrompt = '', priorityEventBlock = '', confirmedOrganizerConflict = false } = {}) {
+  const start = itin.date_range_start;
+  const end   = itin.date_range_end;
+  const startISO = new Date(start + 'T00:00:00').toISOString();
+  const endISO   = new Date(end   + 'T23:59:59').toISOString();
+
+  // Fetch calendar sessions for all members concurrently.
+  const memberIds     = members.map(m => m.id);
+  const sessionPromises = memberIds.map(id => sessionStore.getSessionBySupabaseId(id));
+  const memberSessions  = await Promise.all(sessionPromises);
+
+  // Fetch busy slots for all members concurrently. Best-effort per member.
+  const busyPromises = members.map((m, i) =>
+    fetchBusy(memberSessions[i], startISO, endISO, supabase, m.id).catch(e => {
+      console.warn(`[group-itineraries] fetchBusy failed for ${m.id}:`, e.message);
+      return [];
+    })
+  );
+  const allBusySlots = await Promise.all(busyPromises); // one entry per member
+
+  const durationMinutes = 120; // default; groups don't infer from title yet
+
+  // Find windows where ALL members are free.
+  const windowFloorMs = Date.now() + 60 * 60 * 1000; // +1hr buffer
+  let freeWindows = findFreeWindowsForGroup(
+    allBusySlots, start, end, itin.time_of_day, 20, 0, durationMinutes
+  ).filter(w => new Date(w.start).getTime() >= windowFloorMs);
+
+  // If strict-all-members yields no windows, the organizer may have a scheduling conflict.
+  // Mirror the confirmedOrganizerConflict flow from schedule.js:
+  //   1. Compute organizer-only windows to check if it's the organizer who's blocked.
+  //   2. If organizer-only windows exist but all-member windows don't, and the organizer
+  //      hasn't confirmed, signal needsConfirmation so the UI can prompt.
+  //   3. If organizer confirmed, proceed with organizer-only windows.
+  if (freeWindows.length === 0) {
+    console.warn('[group-itineraries] No shared-all windows found; checking organizer-only windows');
+    const organizerIdx  = members.findIndex(m => m.id === organizerId);
+    const organizerBusy = organizerIdx >= 0 ? allBusySlots[organizerIdx] : [];
+    const organizerOnlyWindows = findFreeWindowsForGroup(
+      [organizerBusy], start, end, itin.time_of_day, 20, 0, durationMinutes
+    ).filter(w => new Date(w.start).getTime() >= windowFloorMs);
+
+    if (organizerOnlyWindows.length === 0) {
+      // Everyone is blocked — no windows at all. Return empty so caller can handle.
+      // (Fall through with empty freeWindows — Claude will get no windows.)
+    } else if (!confirmedOrganizerConflict) {
+      // Organizer has conflicts but other members may have time — ask for confirmation.
+      return { needsConfirmation: true };
+    } else {
+      // Organizer confirmed override — use organizer-only windows.
+      freeWindows = organizerOnlyWindows;
+    }
+  }
+
+  // Derive geo context for live events and activity venues.
+  const locations = members.map(m => m.location).filter(Boolean);
+  const geoContext = locations.length ? locations[0] : '';
+  const cityCtx    = extractCityFromGeoContext(geoContext);
+
+  // Fetch live events. Best-effort.
+  let localEvents = [];
+  try {
+    const allPrefs = members.flatMap(m => m.activity_preferences || []);
+    localEvents = await fetchLocalEvents(geoContext, start, end, allPrefs);
+  } catch (e) {
+    console.error('[group-itineraries] fetchLocalEvents failed:', e.message);
+  }
+
+  // Activity venue discovery. Best-effort.
+  let activityVenuesBlock = '';
+  const safeContext = sanitizePromptInput(itin.context_prompt || '');
+  try {
+    const activityType = extractActivityType(safeContext);
+    if (activityType) {
+      const venues = await fetchActivityVenues(activityType, cityCtx);
+      activityVenuesBlock = buildActivityVenuesBlock(activityType, venues);
+    }
+  } catch (e) {
+    console.error('[group-itineraries] activityVenues failed:', e.message);
+  }
+
+  // Fetch past group history as taste signal.
+  const pastHistory = await fetchGroupHistory(itin.group_id, supabase);
+
+  // Fetch group details (name, description, default_activities) if group_id is set.
+  let groupName = 'Group';
+  let groupDescription = '';
+  let groupDefaultActivities = [];
+  if (itin.group_id) {
+    const { data: grp } = await supabase
+      .from('groups')
+      .select('name, description, default_activities')
+      .eq('id', itin.group_id)
+      .maybeSingle();
+    if (grp) {
+      groupName              = sanitizePromptInput(grp.name || 'Group', 100);
+      groupDescription       = sanitizePromptInput(grp.description || '', 300);
+      // Group's default activities — used as AI fallback context when no event-specific
+      // prompt is provided. Only applied when context_prompt is absent.
+      groupDefaultActivities = Array.isArray(grp.default_activities) ? grp.default_activities : [];
+    }
+  }
+
+  // Use the event-specific context prompt if set; fall back to the group's default
+  // activities as a soft signal so Claude has something to anchor on.
+  const effectiveContext = safeContext ||
+    (groupDefaultActivities.length
+      ? groupDefaultActivities.map(a => sanitizePromptInput(a, 100)).join(', ')
+      : '');
+
+  // Build a reroll instruction note so Claude knows what to vary vs. preserve.
+  // For single-card reroll, exclude the target from existingTitles so dedup ignores it.
+  const existingTitles = existingSuggestions
+    .filter(s => !targetSuggestion || s.id !== targetSuggestion.id)
+    .map(s => s.title).filter(Boolean);
+  const avoidClause = existingTitles.length ? ` Avoid repeating these existing options: ${existingTitles.join(', ')}.` : '';
+
+  const vibeAddendum = rerollContextPrompt ? ` User's specific request: "${rerollContextPrompt}".` : '';
+
+  // Micro-adjustment detection — same classification as schedule.js, applied to the
+  // user's reroll input only (rerollContextPrompt). Falls back to full_replace for
+  // ambiguous or empty inputs.
+  const rerollIntentClass = classifyRerollIntent(rerollContextPrompt);
+  if (rerollIntentClass === 'ambiguous') {
+    console.warn('[group-itineraries] classifyRerollIntent returned ambiguous — falling back to full_replace');
+  }
+
+  const microAdjustBlock = rerollIntentClass === 'micro_adjust'
+    ? `MICRO-ADJUSTMENT MODE: The user has requested a small modification to the previous suggestions, not a full replacement.
+You MUST preserve the overall structure, venue sequence, activity types, and general vibe of the prior itinerary.
+Only modify the specific dimension the user called out.
+Do NOT introduce entirely new venues or activity categories unless the user explicitly asks.
+The user's modification request is: "${rerollContextPrompt}"`
+    : '';
+
+  const priorSuggestionsBlock = rerollIntentClass === 'micro_adjust' && existingSuggestions?.length > 0
+    ? `PRIOR SUGGESTIONS (for reference — preserve structure unless instructed otherwise):
+${JSON.stringify(
+  existingSuggestions.map(s => ({
+    id: s.id,
+    title: s.title,
+    date: s.date,
+    time: s.time,
+    location_type: s.location_type,
+    neighborhood: s.neighborhood,
+    narrative: s.narrative,
+    venues: (s.days?.[0]?.stops ?? s.venues ?? []).map(v => v.name),
+  })),
+  null, 2
+)}`
+    : '';
+
+  let rerollNote;
+  if (singleCard && targetSuggestion) {
+    const singleCardInstructions = {
+      timing:   `Keep the same activity concept and venues as "${targetSuggestion.title || 'this option'}". Only change the date and time — find a different time slot. Do not change the venues, activity type, or narrative theme.`,
+      activity: `Keep the same date and time as "${targetSuggestion.title || 'this option'}" (${targetSuggestion.date || ''} at ${targetSuggestion.time || ''}). Suggest a completely different activity and venues. The vibe should be noticeably different.${vibeAddendum}`,
+      both:     `Replace "${targetSuggestion.title || 'this option'}" with a fresh alternative — different activity and different time.${vibeAddendum}`,
+    };
+    rerollNote = `Generate exactly 1 suggestion (not 3). ${singleCardInstructions[rerollType] || singleCardInstructions.both}${avoidClause} Return a JSON object with a "suggestions" array containing exactly 1 item. You are replacing a single card, not a full set. You are not bound by the cross-card no-duplicate venue rule — if the user's request references or implies a venue shown on another card, use it.`;
+  } else {
+    const rerollNoteMap = {
+      timing:   `Generate 3 suggestions with DIFFERENT dates/times than before — keep the same activity types and neighborhood vibes but find new time windows.${avoidClause}`,
+      activity: `Generate 3 suggestions with DIFFERENT activities and venues — keep the same time windows from the availability list but suggest completely different things to do and different neighborhoods. The vibe should be noticeably different.${avoidClause}`,
+      both:     existingTitles.length ? `Generate 3 brand-new suggestions completely different from these already-shown options: ${existingTitles.join(', ')}. Different activities, different times, different vibes.` : '',
+    };
+    rerollNote = rerollNoteMap[rerollType] || '';
+  }
+
+  const prompt = buildGroupSuggestPrompt({
+    groupName,
+    groupDescription,
+    members,
+    freeWindows,
+    contextPrompt:    effectiveContext,
+    eventTitle:       itin.event_title,
+    maxTravelMinutes: itin.max_travel_minutes,
+    durationMinutes,
+    pastHistory,
+    localEvents,
+    activityVenuesBlock,
+    locationPreference: itin.location_preference  || 'system_choice',
+    travelMode:         itin.travel_mode          || 'local',
+    tripDurationDays:   itin.trip_duration_days   || 1,
+    destination:        itin.destination          || null,
+    rerollNote: [microAdjustBlock, priorSuggestionsBlock, rerollNote].filter(Boolean).join('\n'),
+    excludedWindowsBlock:  buildExcludedWindowsBlock(itin.manual_busy_blocks || []),
+    attendeeBusyNotesBlock: buildGroupAttendeeNotesBlock(itin.attendee_busy_notes || {}),
+    priorityEventBlock,
+  });
+
+  let suggestions;
+  const msg = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 2000,
+    system: RENDEZVOUS_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const raw    = msg.content[0]?.text || '{}';
+  const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+  suggestions  = (parsed.suggestions || []).map(s => ({ ...s, id: randomUUID() }));
+
+  // ── Post-generation window filter ───────────────────────────────────────
+  // Validate Claude's suggestions against computed free windows.
+  // Claude occasionally picks times outside the provided window list.
+  // Drop any suggestion whose date+time doesn't overlap with at least one free window.
+  if (freeWindows.length > 0) {
+    const suggestionsBeforeWindowFilter = suggestions.slice();
+    suggestions = suggestions.filter(s => {
+      if (!s.date || !s.time) return true; // can't validate, keep it
+      const match = s.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (!match) return true;
+      let h = parseInt(match[1]);
+      const min = parseInt(match[2]);
+      const ampm = match[3].toUpperCase();
+      if (ampm === 'PM' && h !== 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      const [sy, sm, sd] = s.date.split('-').map(Number);
+      const utcStart = new Date(Date.UTC(sy, sm - 1, sd, h, min, 0));
+      const durMs    = (s.durationMinutes || durationMinutes) * 60000;
+      const utcEnd   = new Date(utcStart.getTime() + durMs);
+      const inWindow = freeWindows.some(w =>
+        utcStart < new Date(w.end) && utcEnd > new Date(w.start)
+      );
+      if (!inWindow) {
+        console.warn(`[group-itineraries] Dropping hallucinated suggestion: ${s.date} ${s.time} (UTC ${utcStart.toISOString()})`);
+      }
+      return inWindow;
+    });
+
+    // Backfill if filter dropped us below 3 (same strategy as schedule.js).
+    if (suggestions.length < 3 && suggestionsBeforeWindowFilter.length > suggestions.length) {
+      const keptTitles = new Set(suggestions.map(s => s.title));
+      const dropped = suggestionsBeforeWindowFilter.filter(s => !keptTitles.has(s.title));
+      for (const fb of dropped) {
+        if (suggestions.length >= 3) break;
+        console.warn(`[group-itineraries] Backfilling window-filtered suggestion to reach 3: ${fb.date} ${fb.time}`);
+        suggestions.push(fb);
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Enrich venues via Google Places. Best-effort.
+  try {
+    suggestions = await enrichVenues(suggestions, cityCtx);
+  } catch (e) {
+    console.error('[group-itineraries] enrichVenues failed:', e.message);
+  }
+
+  // Wrap single-day venue arrays into the unified days structure (Step 5 schema).
+  suggestions = suggestions.map(s => {
+    if (s.days && Array.isArray(s.days)) return s;
+    return { ...s, days: [{ day: 1, label: null, stops: s.venues || [] }] };
+  });
+
+  return suggestions;
 }
 
 /**
@@ -1284,10 +823,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const { data: itinerary, error: insertErr } = await supabase
       .from('itineraries')
       .insert({
+        mode:             'pair',
         organizer_id:     req.userId,
         attendee_id:      targetUserId,
         organizer_status: 'pending',
         attendee_status:  'pending',
+        itinerary_status: 'organizer_draft',
         suggestions:      suggestions,
         reroll_count:     0,
         date_range_start: start,
@@ -1315,11 +856,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
   });
 
   /* ── GET /schedule/itineraries ───────────────────────────── */
+  // Returns BOTH pair and group itineraries for the current user in a single response.
+  // Each item includes a `mode` field ('pair'|'group') so the client can route to the
+  // correct view component and derive the correct tab state.
   app.get('/schedule/itineraries', requireAuth, async (req, res) => {
     const filter = req.query.filter; // 'waiting' | 'upcoming' | undefined = all
+    const SELECT_COLS = 'id, mode, organizer_id, attendee_id, group_id, organizer_status, attendee_status, attendee_statuses, itinerary_status, quorum_threshold, suggestions, locked_at, created_at, reroll_count, event_title, date_range_start, date_range_end, selected_suggestion_id';
 
     // Hard-delete any unlocked itineraries whose scheduling window has already passed.
-    // This runs as a side-effect of listing so no separate cron job is needed.
     const todayStr = new Date().toISOString().split('T')[0];
     await supabase
       .from('itineraries')
@@ -1328,30 +872,68 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       .is('locked_at', null)
       .lt('date_range_end', todayStr);
 
-    let query = supabase
+    // Fetch pair itineraries (organizer or attendee)
+    let pairQuery = supabase
       .from('itineraries')
-      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count, event_title, date_range_start, date_range_end, selected_suggestion_id')
+      .select(SELECT_COLS)
+      .eq('mode', 'pair')
       .or(`organizer_id.eq.${req.userId},attendee_id.eq.${req.userId}`)
       .order('created_at', { ascending: false })
       .limit(50);
+    if (filter === 'waiting')  pairQuery = pairQuery.is('locked_at', null);
+    if (filter === 'upcoming') pairQuery = pairQuery.not('locked_at', 'is', null);
 
-    if (filter === 'waiting')  query = query.is('locked_at', null);
-    if (filter === 'upcoming') query = query.not('locked_at', 'is', null);
+    // Fetch group itineraries (organizer or attendee in attendee_statuses)
+    const { data: groupAsOrganizer } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .eq('mode', 'group')
+      .eq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
 
-    const { data, error } = await query;
+    const { data: groupAsMember } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .eq('mode', 'group')
+      .in('itinerary_status', ['awaiting_responses', 'locked'])
+      .neq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+    const groupAttendee = (groupAsMember || []).filter(r => req.userId in (r.attendee_statuses || {}));
+
+    const { data: pairData, error } = await pairQuery;
     if (error) return res.status(500).json({ error: 'Could not fetch itineraries.' });
 
-    // Enrich with profile names
-    const ids = [...new Set((data || []).flatMap(i => [i.organizer_id, i.attendee_id]))];
-    const { data: profiles } = await supabase.from('profiles').select('id,full_name').in('id', ids);
+    // Merge pair + group, deduplicate
+    const allItins = [...(pairData || [])];
+    for (const row of [...(groupAsOrganizer || []), ...groupAttendee]) {
+      if (!allItins.find(r => r.id === row.id)) allItins.push(row);
+    }
+
+    // Enrich with profile names (pair attendees + all organizers)
+    const profileIds = [...new Set(allItins.flatMap(i => [i.organizer_id, i.attendee_id].filter(Boolean)))];
+    const { data: profiles } = profileIds.length
+      ? await supabase.from('profiles').select('id,full_name,avatar_url').in('id', profileIds)
+      : { data: [] };
     const nameMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
 
+    // Enrich with group names
+    const groupIds = [...new Set(allItins.map(r => r.group_id).filter(Boolean))];
+    const { data: groups } = groupIds.length
+      ? await supabase.from('groups').select('id, name').in('id', groupIds)
+      : { data: [] };
+    const groupMap = Object.fromEntries((groups || []).map(g => [g.id, g.name]));
+
     res.json({
-      itineraries: (data || []).map(i => ({
+      itineraries: allItins.map(i => ({
         ...i,
         organizerName: nameMap[i.organizer_id] || 'Unknown',
-        attendeeName:  nameMap[i.attendee_id]  || 'Unknown',
+        attendeeName:  i.attendee_id ? (nameMap[i.attendee_id] || 'Unknown') : null,
         isOrganizer: i.organizer_id === req.userId,
+        // Group-specific fields
+        my_vote: i.mode === 'group' && i.organizer_id !== req.userId
+          ? (i.attendee_statuses?.[req.userId] || 'pending')
+          : null,
+        group_name: i.group_id ? (groupMap[i.group_id] || null) : null,
       })),
     });
   });
@@ -1441,6 +1023,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           : itin.selected_suggestion_id === suggestionId;
         if (otherPicksThisCard) {
           updates.locked_at = new Date().toISOString();
+          updates.itinerary_status = 'locked';
         } else if (isOrganizer) {
           // Organizer counter-proposing back after attendee suggested an alternative.
           // Reset attendee to pending and clear all attendeeSelected flags so the attendee
@@ -1585,8 +1168,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can send.' });
 
-    // Note: no status update needed here — /confirm (called immediately after) sets organizer_status='accepted'.
-    // The DB check constraint only allows pending/accepted/declined, so 'sent' cannot be stored.
+    // Transition to awaiting_responses when organizer sends the itinerary.
+    await supabase.from('itineraries').update({ itinerary_status: 'awaiting_responses' }).eq('id', req.params.id);
 
     // Notify attendee
     const senderName = await getProfileName(req.userId, supabase);
@@ -1612,11 +1195,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     const isAttendeeDecline = itin.attendee_id === req.userId;
     const field = itin.organizer_id === req.userId ? 'organizer_status' : 'attendee_status';
-    const declineUpdate = { [field]: 'declined' };
+    const declineUpdate = { [field]: 'declined', itinerary_status: 'cancelled' };
     // If the attendee left busy notes, store them so the organizer sees them on the next reroll.
     if (isAttendeeDecline && req.body.attendee_busy_notes && typeof req.body.attendee_busy_notes === 'string') {
       const sanitizedNotes = sanitizePromptInput(req.body.attendee_busy_notes.trim().slice(0, 300));
-      if (sanitizedNotes) declineUpdate.attendee_busy_notes = sanitizedNotes;
+      if (sanitizedNotes) declineUpdate.attendee_busy_notes = { [itin.attendee_id]: sanitizedNotes };
     }
     await supabase.from('itineraries').update(declineUpdate).eq('id', req.params.id);
 
@@ -2810,5 +2393,1090 @@ ${JSON.stringify(
     });
 
   } // end requireInternalKey guard
+
+  // ═══════════════════════════════════════════════════════════════════
+  // GROUP ITINERARY ROUTES (merged from group-itineraries.js)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /* ── POST /group-itineraries ──────────────────────────────────────────── */
+  // Creates a new group itinerary in organizer_draft state. Suggestions are NOT
+  // generated here — call /suggest after creation to generate AI suggestions.
+  app.post('/group-itineraries', requireAuth, async (req, res) => {
+    const {
+      group_id,
+      attendee_user_ids,
+      date_range_start,
+      date_range_end,
+      time_of_day,
+      max_travel_minutes,
+      context_prompt,
+      event_title,
+      travel_mode: rawTravelMode,
+      location_preference: rawLocationPref,
+      destination: rawDestination,
+      trip_duration_days: rawTripDays,
+      nudge_after_hours: rawNudgeHours,
+      tie_behavior: rawTieBehavior,
+      manual_busy_blocks: rawBusyBlocks,
+    } = req.body;
+
+    // Validate required fields.
+    if (!date_range_start || !date_range_end) {
+      return res.status(400).json({ error: 'date_range_start and date_range_end are required.' });
+    }
+    if (!Array.isArray(attendee_user_ids) || attendee_user_ids.length === 0) {
+      return res.status(400).json({ error: 'attendee_user_ids must be a non-empty array.' });
+    }
+    if (attendee_user_ids.some(id => !isValidUUID(id))) {
+      return res.status(400).json({ error: 'All attendee_user_ids must be valid UUIDs.' });
+    }
+    if (attendee_user_ids.includes(req.userId)) {
+      return res.status(400).json({ error: 'attendee_user_ids must not include the organizer.' });
+    }
+    if (group_id && !isValidUUID(group_id)) {
+      return res.status(400).json({ error: 'group_id must be a valid UUID if provided.' });
+    }
+
+    const VALID_LOCATION_PREFS = new Set(['closer_to_organizer', 'closer_to_attendee', 'system_choice', 'destination']);
+    const VALID_TRAVEL_MODES   = new Set(['local', 'travel', 'remote']);
+    const VALID_TIE_BEHAVIORS  = new Set(['schedule', 'decline']);
+    const VALID_NUDGE_HOURS    = new Set([24, 48, 72, 168]);
+
+    // manual_busy_blocks: array of { date: 'YYYY-MM-DD', label?: string }. Cap at 20 entries.
+    // Midnight-crossing blocks (timeEnd < timeStart) are split into two date entries.
+    const manualBusyBlocks = splitMidnightBlocks(
+      Array.isArray(rawBusyBlocks)
+        ? rawBusyBlocks
+            .slice(0, 20)
+            .filter(b => b && typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date))
+            .map(b => {
+              const entry = { date: b.date };
+              if (typeof b.label === 'string' && b.label.trim())
+                entry.label = sanitizePromptInput(b.label.trim().slice(0, 80));
+              if (typeof b.timeStart === 'string' && /^\d{2}:\d{2}$/.test(b.timeStart))
+                entry.timeStart = b.timeStart;
+              if (typeof b.timeEnd === 'string' && /^\d{2}:\d{2}$/.test(b.timeEnd))
+                entry.timeEnd = b.timeEnd;
+              return entry;
+            })
+        : []
+    );
+
+    const travelMode       = VALID_TRAVEL_MODES.has(rawTravelMode)   ? rawTravelMode  : 'local';
+    const locationPref     = VALID_LOCATION_PREFS.has(rawLocationPref) ? rawLocationPref : 'system_choice';
+    const tieBehavior      = VALID_TIE_BEHAVIORS.has(rawTieBehavior) ? rawTieBehavior : 'schedule';
+    const tripDurationDays = Math.max(1, Math.min(30, parseInt(rawTripDays) || 1));
+    const nudgeAfterHours  = VALID_NUDGE_HOURS.has(parseInt(rawNudgeHours)) ? parseInt(rawNudgeHours) : 48;
+    const destination      = (travelMode === 'travel' && typeof rawDestination === 'string')
+      ? rawDestination.trim().slice(0, 100) || null
+      : null;
+
+    // Build attendee_statuses JSONB map: { user_id: 'pending' } for each attendee.
+    const attendeeStatuses = Object.fromEntries(attendee_user_ids.map(id => [id, 'pending']));
+
+    // quorum_threshold: majority quorum. No DEFAULT in DB — must always be supplied.
+    // Accept an explicit override from the request body if within valid range.
+    const attendeeCount     = attendee_user_ids.length;
+    const defaultThreshold  = Math.ceil(attendeeCount / 2);
+    const rawThreshold      = parseInt(req.body.quorum_threshold);
+    const quorumThreshold   = (!isNaN(rawThreshold) && rawThreshold >= 1 && rawThreshold <= attendeeCount)
+      ? rawThreshold
+      : defaultThreshold;
+
+    const { data: itin, error: insertErr } = await supabase
+      .from('itineraries')
+      .insert({
+        mode:               'group',
+        group_id:           group_id || null,
+        organizer_id:       req.userId,
+        attendee_statuses:  attendeeStatuses,
+        quorum_threshold:   quorumThreshold,  // NO DEFAULT in DB — must supply here
+        tie_behavior:       tieBehavior,
+        itinerary_status:   'organizer_draft',
+        date_range_start,
+        date_range_end,
+        time_of_day:        time_of_day || 'any',
+        max_travel_minutes: max_travel_minutes || null,
+        context_prompt:     sanitizePromptInput(context_prompt || ''),
+        event_title:        typeof event_title === 'string' ? event_title.trim().slice(0, 200) : null,
+        travel_mode:        travelMode,
+        location_preference: locationPref,
+        destination,
+        trip_duration_days: tripDurationDays,
+        nudge_after_hours:  nudgeAfterHours,
+        manual_busy_blocks: manualBusyBlocks,
+        suggestions:        [],
+        changelog:          [],
+        reroll_count:       0,
+      })
+      .select('id')
+      .single();
+
+    if (insertErr) {
+      console.error('[group-itineraries] create error:', insertErr.message);
+      return res.status(500).json({ error: 'Could not create group itinerary.' });
+    }
+
+    res.status(201).json({ itineraryId: itin.id });
+  });
+
+  /* ── POST /group-itineraries/:id/suggest ─────────────────────────────── */
+  // Generates AI suggestions and writes them to the itinerary's suggestions column.
+  // Itinerary stays in organizer_draft — organizer reviews before sending to group.
+  app.post('/group-itineraries/:id/suggest', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    // ── Daily rate limit ──────────────────────────────────────────────────
+    // A4-002: Cap each organizer at 10 group suggestion generations per UTC day.
+    // Mirrors the per-user cap in schedule.js /suggest. Checked before any DB
+    // fetches or Claude calls to fail fast and cheaply.
+    const todayUTC = new Date().toISOString().split('T')[0];
+    const { count: groupSuggestCount, error: groupCountErr } = await supabase
+      .from('itineraries')
+      .select('*', { count: 'exact', head: true })
+      .eq('organizer_id', req.userId)
+      .gte('created_at', `${todayUTC}T00:00:00.000Z`);
+    if (groupCountErr) {
+      console.warn('group suggest rate-limit count failed:', groupCountErr.message);
+    } else if (groupSuggestCount >= 10 && !RATE_LIMIT_EXEMPT.has(req.userSession?.email)) {
+      return res.status(429).json({ error: 'Daily suggestion limit reached. Try again tomorrow.' });
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    const { data: itin, error: fetchErr } = await supabase
+      .from('itineraries')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchErr || !itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
+    if (itin.itinerary_status !== 'organizer_draft') {
+      return res.status(400).json({ error: 'Suggestions can only be generated in organizer_draft status.' });
+    }
+
+    // Load all member profiles (organizer + all attendees).
+    const attendeeIds = Object.keys(itin.attendee_statuses || {});
+    const allMemberIds = [req.userId, ...attendeeIds];
+
+    const { data: profiles, error: profileErr } = await supabase
+      .from('profiles')
+      .select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions')
+      .in('id', allMemberIds);
+
+    if (profileErr || !profiles) {
+      return res.status(500).json({ error: 'Could not load member profiles.' });
+    }
+
+    const members = profiles.map(p => ({
+      ...p,
+      isOrganizer: p.id === req.userId,
+    }));
+
+    // ── Cultural signal detection ─────────────────────────────────────────
+    const safeGroupContext = sanitizePromptInput(itin.context_prompt || '');
+    const groupCulturalSignal = extractCulturalSignal(safeGroupContext,
+      members.flatMap(m => m.activity_preferences || [])
+    );
+    let groupPriorityEvent = null;
+    if (groupCulturalSignal) {
+      try {
+        groupPriorityEvent = await fetchCulturalEvent(
+          groupCulturalSignal.type,
+          groupCulturalSignal.entity,
+          itin.date_range_start,
+          itin.date_range_end
+        );
+      } catch (culturalErr) {
+        console.warn('[group-itineraries/suggest] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const groupPriorityEventBlock = groupPriorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${groupPriorityEvent.title} — ${groupPriorityEvent.date}${groupPriorityEvent.time ? ' at ' + groupPriorityEvent.time : ''}\n` +
+        `Venue: ${groupPriorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────
+
+    const confirmedOrganizerConflict = !!req.body.confirmedOrganizerConflict;
+
+    let suggestions;
+    try {
+      const result = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+        priorityEventBlock: groupPriorityEventBlock,
+        confirmedOrganizerConflict,
+      });
+
+      // If generateGroupSuggestions returns { needsConfirmation: true }, the organizer
+      // is fully blocked. Signal the client to prompt for confirmation.
+      if (result && result.needsConfirmation) {
+        return res.status(200).json({ needsConfirmation: true });
+      }
+
+      suggestions = result;
+    } catch (e) {
+      console.error('[group-itineraries] generateGroupSuggestions failed:', e.message);
+      return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
+    }
+
+    const groupSuggestTelemetry = {
+      cultural_signal_detected: !!groupCulturalSignal,
+      cultural_signal_type:     groupCulturalSignal?.type   || null,
+      cultural_signal_entity:   groupCulturalSignal?.entity || null,
+      cultural_event_found:     !!groupPriorityEvent,
+      cultural_anchor_used:     !!groupPriorityEvent,
+    };
+
+    const { error: updateErr } = await supabase
+      .from('itineraries')
+      .update({ suggestions, suggestion_telemetry: groupSuggestTelemetry })
+      .eq('id', req.params.id);
+
+    if (updateErr) {
+      console.error('[group-itineraries] suggest update error:', updateErr.message);
+      return res.status(500).json({ error: 'Could not save suggestions.' });
+    }
+
+    res.json({ suggestions });
+  });
+
+  /* ── POST /group-itineraries/:id/send ────────────────────────────────── */
+  // Organizer sends the itinerary to all attendees.
+  // Transitions itinerary_status: organizer_draft → awaiting_responses.
+  // Creates a Tier 1 notification for each attendee.
+  app.post('/group-itineraries/:id/send', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, itinerary_status, attendee_statuses, event_title, suggestions')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
+    if (itin.itinerary_status !== 'organizer_draft') {
+      return res.status(400).json({ error: 'Can only send an itinerary that is in organizer_draft status.' });
+    }
+    if (!Array.isArray(itin.suggestions) || itin.suggestions.length === 0) {
+      return res.status(400).json({ error: 'Generate suggestions before sending the itinerary.' });
+    }
+
+    // Optional: organizer can specify which suggestion they're recommending.
+    // Validated against the itinerary's suggestions array. Defaults to first suggestion.
+    const { suggestion_id } = req.body;
+    let selectedSuggestionId = itin.suggestions[0]?.id || null;
+    if (suggestion_id) {
+      const validIds = itin.suggestions.map(s => s.id);
+      if (!validIds.includes(suggestion_id)) {
+        return res.status(400).json({ error: 'suggestion_id does not match any suggestion in this itinerary.' });
+      }
+      selectedSuggestionId = suggestion_id;
+    }
+
+    // Record the organizer's implied acceptance in attendee_suggestion_map so per-card
+    // vote tallies include their preference. Do NOT add them to attendee_statuses — that
+    // map drives the quorum trigger and the organizer is the planner, not a quorum voter.
+    const currentSuggestionMap  = itin.attendee_suggestion_map || {};
+    const updatedSuggestionMap  = { ...currentSuggestionMap, [req.userId]: selectedSuggestionId };
+
+    const { error: updateErr } = await supabase
+      .from('itineraries')
+      .update({
+        itinerary_status:             'awaiting_responses',
+        selected_suggestion_id:       selectedSuggestionId,
+        organizer_recommendation_id:  selectedSuggestionId, // never overwritten by attendee votes
+        attendee_suggestion_map:      updatedSuggestionMap,
+      })
+      .eq('id', req.params.id);
+
+    if (updateErr) {
+      console.error('[group-itineraries] send error:', updateErr.message);
+      return res.status(500).json({ error: 'Could not send itinerary.' });
+    }
+
+    // Notify all attendees — Tier 1 (action required).
+    const organizerName = req.userSession.name || 'Someone';
+    const eventName     = itin.event_title || 'a plan';
+    const attendeeIds   = Object.keys(itin.attendee_statuses || {});
+
+    await Promise.all(attendeeIds.map(attendeeId =>
+      dispatchNotification(supabase, {
+        userId: attendeeId,
+        type: 'group_event_invite',
+        tier: 1,
+        title: `${organizerName} wants to plan ${eventName}`,
+        body: `${organizerName} sent you some plans to review. Tap to vote.`,
+        data: { group_itinerary_id: req.params.id },
+        actionUrl: `/group-itineraries/${req.params.id}`,
+      })
+    ));
+
+    res.json({ message: 'Itinerary sent to group.' });
+  });
+
+  /* ── PATCH /group-itineraries/:id/vote ───────────────────────────────── */
+  // Attendee records their vote. Updates the caller's key in attendee_statuses.
+  // The DB trigger (group_itineraries_lock_check) evaluates quorum — do NOT replicate
+  // that logic here. The trigger runs BEFORE UPDATE on attendee_statuses changes.
+  app.patch('/group-itineraries/:id/vote', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { selected_suggestion_id, vote, busy_notes: rawBusyNotes } = req.body;
+
+    const VALID_VOTES = new Set(['accepted', 'declined', 'abstained']);
+    if (!VALID_VOTES.has(vote)) {
+      return res.status(400).json({ error: 'vote must be one of: accepted, declined, abstained.' });
+    }
+    if (!selected_suggestion_id || typeof selected_suggestion_id !== 'string') {
+      return res.status(400).json({ error: 'selected_suggestion_id is required.' });
+    }
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    if (itin.itinerary_status !== 'awaiting_responses') {
+      return res.status(400).json({ error: 'Voting is only open when itinerary is awaiting_responses.' });
+    }
+
+    // Verify caller is an attendee (not the organizer).
+    const attendeeStatuses = itin.attendee_statuses || {};
+    if (!(req.userId in attendeeStatuses)) {
+      return res.status(403).json({ error: 'Not authorized to vote on this itinerary.' });
+    }
+
+    // Validate that the selected suggestion ID exists in this itinerary.
+    const validIds = (itin.suggestions || []).map(s => s.id);
+    if (!validIds.includes(selected_suggestion_id)) {
+      return res.status(400).json({ error: 'selected_suggestion_id does not match any suggestion.' });
+    }
+
+    // A4-003: Atomically merge this attendee's vote into attendee_statuses via RPC.
+    // Replaces the previous read-modify-write (fetch → merge in JS → update) which
+    // had a lost-update race: two concurrent votes both reading the same initial state
+    // would cause one to silently overwrite the other. The JSONB || operator in the
+    // RPC function merges the single key atomically — no read needed for the write.
+    const { error: voteError } = await supabase.rpc('merge_attendee_vote', {
+      p_itinerary_id: req.params.id,
+      p_user_id:      req.userId,
+      p_vote:         vote,
+    });
+    if (voteError) {
+      console.error('[group-itineraries] vote RPC error:', voteError.message);
+      return res.status(500).json({ error: 'Vote could not be recorded.' });
+    }
+
+    // Re-fetch fresh row so winner computation uses the actual post-vote state,
+    // not the stale pre-RPC snapshot in `itin`.
+    const { data: freshItin, error: refetchErr } = await supabase
+      .from('itineraries')
+      .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
+      .eq('id', req.params.id)
+      .single();
+    if (refetchErr || !freshItin) {
+      return res.status(500).json({ error: 'Could not read updated vote status.' });
+    }
+
+    const freshStatuses        = freshItin.attendee_statuses || {};
+    const updatedSuggestionMap = { ...(freshItin.attendee_suggestion_map || {}), [req.userId]: selected_suggestion_id };
+
+    // Compute the most-voted card among accepted attendees so the DB trigger
+    // locks with the correct winner in selected_suggestion_id.
+    const acceptedUids = Object.entries(freshStatuses).filter(([, v]) => v === 'accepted').map(([uid]) => uid);
+    const voteCounts   = {};
+    acceptedUids.forEach(uid => {
+      const sid = updatedSuggestionMap[uid];
+      if (sid) voteCounts[sid] = (voteCounts[sid] || 0) + 1;
+    });
+    const winnerCard = Object.entries(voteCounts).sort(([, a], [, b]) => b - a)[0]?.[0]
+      || freshItin.organizer_recommendation_id
+      || selected_suggestion_id;
+
+    // Update remaining vote metadata (suggestion map, winner card, optional busy notes).
+    const metaUpdate = {
+      attendee_suggestion_map: updatedSuggestionMap,
+      selected_suggestion_id:  winnerCard,
+    };
+    if (vote === 'declined' && rawBusyNotes && typeof rawBusyNotes === 'string') {
+      const sanitizedNotes = sanitizePromptInput(rawBusyNotes.trim().slice(0, 300));
+      if (sanitizedNotes) {
+        const existingNotes = freshItin.attendee_busy_notes || {};
+        metaUpdate.attendee_busy_notes = { ...existingNotes, [req.userId]: sanitizedNotes };
+      }
+    }
+
+    const { data: updated, error: updateErr } = await supabase
+      .from('itineraries')
+      .update(metaUpdate)
+      .eq('id', req.params.id)
+      .select('itinerary_status, locked_at')
+      .single();
+
+    if (updateErr) {
+      console.error('[group-itineraries] vote meta update error:', updateErr.message);
+      return res.status(500).json({ error: 'Could not record vote.' });
+    }
+
+    // Notify others when attendee counter-proposes (votes for a non-recommendation card).
+    const isCounterProposal = vote === 'accepted' && selected_suggestion_id !== itin.organizer_recommendation_id;
+    if (isCounterProposal) {
+      const counterCard    = (itin.suggestions || []).find(s => s.id === selected_suggestion_id);
+      const counterTitle   = counterCard?.title || 'an alternative';
+      const voterName      = req.userSession?.name || 'Someone';
+      const eventName      = itin.event_title || 'your group event';
+      const notifyIds      = [
+        itin.organizer_id,
+        ...Object.keys(attendeeStatuses).filter(uid => uid !== req.userId),
+      ];
+      await Promise.all(notifyIds.map(uid =>
+        dispatchNotification(supabase, {
+          userId: uid,
+          type: 'group_event_counter_proposal',
+          tier: 2,
+          title: `${voterName} suggested "${counterTitle}"`,
+          body: `${voterName} voted for a different option in ${eventName}. Review it and update your vote if you like it.`,
+          data: { group_itinerary_id: req.params.id },
+          actionUrl: `/group-itineraries/${req.params.id}`,
+        })
+      ));
+    }
+
+    // Notify all members when voting triggers a lock.
+    if (updated.itinerary_status === 'locked') {
+      // Resolve the group name for the notification body.
+      let groupName = itin.event_title || 'Group event';
+      if (itin.group_id) {
+        const { data: groupRow } = await supabase
+          .from('groups')
+          .select('name')
+          .eq('id', itin.group_id)
+          .single();
+        if (groupRow?.name) groupName = groupRow.name;
+      }
+
+      const notifyIds = [
+        itin.organizer_id,
+        ...Object.keys(itin.attendee_statuses || {}),
+      ];
+      await Promise.all(notifyIds.map(uid =>
+        dispatchNotification(supabase, {
+          userId: uid,
+          type: 'itinerary_locked',
+          tier: 1,
+          title: 'Group plans confirmed',
+          body: `${groupName} plans are locked in. Calendar invites for group events are coming soon — add it to your calendar manually from the event view for now.`,
+          data: { group_itinerary_id: req.params.id },
+          actionUrl: `/group-itineraries/${req.params.id}`,
+        })
+      ));
+    }
+
+    res.json({
+      message:          'Vote recorded.',
+      itinerary_status: updated.itinerary_status,
+      locked_at:        updated.locked_at,
+    });
+  });
+
+  /* ── POST /group-itineraries/:id/finalize-lock ───────────────────────── */
+  // Creates Google Calendar events for all group members once an itinerary locks.
+  // Idempotent — if calendar_event_id is already set, returns immediately.
+  // Best-effort: members without valid OAuth tokens are silently skipped.
+  app.post('/group-itineraries/:id/finalize-lock', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin, error: fetchErr } = await supabase
+      .from('itineraries')
+      .select('id, itinerary_status, locked_at, attendee_statuses, organizer_id, suggestions, selected_suggestion_id, event_title, calendar_event_id, calendar_event_url')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchErr || !itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    if (itin.itinerary_status !== 'locked' || !itin.locked_at) {
+      return res.status(400).json({ error: 'Itinerary is not locked.' });
+    }
+
+    if (itin.calendar_event_id) {
+      return res.status(200).json({ message: 'Calendar events already created.', alreadyDone: true });
+    }
+
+    const isOrganizer = req.userId === itin.organizer_id;
+    const isAttendee  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizer && !isAttendee) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    // Resolve selected suggestion
+    const suggestion = (itin.suggestions || []).find(s => s.id === itin.selected_suggestion_id)
+      || itin.suggestions?.[0];
+
+    // All member IDs: organizer + every attendee
+    const memberIds = [itin.organizer_id, ...Object.keys(itin.attendee_statuses || {})];
+
+    // Fetch profiles for all members
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .in('id', memberIds);
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    // Build calendar write promises for each member
+    const calendarPromises = memberIds.map(async (memberId) => {
+      const session = await sessionStore.getSessionBySupabaseId(memberId);
+      if (!session?.tokens?.access_token) {
+        console.warn(`[finalize-lock] No tokens for member ${memberId} — skipping calendar write.`);
+        return null;
+      }
+      return createCalendarEventForUser({
+        session,
+        suggestion,
+        organizer: profileMap[itin.organizer_id] || { email: '', full_name: 'Organizer' },
+        attendee: { full_name: itin.event_title || 'Group Event', email: '' },
+        itineraryId: itin.id,
+        supabase,
+        userId: memberId,
+      });
+    });
+
+    const results = await Promise.allSettled(calendarPromises);
+
+    // Log failures
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`[finalize-lock] Calendar write rejected for member ${memberIds[i]}:`, r.reason);
+      }
+    });
+
+    // Collect successes
+    const fulfilled = results
+      .filter(r => r.status === 'fulfilled' && r.value?.id)
+      .map(r => r.value);
+
+    let calendarEventUrl = null;
+    if (fulfilled.length > 0) {
+      const first = fulfilled[0];
+      calendarEventUrl = first.htmlLink || null;
+      await supabase
+        .from('itineraries')
+        .update({ calendar_event_id: first.id, calendar_event_url: calendarEventUrl })
+        .eq('id', itin.id);
+    }
+
+    return res.json({
+      message: 'Calendar events created.',
+      successCount: fulfilled.length,
+      totalMembers: memberIds.length,
+      calendar_event_url: calendarEventUrl,
+    });
+  });
+
+  /* ── POST /group-itineraries/:id/reroll ──────────────────────────────── */
+  // Organizer requests new suggestions.
+  //   - Appends current suggestions to changelog
+  //   - Increments reroll_count
+  //   - Re-generates suggestions (reads travel_mode/destination from DB, never request body)
+  //   - Resets all attendee_statuses back to 'pending'
+  //   - Keeps itinerary_status as awaiting_responses if already there
+  app.post('/group-itineraries/:id/reroll', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    const isOrganizerReroll = itin.organizer_id === req.userId;
+    const isAttendeeReroll  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizerReroll && !isAttendeeReroll) return res.status(403).json({ error: 'Not authorized.' });
+    // Attendees may only reroll individual cards (not full sets) in awaiting_responses.
+    if (!isOrganizerReroll && !req.body.replaceSuggestionId) {
+      return res.status(403).json({ error: 'Attendees can only re-roll individual suggestions.' });
+    }
+    if (!['organizer_draft', 'awaiting_responses'].includes(itin.itinerary_status)) {
+      return res.status(400).json({ error: 'Can only reroll an itinerary in organizer_draft or awaiting_responses status.' });
+    }
+    if (itin.locked_at) {
+      return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
+    }
+
+    // Load member profiles.
+    const attendeeIds  = Object.keys(itin.attendee_statuses || {});
+    const allMemberIds = [req.userId, ...attendeeIds];
+
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id, full_name, location, activity_preferences, dietary_restrictions, mobility_restrictions')
+      .in('id', allMemberIds);
+
+    const members = (profiles || []).map(p => ({
+      ...p,
+      isOrganizer: p.id === req.userId,
+    }));
+
+    const VALID_REROLL_TYPES = new Set(['timing', 'activity', 'both']);
+    const rerollType = VALID_REROLL_TYPES.has(req.body.rerollType) ? req.body.rerollType : 'both';
+    const rerollContextPrompt = sanitizePromptInput(req.body.contextPrompt || '', 500);
+
+    // Single-card reroll: replace one specific suggestion in-place.
+    const { replaceSuggestionId } = req.body;
+    const existingSuggestions = itin.suggestions || [];
+    const targetSuggestion = replaceSuggestionId
+      ? existingSuggestions.find(s => s.id === replaceSuggestionId) || null
+      : null;
+    if (replaceSuggestionId && !targetSuggestion) {
+      return res.status(400).json({ error: 'replaceSuggestionId does not match any suggestion.' });
+    }
+    const isSingleCard = !!targetSuggestion;
+
+    // ── Cultural signal detection (reroll) ─────────────────────────────────
+    // Use stored context_prompt (original intent) — same pattern as schedule.js reroll.
+    const rerollSafeOriginalContext = sanitizePromptInput(itin.context_prompt || '');
+    const rerollGroupCulturalSignal = extractCulturalSignal(rerollSafeOriginalContext,
+      members.flatMap(m => m.activity_preferences || [])
+    );
+    let rerollGroupPriorityEvent = null;
+    if (rerollGroupCulturalSignal) {
+      try {
+        rerollGroupPriorityEvent = await fetchCulturalEvent(
+          rerollGroupCulturalSignal.type,
+          rerollGroupCulturalSignal.entity,
+          itin.date_range_start,
+          itin.date_range_end
+        );
+      } catch (culturalErr) {
+        console.warn('[group-itineraries/reroll] fetchCulturalEvent failed:', culturalErr.message);
+      }
+    }
+    const rerollGroupPriorityEventBlock = rerollGroupPriorityEvent
+      ? `\nPRIORITY EVENT (mandatory anchor — you MUST build at least one suggestion around this):\n` +
+        `${rerollGroupPriorityEvent.title} — ${rerollGroupPriorityEvent.date}${rerollGroupPriorityEvent.time ? ' at ' + rerollGroupPriorityEvent.time : ''}\n` +
+        `Venue: ${rerollGroupPriorityEvent.venue}\n` +
+        `Instruction: Anchor exactly one of the three suggestions around this event. ` +
+        `Time the suggestion so it leads into the event (e.g. pre-game dinner, drinks before the show). ` +
+        `The other two suggestions should be independent alternatives that don't reference this event.`
+      : '';
+    // ─────────────────────────────────────────────────────────────────────────
+
+    let newSuggestions;
+    try {
+      const rerollResult = await generateGroupSuggestions(itin, members, req.userId, supabase, sessionStore, {
+        rerollType,
+        existingSuggestions,
+        singleCard:         isSingleCard,
+        targetSuggestion:   targetSuggestion,
+        contextPrompt:      rerollContextPrompt,
+        priorityEventBlock: rerollGroupPriorityEventBlock,
+        confirmedOrganizerConflict: true, // rerolls auto-confirm — organizer already accepted conflict on initial suggest
+      });
+
+      // needsConfirmation should not happen on rerolls (auto-confirmed above), but handle gracefully.
+      if (rerollResult && rerollResult.needsConfirmation) {
+        return res.status(200).json({ needsConfirmation: true });
+      }
+
+      newSuggestions = rerollResult;
+    } catch (e) {
+      console.error('[group-itineraries] reroll generateGroupSuggestions failed:', e.message);
+      return res.status(500).json({ error: 'Could not generate suggestions. Please try again.' });
+    }
+
+    // Append old suggestions to changelog with a timestamp entry.
+    const changelogEntry = {
+      reroll_number: (itin.reroll_count || 0) + 1,
+      timestamp:     new Date().toISOString(),
+      suggestions:   isSingleCard ? [targetSuggestion] : existingSuggestions,
+    };
+    const updatedChangelog = [...(itin.changelog || []), changelogEntry];
+
+    // Reset all attendee_statuses back to 'pending' — votes referenced the old card(s).
+    const resetStatuses = Object.fromEntries(
+      Object.keys(itin.attendee_statuses || {}).map(id => [id, 'pending'])
+    );
+
+    let mergedSuggestions;
+    if (isSingleCard) {
+      // Splice the 1 new suggestion in-place with a guaranteed-unique UUID.
+      // newSuggestions[0] already has a UUID from generateGroupSuggestions, use it.
+      const replacement = { ...newSuggestions[0] };
+      mergedSuggestions = existingSuggestions.map(s => s.id === replaceSuggestionId ? replacement : s);
+    } else {
+      // Full reroll: in awaiting_responses append (cap at 6); in draft replace entirely.
+      const MAX_SUGGESTIONS = 6;
+      mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
+        ? [...existingSuggestions, ...newSuggestions].slice(0, MAX_SUGGESTIONS)
+        : newSuggestions;
+    }
+
+    // Clear selected_suggestion_id only if it pointed to the replaced card (or full reroll).
+    // Always keep organizer_recommendation_id intact — it never changes after send.
+    const clearSelected = !isSingleCard || itin.selected_suggestion_id === replaceSuggestionId;
+
+    // Reset attendee_suggestion_map — votes referencing old/replaced cards are stale.
+    const resetSuggestionMap = isSingleCard
+      ? Object.fromEntries(Object.entries(itin.attendee_suggestion_map || {}).filter(([, sid]) => sid !== replaceSuggestionId))
+      : {};
+
+    const rerollGroupTelemetry = {
+      cultural_signal_detected: !!rerollGroupCulturalSignal,
+      cultural_signal_type:     rerollGroupCulturalSignal?.type   || null,
+      cultural_signal_entity:   rerollGroupCulturalSignal?.entity || null,
+      cultural_event_found:     !!rerollGroupPriorityEvent,
+      cultural_anchor_used:     !!rerollGroupPriorityEvent,
+      reroll_count:             (itin.reroll_count || 0) + 1,
+    };
+
+    const { error: updateErr } = await supabase
+      .from('itineraries')
+      .update({
+        suggestions:             mergedSuggestions,
+        changelog:               updatedChangelog,
+        reroll_count:            (itin.reroll_count || 0) + 1,
+        attendee_statuses:       resetStatuses,
+        attendee_suggestion_map: resetSuggestionMap,
+        suggestion_telemetry:    rerollGroupTelemetry,
+        ...(clearSelected ? { selected_suggestion_id: itin.organizer_recommendation_id || null } : {}),
+      })
+      .eq('id', req.params.id);
+
+    if (updateErr) {
+      console.error('[group-itineraries] reroll update error:', updateErr.message);
+      return res.status(500).json({ error: 'Could not save reroll.' });
+    }
+
+    res.json({ suggestions: mergedSuggestions });
+  });
+
+  /* ── GET /group-itineraries ───────────────────────────────────────────── */
+  // Returns all group itineraries where the caller is organizer OR attendee.
+  // Organizer sees all statuses (organizer_draft, awaiting_responses, locked, cancelled).
+  // Attendees only see awaiting_responses, locked (not draft — not sent to them yet).
+  app.get('/group-itineraries', requireAuth, async (req, res) => {
+    const SELECT_COLS = 'id, event_title, itinerary_status, suggestions, quorum_threshold, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id, group_id';
+
+    // Fetch as organizer
+    const { data: asOrganizer } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .eq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+
+    // Fetch as attendee — fetch all rows in relevant statuses not organized by this user,
+    // then filter in JS for those where the caller's ID is a key in attendee_statuses.
+    const { data: potentialAttendee } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .in('itinerary_status', ['awaiting_responses', 'locked'])
+      .neq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+    const asAttendee = (potentialAttendee || []).filter(r => req.userId in (r.attendee_statuses || {}));
+
+    // Merge and deduplicate (shouldn't overlap but be safe).
+    const all = [...(asOrganizer || [])];
+    for (const row of (asAttendee || [])) {
+      if (!all.find(r => r.id === row.id)) all.push(row);
+    }
+
+    // Load organizer profiles for display.
+    const organizerIds = [...new Set(all.map(r => r.organizer_id))];
+    const { data: profiles } = organizerIds.length
+      ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', organizerIds)
+      : { data: [] };
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    // Load group names for display.
+    const groupIds = [...new Set(all.map(r => r.group_id).filter(Boolean))];
+    const { data: groups } = groupIds.length
+      ? await supabase.from('groups').select('id, name').in('id', groupIds)
+      : { data: [] };
+    const groupMap = Object.fromEntries((groups || []).map(g => [g.id, g.name]));
+
+    const itineraries = all.map(itin => ({
+      ...itin,
+      is_organizer: itin.organizer_id === req.userId,
+      organizer: profileMap[itin.organizer_id]
+        ? { id: profileMap[itin.organizer_id].id, full_name: profileMap[itin.organizer_id].full_name }
+        : { id: itin.organizer_id },
+      my_vote: itin.organizer_id !== req.userId
+        ? (itin.attendee_statuses?.[req.userId] || 'pending')
+        : null,
+      group_name: itin.group_id ? (groupMap[itin.group_id] || null) : null,
+    }));
+
+    res.json({ itineraries });
+  });
+
+  /* ── DELETE /group-itineraries/:id ───────────────────────────────────── */
+  // Hard-deletes an organizer_draft itinerary. Organizer-only.
+  // Cannot delete once sent (awaiting_responses) or locked.
+  app.delete('/group-itineraries/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, itinerary_status')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+    if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
+    if (itin.itinerary_status !== 'organizer_draft') {
+      return res.status(400).json({ error: 'Only unsent drafts can be deleted.' });
+    }
+
+    const { error } = await supabase.from('itineraries').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: 'Could not delete itinerary.' });
+    res.json({ ok: true });
+  });
+
+  /* ── GET /group-itineraries/:id ───────────────────────────────────────── */
+  // Returns the full itinerary with suggestions and member vote status.
+  // Only accessible by the organizer or attendees in attendee_statuses.
+  app.get('/group-itineraries/:id', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin, error: fetchErr } = await supabase
+      .from('itineraries')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchErr || !itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    const isOrganizer = itin.organizer_id === req.userId;
+    const isAttendee  = req.userId in (itin.attendee_statuses || {});
+
+    if (!isOrganizer && !isAttendee) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    // Normalize suggestion IDs: old rows may have "s1"/"s2"/"s3" or missing IDs from before
+    // the UUID fix was deployed. Assign stable UUIDs in-place and persist back to the DB so
+    // re-roll single-card targeting never silently falls through to a full reroll.
+    const normalizedSuggestions = (itin.suggestions || []).map(s =>
+      (s && s.id && s.id.length > 4) ? s : { ...s, id: randomUUID() }
+    );
+    const hadLegacyIds = (itin.suggestions || []).some(s => !s?.id || s.id.length <= 4);
+    if (hadLegacyIds) {
+      await supabase
+        .from('itineraries')
+        .update({ suggestions: normalizedSuggestions })
+        .eq('id', req.params.id);
+      itin.suggestions = normalizedSuggestions;
+    }
+
+    // Load minimal member profiles for display.
+    const attendeeIds  = Object.keys(itin.attendee_statuses || {});
+    const allMemberIds = [...new Set([itin.organizer_id, ...attendeeIds])];
+
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id, full_name, avatar_url')
+      .in('id', allMemberIds);
+
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    // Build vote status map: { user_id: { vote, profile, is_organizer? } }
+    // Attendees are sourced from attendee_statuses. The organizer is injected separately
+    // so clients can display their implied acceptance without counting them toward quorum.
+    const voteStatus = Object.fromEntries(
+      attendeeIds.map(id => [
+        id,
+        {
+          vote:    itin.attendee_statuses[id],
+          profile: profileMap[id]
+            ? { id: profileMap[id].id, full_name: profileMap[id].full_name, avatar_url: profileMap[id].avatar_url }
+            : null,
+        },
+      ])
+    );
+
+    // If the organizer has sent their recommendation, include them in vote_status so the
+    // client can show them as having accepted. is_organizer: true lets the UI badge them.
+    if (itin.organizer_recommendation_id) {
+      const orgProfile = profileMap[itin.organizer_id];
+      voteStatus[itin.organizer_id] = {
+        vote:         'accepted',
+        is_organizer: true,
+        profile: orgProfile
+          ? { id: orgProfile.id, full_name: orgProfile.full_name, avatar_url: orgProfile.avatar_url }
+          : { id: itin.organizer_id },
+      };
+    }
+
+    // Fetch the group name so the client can display "[Group Name] — [Event Title]".
+    let groupName = null;
+    if (itin.group_id) {
+      const { data: grp } = await supabase
+        .from('groups')
+        .select('name')
+        .eq('id', itin.group_id)
+        .maybeSingle();
+      if (grp) groupName = grp.name;
+    }
+
+    res.json({
+      ...itin,
+      organizer: profileMap[itin.organizer_id]
+        ? { id: profileMap[itin.organizer_id].id, full_name: profileMap[itin.organizer_id].full_name, avatar_url: profileMap[itin.organizer_id].avatar_url }
+        : { id: itin.organizer_id },
+      vote_status:  voteStatus,
+      is_organizer: isOrganizer,
+      group_name:   groupName,
+    });
+  });
+
+  /* ── POST /group-itineraries/:id/comments ────────────────────────────── */
+  // Adds a comment on a specific suggestion in a group itinerary.
+  // Membership check: caller must be organizer or in attendee_statuses.
+  app.post('/group-itineraries/:id/comments', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { suggestion_id, body: commentBody } = req.body;
+
+    if (!suggestion_id || typeof suggestion_id !== 'string') {
+      return res.status(400).json({ error: 'suggestion_id is required.' });
+    }
+    if (!commentBody || typeof commentBody !== 'string' || !commentBody.trim()) {
+      return res.status(400).json({ error: 'body is required.' });
+    }
+    if (commentBody.length > 2000) {
+      return res.status(400).json({ error: 'Comment body must be 2000 characters or fewer.' });
+    }
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, attendee_statuses, suggestions')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    const isOrganizer = itin.organizer_id === req.userId;
+    const isAttendee  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizer && !isAttendee) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    // Verify suggestion_id exists in this itinerary.
+    const validIds = (itin.suggestions || []).map(s => s.id);
+    if (!validIds.includes(suggestion_id)) {
+      return res.status(400).json({ error: 'suggestion_id does not match any suggestion in this itinerary.' });
+    }
+
+    const { data: comment, error: insertErr } = await supabase
+      .from('group_comments')
+      .insert({
+        itinerary_id:  req.params.id,
+        suggestion_id,
+        user_id:       req.userId,
+        body:          commentBody.trim(),
+      })
+      .select('id, suggestion_id, user_id, body, created_at')
+      .single();
+
+    if (insertErr) {
+      console.error('[group-itineraries] comment insert error:', insertErr.message);
+      return res.status(500).json({ error: 'Could not add comment.' });
+    }
+
+    res.status(201).json({ comment });
+  });
+
+  /* ── GET /group-itineraries/:id/comments ─────────────────────────────── */
+  // Returns paginated comments for an itinerary.
+  // Defaults to 50 per page. Supports ?page= query param (1-indexed).
+  // Membership check: same as POST /comments above.
+  app.get('/group-itineraries/:id/comments', requireAuth, async (req, res) => {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid itinerary ID.' });
+    }
+
+    const { data: itin } = await supabase
+      .from('itineraries')
+      .select('organizer_id, attendee_statuses')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
+
+    const isOrganizer = itin.organizer_id === req.userId;
+    const isAttendee  = req.userId in (itin.attendee_statuses || {});
+    if (!isOrganizer && !isAttendee) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    const PAGE_SIZE = 50;
+    const page      = Math.max(1, parseInt(req.query.page) || 1);
+    const offset    = (page - 1) * PAGE_SIZE;
+
+    // Optional filter by suggestion_id.
+    const suggestionId = req.query.suggestion_id;
+
+    let query = supabase
+      .from('group_comments')
+      .select('id, suggestion_id, user_id, body, created_at', { count: 'exact' })
+      .eq('itinerary_id', req.params.id)
+      .order('created_at', { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (suggestionId && typeof suggestionId === 'string') {
+      query = query.eq('suggestion_id', suggestionId);
+    }
+
+    const { data: comments, count, error: fetchErr } = await query;
+
+    if (fetchErr) {
+      console.error('[group-itineraries] comments fetch error:', fetchErr.message);
+      return res.status(500).json({ error: 'Could not fetch comments.' });
+    }
+
+    // Enrich with minimal profile data.
+    const userIds = [...new Set((comments || []).map(c => c.user_id))];
+    const { data: profiles } = userIds.length
+      ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
+      : { data: [] };
+
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+
+    res.json({
+      comments: (comments || []).map(c => ({
+        ...c,
+        author: profileMap[c.user_id]
+          ? { id: profileMap[c.user_id].id, full_name: profileMap[c.user_id].full_name, avatar_url: profileMap[c.user_id].avatar_url }
+          : { id: c.user_id },
+      })),
+      pagination: {
+        page,
+        page_size: PAGE_SIZE,
+        total: count || 0,
+        has_more: offset + PAGE_SIZE < (count || 0),
+      },
+    });
+  });
 
 };

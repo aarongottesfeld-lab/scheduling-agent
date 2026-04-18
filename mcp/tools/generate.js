@@ -40,10 +40,12 @@ function registerTools(server, supabase, config, userId) {
       const { data: itin, error } = await supabase
         .from('itineraries')
         .insert({
+          mode: 'pair',
           organizer_id: userId,
           attendee_id: friend_id,
           organizer_status: 'pending',
           attendee_status: 'pending',
+          itinerary_status: 'organizer_draft',
           date_range_start,
           date_range_end,
           time_of_day: time_of_day || 'any',

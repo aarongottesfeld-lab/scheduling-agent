@@ -962,7 +962,6 @@ require('./routes/nudges')(app, supabase, requireAuth);
 require('./routes/schedule')(app, supabase, requireAuth, { getSessionBySupabaseId }, requireInternalKey);
 require('./routes/notifications')(app, supabase, requireAuth);
 require('./routes/groups')(app, supabase, requireAuth);
-require('./routes/group-itineraries')(app, supabase, requireAuth, { getSessionBySupabaseId });
 require('./routes/bugReport')(app, supabase, requireAuth);
 
 // ---------------------------------------------------------------------------

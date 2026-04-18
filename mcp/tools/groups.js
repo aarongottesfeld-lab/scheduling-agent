@@ -74,7 +74,7 @@ function registerTools(server, supabase, config, userId) {
       }
 
       const { data: itins } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('id, event_title, itinerary_status, locked_at, created_at, organizer_id, attendee_statuses, selected_suggestion_id')
         .eq('group_id', group_id)
         .order('created_at', { ascending: false });
@@ -98,7 +98,7 @@ function registerTools(server, supabase, config, userId) {
     },
     async ({ group_itinerary_id }) => {
       const { data: itin, error } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('*')
         .eq('id', group_itinerary_id)
         .single();
@@ -180,8 +180,9 @@ function registerTools(server, supabase, config, userId) {
       const quorumThreshold = Math.ceil(attendeeCount / 2);
 
       const { data: itin, error } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .insert({
+          mode: 'group',
           group_id,
           organizer_id: userId,
           attendee_statuses: attendeeStatuses,
@@ -223,7 +224,7 @@ function registerTools(server, supabase, config, userId) {
     },
     async ({ group_itinerary_id, suggestion_id, vote }) => {
       const { data: itin } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('organizer_id, itinerary_status, attendee_statuses, suggestions')
         .eq('id', group_itinerary_id)
         .single();
@@ -258,13 +259,13 @@ function registerTools(server, supabase, config, userId) {
 
       // Update suggestion map
       const { data: freshItin } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('attendee_suggestion_map, itinerary_status, locked_at')
         .eq('id', group_itinerary_id)
         .single();
 
       const updatedMap = { ...(freshItin?.attendee_suggestion_map || {}), [userId]: suggestion_id };
-      await supabase.from('group_itineraries')
+      await supabase.from('itineraries')
         .update({ attendee_suggestion_map: updatedMap })
         .eq('id', group_itinerary_id);
 
@@ -291,7 +292,7 @@ function registerTools(server, supabase, config, userId) {
     },
     async ({ group_itinerary_id, feedback }) => {
       const { data: itin } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('organizer_id, itinerary_status, attendee_statuses, locked_at')
         .eq('id', group_itinerary_id)
         .single();
@@ -583,7 +584,7 @@ function registerTools(server, supabase, config, userId) {
       // Best-effort ghost-vote cleanup
       try {
         const { data: activeItins } = await supabase
-          .from('group_itineraries')
+          .from('itineraries')
           .select('id, attendee_statuses')
           .eq('group_id', group_id)
           .eq('itinerary_status', 'awaiting_responses');
@@ -592,7 +593,7 @@ function registerTools(server, supabase, config, userId) {
             const updated = { ...itin.attendee_statuses };
             delete updated[targetId];
             await supabase
-              .from('group_itineraries')
+              .from('itineraries')
               .update({ attendee_statuses: updated })
               .eq('id', itin.id);
           }

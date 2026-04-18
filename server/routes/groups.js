@@ -482,7 +482,7 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
     // Best-effort: a failure here does not block the member removal response.
     try {
       const { data: activeItins } = await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .select('id, attendee_statuses')
         .eq('group_id', req.params.id)
         .eq('itinerary_status', 'awaiting_responses');
@@ -491,7 +491,7 @@ module.exports = function groupsRouter(app, supabase, requireAuth) {
           const updated = { ...itin.attendee_statuses };
           delete updated[req.params.userId];
           await supabase
-            .from('group_itineraries')
+            .from('itineraries')
             .update({ attendee_statuses: updated })
             .eq('id', itin.id);
         }
