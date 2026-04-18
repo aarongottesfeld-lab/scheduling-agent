@@ -353,7 +353,7 @@ export default function Home() {
   const activeItems    = tabs[activeTab] || [];
   const displayedItems = activeItems.slice(0, visibleCount);
   const hasMore        = visibleCount < activeItems.length;
-  const hasAnyEvents   = allItems.length > 0;
+  const hasAnyEvents   = allItins.length > 0;
 
   return (
     <>
