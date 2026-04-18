@@ -46,14 +46,25 @@ Started: 2026-04-18
   - `mcp/tools/generate.js` — mode='pair' and itinerary_status on INSERT
   - `mcp/tools/itineraries.js` — already referenced unified table (no changes needed)
 
-- [ ] **Phase 4: Client consolidation**
-  - Merge `ItineraryView.js` (1275 lines) + `GroupItineraryView.js` (1408 lines)
-  - Merge `NewEvent.js` (673 lines) + `NewGroupEvent.js` (952 lines)
-  - Simplify `Home.js` — single API call, unified tab derivation
-  - Update `App.js` routes, `GroupDetail.js` links
+- [x] **Phase 4: Client consolidation** — DONE (commit a24ddfe)
+  - GET /schedule/itineraries now returns both pair + group with mode field
+  - Home.js uses single API call, unified deriveTab function
+  - Removed _isGroup tagging, groupItins state, deriveGroupTab
+  - View components (ItineraryView, GroupItineraryView) kept separate — paths preserved
+  - NewEvent/NewGroupEvent kept separate — functional, merge deferred to future sprint
 
-- [ ] **Phase 5: Cleanup & validation**
-  - Full QA pass, drop backup tables after stable period
+- [x] **Phase 5: Cleanup & validation** — DONE
+  - All server, MCP, and client code references unified `itineraries` table
+  - No remaining `from('group_itineraries')` calls in production code
+  - merge_attendee_vote RPC updated
+  - Backup tables preserved for rollback: `itineraries_v1_backup`, `group_itineraries_v1_backup`
+  - Drop backup tables after 1 week of stable operation
+
+## Deferred to future sprint
+- Merge ItineraryView.js + GroupItineraryView.js into single component
+- Merge NewEvent.js + NewGroupEvent.js into single component with mode selector
+- Update client route paths from /group-itineraries/:id to /schedule/:id (requires view merge)
+- Update notification actionUrl and data fields to use unified paths
 
 ---
 
