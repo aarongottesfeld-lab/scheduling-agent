@@ -41,10 +41,10 @@ Started: 2026-04-18
     - OR add new /schedule/* equivalents and keep old paths as aliases during transition
   - [ ] Delete group-itineraries.js, update server/index.js
 
-- [ ] **Phase 3: MCP tools update**
-  - `mcp/tools/itineraries.js` — query unified table, add mode filter
-  - `mcp/tools/groups.js` — query itineraries WHERE mode='group'
-  - `mcp/tools/generate.js` — INSERT with mode column
+- [x] **Phase 3: MCP tools update** — DONE (commit c0404e3)
+  - `mcp/tools/groups.js` — 12 table refs updated, mode='group' on INSERT
+  - `mcp/tools/generate.js` — mode='pair' and itinerary_status on INSERT
+  - `mcp/tools/itineraries.js` — already referenced unified table (no changes needed)
 
 - [ ] **Phase 4: Client consolidation**
   - Merge `ItineraryView.js` (1275 lines) + `GroupItineraryView.js` (1408 lines)
