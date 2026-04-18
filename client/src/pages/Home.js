@@ -1,6 +1,6 @@
 // Home.js — tabbed dashboard showing the user's plans and friends.
-// Fetches nudges, friends, 1:1 itineraries, and group itineraries in parallel on mount.
-// All events (1:1 and group) are bucketed into four shared tabs:
+// Fetches nudges, friends, and all itineraries (pair + group) in parallel on mount.
+// All events are bucketed into four shared tabs:
 //   Waiting for you, Waiting for them, Drafts, Confirmed
 // Group events show a 👥 indicator on the right side of their pill.
 // Each tab shows the first INITIAL_VISIBLE items; a "Load more" button expands the list.
@@ -45,10 +45,25 @@ function formatDateRange(startStr, endStr) {
 }
 
 /**
- * Derives the dashboard tab for a 1:1 itinerary.
+ * Derives the dashboard tab for any itinerary (pair or group).
+ * Uses item.mode to branch between pair negotiation logic and group voting logic.
  * Returns 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
  */
 function deriveTab(item) {
+  if (item.mode === 'group') {
+    if (item.itinerary_status === 'locked') return 'confirmed';
+    if (item.itinerary_status === 'cancelled') return null;
+    if (item.isOrganizer || item.is_organizer) {
+      if (item.itinerary_status === 'organizer_draft') return 'drafts';
+      if (item.itinerary_status === 'awaiting_responses') return 'waiting_them';
+    } else {
+      if (item.itinerary_status === 'awaiting_responses') {
+        return (item.my_vote === 'pending') ? 'waiting_you' : 'waiting_them';
+      }
+    }
+    return null;
+  }
+  // Pair mode
   if (item.locked_at) return 'confirmed';
   if (item.organizer_status === 'declined' || item.attendee_status === 'declined') return null;
   if (item.isOrganizer) {
@@ -62,24 +77,6 @@ function deriveTab(item) {
     if (item.organizer_status === 'accepted' && item.attendee_status === 'pending') return 'waiting_you';
     return 'waiting_you';
   }
-}
-
-/**
- * Derives the dashboard tab for a group itinerary.
- * Returns 'drafts' | 'waiting_them' | 'waiting_you' | 'confirmed' | null.
- */
-function deriveGroupTab(gi) {
-  if (gi.itinerary_status === 'locked') return 'confirmed';
-  if (gi.itinerary_status === 'cancelled') return null;
-  if (gi.is_organizer) {
-    if (gi.itinerary_status === 'organizer_draft') return 'drafts';
-    if (gi.itinerary_status === 'awaiting_responses') return 'waiting_them';
-  } else {
-    if (gi.itinerary_status === 'awaiting_responses') {
-      return (gi.my_vote === 'pending') ? 'waiting_you' : 'waiting_them';
-    }
-  }
-  return null;
 }
 
 /* ── Sub-components ─────────────────────────────────────────── */
@@ -101,13 +98,13 @@ function NudgeCard({ nudge, onDismiss }) {
 }
 
 /**
- * Unified event card — handles both 1:1 (item._isGroup falsy) and group (item._isGroup true) items.
+ * Unified event card — handles both pair and group items via item.mode.
  * Group items show a 👥 indicator on the right; draft items show a delete button.
  * onDelete(id, isGroup) is called when the trash icon is clicked.
  */
 function EventCard({ item, onDelete }) {
-  const isGroup = !!item._isGroup;
-  const tab     = isGroup ? deriveGroupTab(item) : deriveTab(item);
+  const isGroup = item.mode === 'group';
+  const tab     = deriveTab(item);
 
   // For confirmed events, find the locked suggestion for its specific date.
   const confirmedSuggestion = tab === 'confirmed'
@@ -216,7 +213,6 @@ export default function Home() {
   const [nudges,       setNudges]       = useState([]);
   const [friends,      setFriends]      = useState([]);
   const [allItins,     setAllItins]     = useState([]);
-  const [groupItins,   setGroupItins]   = useState([]);
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState('');
   const [activeTab,    setActiveTab]    = useState('waiting_you');
@@ -264,17 +260,15 @@ export default function Home() {
     let mounted = true;
     async function load() {
       try {
-        const [nudgesRes, friendsRes, itinsRes, groupItinsRes] = await Promise.allSettled([
+        const [nudgesRes, friendsRes, itinsRes] = await Promise.allSettled([
           client.get('/nudges/pending'),
           client.get('/friends'),
           client.get('/schedule/itineraries'),
-          client.get('/group-itineraries'),
         ]);
         if (!mounted) return;
         if (nudgesRes.status === 'fulfilled')      setNudges(nudgesRes.value.data?.nudges ?? []);
         if (friendsRes.status === 'fulfilled')     setFriends(friendsRes.value.data?.friends ?? []);
         if (itinsRes.status === 'fulfilled')       setAllItins(itinsRes.value.data?.itineraries ?? []);
-        if (groupItinsRes.status === 'fulfilled')  setGroupItins(groupItinsRes.value.data?.itineraries ?? []);
         const itins   = itinsRes.status === 'fulfilled' ? (itinsRes.value.data?.itineraries ?? []) : [];
         const waiting = itins.filter(i => deriveTab(i) === 'waiting_you');
         const inProg  = itins.filter(i => deriveTab(i) === 'waiting_them');
@@ -299,13 +293,9 @@ export default function Home() {
    * Optimistic: item is removed from state immediately, API call is best-effort.
    */
   async function handleDeleteDraft(id, isGroup) {
-    if (isGroup) {
-      setGroupItins(prev => prev.filter(i => i.id !== id));
-      try { await client.delete(`/group-itineraries/${id}`); } catch { /* best-effort */ }
-    } else {
-      setAllItins(prev => prev.filter(i => i.id !== id));
-      try { await client.delete(`/schedule/itinerary/${id}`); } catch { /* best-effort */ }
-    }
+    setAllItins(prev => prev.filter(i => i.id !== id));
+    const endpoint = isGroup ? `/group-itineraries/${id}` : `/schedule/itinerary/${id}`;
+    try { await client.delete(endpoint); } catch { /* best-effort */ }
   }
 
   function byEventDate(a, b) {
@@ -343,16 +333,12 @@ export default function Home() {
     setVisibleCount(INITIAL_VISIBLE);
   }
 
-  // Tag group items so EventCard can distinguish them, then merge both lists.
-  const taggedGroupItins = groupItins.map(gi => ({ ...gi, _isGroup: true }));
-  const allItems = [...allItins, ...taggedGroupItins];
-
-  // Bucket into four tabs, sorted chronologically within each.
+  // Bucket into four tabs, sorted within each.
   const tabs = {
-    drafts:       allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'drafts').sort(sortItems),
-    waiting_them: allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_them').sort(sortItems),
-    waiting_you:  allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'waiting_you').sort(sortItems),
-    confirmed:    allItems.filter(i => (i._isGroup ? deriveGroupTab(i) : deriveTab(i)) === 'confirmed').sort(sortItems),
+    drafts:       allItins.filter(i => deriveTab(i) === 'drafts').sort(sortItems),
+    waiting_them: allItins.filter(i => deriveTab(i) === 'waiting_them').sort(sortItems),
+    waiting_you:  allItins.filter(i => deriveTab(i) === 'waiting_you').sort(sortItems),
+    confirmed:    allItins.filter(i => deriveTab(i) === 'confirmed').sort(sortItems),
   };
 
   const TAB_CONFIG = [

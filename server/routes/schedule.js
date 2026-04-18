@@ -856,11 +856,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
   });
 
   /* ── GET /schedule/itineraries ───────────────────────────── */
+  // Returns BOTH pair and group itineraries for the current user in a single response.
+  // Each item includes a `mode` field ('pair'|'group') so the client can route to the
+  // correct view component and derive the correct tab state.
   app.get('/schedule/itineraries', requireAuth, async (req, res) => {
     const filter = req.query.filter; // 'waiting' | 'upcoming' | undefined = all
+    const SELECT_COLS = 'id, mode, organizer_id, attendee_id, group_id, organizer_status, attendee_status, attendee_statuses, itinerary_status, quorum_threshold, suggestions, locked_at, created_at, reroll_count, event_title, date_range_start, date_range_end, selected_suggestion_id';
 
     // Hard-delete any unlocked itineraries whose scheduling window has already passed.
-    // This runs as a side-effect of listing so no separate cron job is needed.
     const todayStr = new Date().toISOString().split('T')[0];
     await supabase
       .from('itineraries')
@@ -869,30 +872,68 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       .is('locked_at', null)
       .lt('date_range_end', todayStr);
 
-    let query = supabase
+    // Fetch pair itineraries (organizer or attendee)
+    let pairQuery = supabase
       .from('itineraries')
-      .select('id, organizer_id, attendee_id, organizer_status, attendee_status, suggestions, locked_at, created_at, reroll_count, event_title, date_range_start, date_range_end, selected_suggestion_id')
+      .select(SELECT_COLS)
+      .eq('mode', 'pair')
       .or(`organizer_id.eq.${req.userId},attendee_id.eq.${req.userId}`)
       .order('created_at', { ascending: false })
       .limit(50);
+    if (filter === 'waiting')  pairQuery = pairQuery.is('locked_at', null);
+    if (filter === 'upcoming') pairQuery = pairQuery.not('locked_at', 'is', null);
 
-    if (filter === 'waiting')  query = query.is('locked_at', null);
-    if (filter === 'upcoming') query = query.not('locked_at', 'is', null);
+    // Fetch group itineraries (organizer or attendee in attendee_statuses)
+    const { data: groupAsOrganizer } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .eq('mode', 'group')
+      .eq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
 
-    const { data, error } = await query;
+    const { data: groupAsMember } = await supabase
+      .from('itineraries')
+      .select(SELECT_COLS)
+      .eq('mode', 'group')
+      .in('itinerary_status', ['awaiting_responses', 'locked'])
+      .neq('organizer_id', req.userId)
+      .order('created_at', { ascending: false });
+    const groupAttendee = (groupAsMember || []).filter(r => req.userId in (r.attendee_statuses || {}));
+
+    const { data: pairData, error } = await pairQuery;
     if (error) return res.status(500).json({ error: 'Could not fetch itineraries.' });
 
-    // Enrich with profile names
-    const ids = [...new Set((data || []).flatMap(i => [i.organizer_id, i.attendee_id]))];
-    const { data: profiles } = await supabase.from('profiles').select('id,full_name').in('id', ids);
+    // Merge pair + group, deduplicate
+    const allItins = [...(pairData || [])];
+    for (const row of [...(groupAsOrganizer || []), ...groupAttendee]) {
+      if (!allItins.find(r => r.id === row.id)) allItins.push(row);
+    }
+
+    // Enrich with profile names (pair attendees + all organizers)
+    const profileIds = [...new Set(allItins.flatMap(i => [i.organizer_id, i.attendee_id].filter(Boolean)))];
+    const { data: profiles } = profileIds.length
+      ? await supabase.from('profiles').select('id,full_name,avatar_url').in('id', profileIds)
+      : { data: [] };
     const nameMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
 
+    // Enrich with group names
+    const groupIds = [...new Set(allItins.map(r => r.group_id).filter(Boolean))];
+    const { data: groups } = groupIds.length
+      ? await supabase.from('groups').select('id, name').in('id', groupIds)
+      : { data: [] };
+    const groupMap = Object.fromEntries((groups || []).map(g => [g.id, g.name]));
+
     res.json({
-      itineraries: (data || []).map(i => ({
+      itineraries: allItins.map(i => ({
         ...i,
         organizerName: nameMap[i.organizer_id] || 'Unknown',
-        attendeeName:  nameMap[i.attendee_id]  || 'Unknown',
+        attendeeName:  i.attendee_id ? (nameMap[i.attendee_id] || 'Unknown') : null,
         isOrganizer: i.organizer_id === req.userId,
+        // Group-specific fields
+        my_vote: i.mode === 'group' && i.organizer_id !== req.userId
+          ? (i.attendee_statuses?.[req.userId] || 'pending')
+          : null,
+        group_name: i.group_id ? (groupMap[i.group_id] || null) : null,
       })),
     });
   });
