@@ -20,12 +20,15 @@ Started: 2026-04-18
   - Migration applied to Supabase (project: bgeqxnrwrphbzenfrbdb)
 
 - [ ] **Phase 2: Server route consolidation** — IN PROGRESS
-  - Merge `server/routes/schedule.js` (2814 lines) and `server/routes/group-itineraries.js` (1810 lines)
-  - Extract `server/utils/promptBuilder.js` (buildSuggestPrompt, RENDEZVOUS_SYSTEM_PROMPT, classifyIntent, deriveGeoContext, etc.)
-  - Extract `server/utils/availability.js` (findFreeWindows, findFreeWindowsForGroup, timeOfDayHours, etc.)
-  - Unified endpoints under `/schedule/*` — all `/group-itineraries/*` routes removed
-  - Delete `group-itineraries.js`, update `server/index.js`
-  - Key: route handlers branch on `mode` for participant logic, availability, and prompt building
+  - [x] Extract `server/utils/availability.js` — DONE (commit 970739c)
+    - Exports: timeOfDayHours, findFreeWindows, findFreeWindowsForGroup, fmtWindowDate, formatTime12h, splitMidnightBlocks, fetchBusy, inferDurationMinutes
+  - [x] Fix merge_attendee_vote RPC → unified itineraries table — DONE (commit 970739c)
+  - [ ] Extract `server/utils/promptBuilder.js` — agent may have completed, check for file
+    - Should export: RENDEZVOUS_SYSTEM_PROMPT, CLAUDE_MODEL, THEME_FILLER, themeMatchesContextPrompt, classifyIntent, extractVenueName, buildVenueSubstitutionBlock, buildExcludedWindowsBlock, buildAttendeeNotesBlock, deriveGeoContext, buildSuggestPrompt, buildGroupSuggestPrompt, getProfileName, fetchAcceptedPairHistory, and group-specific helpers (fetchGroupHistory, buildGroupAttendeeNotesBlock)
+  - [ ] Update schedule.js to import from extracted utils and reference unified `itineraries` table with mode='pair'
+  - [ ] Update group-itineraries.js table references to unified `itineraries` table with mode='group'
+  - [ ] Merge group route handlers into schedule.js
+  - [ ] Delete group-itineraries.js, update server/index.js
 
 - [ ] **Phase 3: MCP tools update**
   - `mcp/tools/itineraries.js` — query unified table, add mode filter

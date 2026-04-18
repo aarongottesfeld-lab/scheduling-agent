@@ -1284,10 +1284,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     const { data: itinerary, error: insertErr } = await supabase
       .from('itineraries')
       .insert({
+        mode:             'pair',
         organizer_id:     req.userId,
         attendee_id:      targetUserId,
         organizer_status: 'pending',
         attendee_status:  'pending',
+        itinerary_status: 'organizer_draft',
         suggestions:      suggestions,
         reroll_count:     0,
         date_range_start: start,
@@ -1441,6 +1443,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
           : itin.selected_suggestion_id === suggestionId;
         if (otherPicksThisCard) {
           updates.locked_at = new Date().toISOString();
+          updates.itinerary_status = 'locked';
         } else if (isOrganizer) {
           // Organizer counter-proposing back after attendee suggested an alternative.
           // Reset attendee to pending and clear all attendeeSelected flags so the attendee
@@ -1585,8 +1588,8 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId) return res.status(403).json({ error: 'Only the organizer can send.' });
 
-    // Note: no status update needed here — /confirm (called immediately after) sets organizer_status='accepted'.
-    // The DB check constraint only allows pending/accepted/declined, so 'sent' cannot be stored.
+    // Transition to awaiting_responses when organizer sends the itinerary.
+    await supabase.from('itineraries').update({ itinerary_status: 'awaiting_responses' }).eq('id', req.params.id);
 
     // Notify attendee
     const senderName = await getProfileName(req.userId, supabase);
@@ -1612,11 +1615,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
     const isAttendeeDecline = itin.attendee_id === req.userId;
     const field = itin.organizer_id === req.userId ? 'organizer_status' : 'attendee_status';
-    const declineUpdate = { [field]: 'declined' };
+    const declineUpdate = { [field]: 'declined', itinerary_status: 'cancelled' };
     // If the attendee left busy notes, store them so the organizer sees them on the next reroll.
     if (isAttendeeDecline && req.body.attendee_busy_notes && typeof req.body.attendee_busy_notes === 'string') {
       const sanitizedNotes = sanitizePromptInput(req.body.attendee_busy_notes.trim().slice(0, 300));
-      if (sanitizedNotes) declineUpdate.attendee_busy_notes = sanitizedNotes;
+      if (sanitizedNotes) declineUpdate.attendee_busy_notes = { [itin.attendee_id]: sanitizedNotes };
     }
     await supabase.from('itineraries').update(declineUpdate).eq('id', req.params.id);
 

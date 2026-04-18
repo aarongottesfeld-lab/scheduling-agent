@@ -428,7 +428,7 @@ async function fetchGroupHistory(groupId, supabase, limit = 3) {
   if (!groupId) return [];
   try {
     const { data } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('id, suggestions, selected_suggestion_id')
       .eq('group_id', groupId)
       .eq('itinerary_status', 'locked')
@@ -813,8 +813,9 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       : defaultThreshold;
 
     const { data: itin, error: insertErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .insert({
+        mode:               'group',
         group_id:           group_id || null,
         organizer_id:       req.userId,
         attendee_statuses:  attendeeStatuses,
@@ -862,7 +863,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     // fetches or Claude calls to fail fast and cheaply.
     const todayUTC = new Date().toISOString().split('T')[0];
     const { count: groupSuggestCount, error: groupCountErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('*', { count: 'exact', head: true })
       .eq('organizer_id', req.userId)
       .gte('created_at', `${todayUTC}T00:00:00.000Z`);
@@ -874,7 +875,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     // ─────────────────────────────────────────────────────────────────────
 
     const { data: itin, error: fetchErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('*')
       .eq('id', req.params.id)
       .single();
@@ -961,7 +962,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     };
 
     const { error: updateErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .update({ suggestions, suggestion_telemetry: groupSuggestTelemetry })
       .eq('id', req.params.id);
 
@@ -983,7 +984,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, itinerary_status, attendee_statuses, event_title, suggestions')
       .eq('id', req.params.id)
       .single();
@@ -1016,7 +1017,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const updatedSuggestionMap  = { ...currentSuggestionMap, [req.userId]: selectedSuggestionId };
 
     const { error: updateErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .update({
         itinerary_status:             'awaiting_responses',
         selected_suggestion_id:       selectedSuggestionId,
@@ -1070,7 +1071,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
       .eq('id', req.params.id)
       .single();
@@ -1111,7 +1112,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     // Re-fetch fresh row so winner computation uses the actual post-vote state,
     // not the stale pre-RPC snapshot in `itin`.
     const { data: freshItin, error: refetchErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, organizer_recommendation_id, itinerary_status, attendee_statuses, attendee_suggestion_map, suggestions, event_title, group_id, attendee_busy_notes')
       .eq('id', req.params.id)
       .single();
@@ -1148,7 +1149,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: updated, error: updateErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .update(metaUpdate)
       .eq('id', req.params.id)
       .select('itinerary_status, locked_at')
@@ -1230,7 +1231,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin, error: fetchErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('id, itinerary_status, locked_at, attendee_statuses, organizer_id, suggestions, selected_suggestion_id, event_title, calendar_event_id, calendar_event_url')
       .eq('id', req.params.id)
       .single();
@@ -1302,7 +1303,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       const first = fulfilled[0];
       calendarEventUrl = first.htmlLink || null;
       await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .update({ calendar_event_id: first.id, calendar_event_url: calendarEventUrl })
         .eq('id', itin.id);
     }
@@ -1328,7 +1329,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('*')
       .eq('id', req.params.id)
       .single();
@@ -1475,7 +1476,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     };
 
     const { error: updateErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .update({
         suggestions:             mergedSuggestions,
         changelog:               updatedChangelog,
@@ -1504,7 +1505,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
 
     // Fetch as organizer
     const { data: asOrganizer } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select(SELECT_COLS)
       .eq('organizer_id', req.userId)
       .order('created_at', { ascending: false });
@@ -1512,7 +1513,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     // Fetch as attendee — fetch all rows in relevant statuses not organized by this user,
     // then filter in JS for those where the caller's ID is a key in attendee_statuses.
     const { data: potentialAttendee } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select(SELECT_COLS)
       .in('itinerary_status', ['awaiting_responses', 'locked'])
       .neq('organizer_id', req.userId)
@@ -1561,7 +1562,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     if (!isValidUUID(req.params.id)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, itinerary_status')
       .eq('id', req.params.id)
       .maybeSingle();
@@ -1572,7 +1573,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
       return res.status(400).json({ error: 'Only unsent drafts can be deleted.' });
     }
 
-    const { error } = await supabase.from('group_itineraries').delete().eq('id', req.params.id);
+    const { error } = await supabase.from('itineraries').delete().eq('id', req.params.id);
     if (error) return res.status(500).json({ error: 'Could not delete itinerary.' });
     res.json({ ok: true });
   });
@@ -1586,7 +1587,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin, error: fetchErr } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('*')
       .eq('id', req.params.id)
       .single();
@@ -1609,7 +1610,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     const hadLegacyIds = (itin.suggestions || []).some(s => !s?.id || s.id.length <= 4);
     if (hadLegacyIds) {
       await supabase
-        .from('group_itineraries')
+        .from('itineraries')
         .update({ suggestions: normalizedSuggestions })
         .eq('id', req.params.id);
       itin.suggestions = normalizedSuggestions;
@@ -1697,7 +1698,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, attendee_statuses, suggestions')
       .eq('id', req.params.id)
       .single();
@@ -1745,7 +1746,7 @@ module.exports = function groupItinerariesRouter(app, supabase, requireAuth, ses
     }
 
     const { data: itin } = await supabase
-      .from('group_itineraries')
+      .from('itineraries')
       .select('organizer_id, attendee_statuses')
       .eq('id', req.params.id)
       .single();
