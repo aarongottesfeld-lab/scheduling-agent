@@ -1825,7 +1825,7 @@ ${JSON.stringify(
     res.json({ itinerary: updated });
     } catch (outerErr) {
       console.error('[reroll] UNHANDLED ERROR:', outerErr.message, outerErr.stack);
-      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+      if (!res.headersSent) res.status(500).json({ error: `Reroll failed: ${outerErr.message}` });
     }
   });
 
