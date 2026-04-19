@@ -2789,9 +2789,10 @@ let newSuggestions;
     // would cause one to silently overwrite the other. The JSONB || operator in the
     // RPC function merges the single key atomically — no read needed for the write.
     const { error: voteError } = await supabase.rpc('merge_attendee_vote', {
-      p_itinerary_id: req.params.id,
-      p_user_id:      req.userId,
-      p_vote:         vote,
+      p_itinerary_id:  req.params.id,
+      p_user_id:       req.userId,
+      p_vote:          vote,
+      p_suggestion_id: selected_suggestion_id,
     });
     if (voteError) {
       console.error('[group-itineraries] vote RPC error:', voteError.message);
@@ -2809,45 +2810,28 @@ let newSuggestions;
       return res.status(500).json({ error: 'Could not read updated vote status.' });
     }
 
-    const freshStatuses        = freshItin.attendee_statuses || {};
-    const updatedSuggestionMap = { ...(freshItin.attendee_suggestion_map || {}), [req.userId]: selected_suggestion_id };
+    const freshStatuses = freshItin.attendee_statuses || {};
 
-    // Compute the most-voted card among accepted attendees so the DB trigger
-    // locks with the correct winner in selected_suggestion_id.
-    const acceptedUids = Object.entries(freshStatuses).filter(([, v]) => v === 'accepted').map(([uid]) => uid);
-    const voteCounts   = {};
-    acceptedUids.forEach(uid => {
-      const sid = updatedSuggestionMap[uid];
-      if (sid) voteCounts[sid] = (voteCounts[sid] || 0) + 1;
-    });
-    const winnerCard = Object.entries(voteCounts).sort(([, a], [, b]) => b - a)[0]?.[0]
-      || freshItin.organizer_recommendation_id
-      || selected_suggestion_id;
-
-    // Update remaining vote metadata (suggestion map, winner card, optional busy notes).
-    const metaUpdate = {
-      attendee_suggestion_map: updatedSuggestionMap,
-      selected_suggestion_id:  winnerCard,
-    };
+    // attendee_suggestion_map is now updated atomically by merge_attendee_vote RPC.
+    // selected_suggestion_id is set by the DB trigger on lock (per-card quorum).
+    // Only optional busy notes need updating here.
+    // Save busy notes if attendee declined with notes
     if (vote === 'declined' && rawBusyNotes && typeof rawBusyNotes === 'string') {
       const sanitizedNotes = sanitizePromptInput(rawBusyNotes.trim().slice(0, 300));
       if (sanitizedNotes) {
         const existingNotes = freshItin.attendee_busy_notes || {};
-        metaUpdate.attendee_busy_notes = { ...existingNotes, [req.userId]: sanitizedNotes };
+        await supabase
+          .from('itineraries')
+          .update({ attendee_busy_notes: { ...existingNotes, [req.userId]: sanitizedNotes } })
+          .eq('id', req.params.id);
       }
     }
 
-    const { data: updated, error: updateErr } = await supabase
-      .from('itineraries')
-      .update(metaUpdate)
-      .eq('id', req.params.id)
-      .select('itinerary_status, locked_at')
-      .single();
-
-    if (updateErr) {
-      console.error('[group-itineraries] vote meta update error:', updateErr.message);
-      return res.status(500).json({ error: 'Could not record vote.' });
-    }
+    // Use freshItin for status — the RPC already triggered the lock check
+    const updated = {
+      itinerary_status: freshItin.itinerary_status,
+      locked_at: freshItin.locked_at,
+    };
 
     // Notify others when attendee counter-proposes (votes for a non-recommendation card).
     const isCounterProposal = vote === 'accepted' && selected_suggestion_id !== itin.organizer_recommendation_id;

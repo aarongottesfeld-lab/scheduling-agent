@@ -362,11 +362,14 @@ function GroupSuggestionCard({
 
   // Quorum-relevant counts exclude the organizer entry (is_organizer: true) since the
   // organizer's acceptance is implied by sending, not a quorum vote.
-  const attendeeEntries = Object.values(voteStatus || {}).filter(v => !v.is_organizer);
+  // Use entries (not values) to preserve user IDs for attendee_suggestion_map lookups
+  const attendeeEntries = Object.entries(voteStatus || {}).filter(([, v]) => !v.is_organizer);
   const totalAttendees = attendeeEntries.length;
-  const acceptCount    = attendeeEntries.filter(v => v.vote === 'accepted').length;
-  const declineCount   = attendeeEntries.filter(v => v.vote === 'declined').length;
-  const respondedCount = attendeeEntries.filter(v => v.vote !== 'pending').length;
+  // Count votes FOR THIS CARD specifically (not total accepted across all cards)
+  const acceptCount    = attendeeEntries.filter(([uid, v]) => v.vote === 'accepted' && attendeeSuggestionMap?.[uid] === suggestion.id).length;
+  const declineCount   = attendeeEntries.filter(([, v]) => v.vote === 'declined').length;
+  const respondedCount = attendeeEntries.filter(([, v]) => v.vote !== 'pending').length;
+  const otherCardCount = attendeeEntries.filter(([uid, v]) => v.vote === 'accepted' && attendeeSuggestionMap?.[uid] && attendeeSuggestionMap?.[uid] !== suggestion.id).length;
 
   const narrative   = suggestion.narrative || '';
   const truncated   = narrative.length > 120 ? narrative.slice(0, 120) + '…' : narrative;
@@ -429,7 +432,7 @@ function GroupSuggestionCard({
         {/* Organizer vote tally (awaiting_responses only) */}
         {isOrganizer && isAwaiting && (
           <div style={{ marginTop: 8, fontSize: '0.8rem', fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
-            {respondedCount}/{totalAttendees} responded · {acceptCount} ✓ accepted · {declineCount} ✗ declined
+            {acceptCount}/{totalAttendees} voted for this{otherCardCount > 0 ? ` · ${otherCardCount} voted other` : ''}{declineCount > 0 ? ` · ${declineCount} declined` : ''}
           </div>
         )}
       </div>
