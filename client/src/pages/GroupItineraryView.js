@@ -428,8 +428,8 @@ function GroupSuggestionCard({
           </div>
         </div>
 
-        {/* Organizer vote tally (awaiting_responses only) */}
-        {isOrganizer && isAwaiting && (
+        {/* Per-card vote tally (visible to all members while voting is open) */}
+        {isAwaiting && (acceptCount > 0 || otherCardCount > 0 || declineCount > 0) && (
           <div style={{ marginTop: 8, fontSize: '0.8rem', fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
             {acceptCount}/{totalAttendees} voted for this{otherCardCount > 0 ? ` · ${otherCardCount} voted other` : ''}{declineCount > 0 ? ` · ${declineCount} declined` : ''}
           </div>
