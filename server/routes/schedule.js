@@ -1220,6 +1220,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
 
   /* ── POST /schedule/itinerary/:id/reroll ─────────────────── */
   app.post('/schedule/itinerary/:id/reroll', requireAuth, async (req, res) => {
+    try {
     const itineraryId = req.params.id;
     if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
@@ -1816,6 +1817,10 @@ ${JSON.stringify(
     });
 
     res.json({ itinerary: updated });
+    } catch (outerErr) {
+      console.error('[reroll] UNHANDLED ERROR:', outerErr.message, outerErr.stack);
+      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   /* ── PATCH /schedule/itinerary/:id/title ─────────────────── */
