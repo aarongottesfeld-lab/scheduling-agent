@@ -42,3 +42,17 @@ BETA_TESTING.md
 audit-*.md
 competitive/
 REFACTOR_PROGRESS.md
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Playwright
+playwright.config.js
+playwright-report/
+test-results/
+tests/
+tests-examples/
