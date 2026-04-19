@@ -3150,6 +3150,27 @@ let newSuggestions;
       return res.status(500).json({ error: 'Could not save reroll.' });
     }
 
+    // Notify all group members when new options are appended (not drafts)
+    if (itin.itinerary_status === 'awaiting_responses') {
+      const rollerName = await getProfileName(req.userId, supabase);
+      const eventName  = itin.event_title || 'your group event';
+      const notifyIds  = [
+        ...(itin.organizer_id !== req.userId ? [itin.organizer_id] : []),
+        ...Object.keys(itin.attendee_statuses || {}).filter(uid => uid !== req.userId),
+      ];
+      await Promise.all(notifyIds.map(uid =>
+        dispatchNotification(supabase, {
+          userId: uid,
+          type:   'itinerary_reroll',
+          tier:   2,
+          title:  `${rollerName} added new options`,
+          body:   `${rollerName} added new options to ${eventName}. Check them out and update your vote.`,
+          data:   { group_itinerary_id: req.params.id },
+          actionUrl: `/group-itineraries/${req.params.id}`,
+        })
+      ));
+    }
+
     res.json({ suggestions: mergedSuggestions });
   });
 
