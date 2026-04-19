@@ -1165,9 +1165,9 @@ export default function ItineraryView() {
           {error && <div className="alert alert--error" style={{ marginBottom: 12 }}>{error}</div>}
 
           {/* Attendee busy notes banner — shown to organizer after attendee declines with notes */}
-          {isOrganizer && itin?.attendee_busy_notes && (
+          {isOrganizer && itin?.attendee_busy_notes && Object.keys(itin.attendee_busy_notes).length > 0 && (
             <div className="alert" style={{ marginBottom: 12, background: 'var(--surface-2)', borderLeft: '3px solid var(--warning, #f59e0b)' }}>
-              <strong>{attendeeName} mentioned:</strong> {itin.attendee_busy_notes}
+              <strong>{attendeeName} mentioned:</strong> {typeof itin.attendee_busy_notes === 'string' ? itin.attendee_busy_notes : Object.values(itin.attendee_busy_notes || {}).filter(Boolean).join('; ')}
             </div>
           )}
 
