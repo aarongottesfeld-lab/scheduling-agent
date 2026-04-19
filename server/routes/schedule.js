@@ -1017,22 +1017,37 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       // If the other side already accepted but chose a different card, the picker is
       // counter-proposing: reset the other side to pending and clear attendeeSelected flags
       // so the back-and-forth loop can continue.
-      if (otherStatus === 'accepted') {
-        const otherPicksThisCard = isOrganizer
-          ? (itin.suggestions || []).some(s => s.id === suggestionId && s.attendeeSelected)
-          : itin.selected_suggestion_id === suggestionId;
-        if (otherPicksThisCard) {
+      // Check if the organizer is accepting a card the attendee counter-proposed.
+      // A counter-proposal sets attendeeSelected=true on the suggestion but keeps
+      // attendee_status='pending'. If the organizer now picks that same card, both
+      // sides agree — lock immediately. The attendee's counter-proposal counts as
+      // implicit acceptance of that card.
+      if (isOrganizer) {
+        const attendeePickedThisCard = (itin.suggestions || []).some(s => s.id === suggestionId && s.attendeeSelected);
+        if (attendeePickedThisCard) {
+          // Mutual agreement — lock
           updates.locked_at = new Date().toISOString();
           updates.itinerary_status = 'locked';
-        } else if (isOrganizer) {
-          // Organizer counter-proposing back after attendee suggested an alternative.
-          // Reset attendee to pending and clear all attendeeSelected flags so the attendee
-          // sees the organizer's new pick with fresh Accept/Decline/Suggest controls.
+          updates.attendee_status = 'accepted';
+        } else if (otherStatus === 'accepted') {
+          // Attendee formally accepted (not counter-proposed) the same card
+          if (itin.selected_suggestion_id === suggestionId || itin.attendee_status === 'accepted') {
+            updates.locked_at = new Date().toISOString();
+            updates.itinerary_status = 'locked';
+          }
+        } else {
+          // Organizer picking a card the attendee hasn't chosen — reset attendee
           updates.attendee_status = 'pending';
           updates.suggestions = (itin.suggestions || []).map(s => ({ ...s, attendeeSelected: false }));
+        }
+      } else {
+        // Attendee accepting
+        if (otherStatus === 'accepted' && itin.selected_suggestion_id === suggestionId) {
+          // Both picking the same card — lock
+          updates.locked_at = new Date().toISOString();
+          updates.itinerary_status = 'locked';
         } else {
-          // Attendee picking a different card — same as isSuggestAlternative path.
-          // Keep attendee_status='pending' to avoid the auto-lock trigger.
+          // Attendee picking a different card than organizer — counter-propose
           const updatedSuggestions = (itin.suggestions || []).map(s => ({
             ...s,
             attendeeSelected: s.id === suggestionId,
