@@ -1221,10 +1221,12 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
   /* ── POST /schedule/itinerary/:id/reroll ─────────────────── */
   app.post('/schedule/itinerary/:id/reroll', requireAuth, async (req, res) => {
     try {
+    console.log('[reroll] STEP 1: start', req.params.id);
     const itineraryId = req.params.id;
     if (!isValidUUID(itineraryId)) return res.status(400).json({ error: 'Invalid itinerary ID.' });
 
     const { data: itin } = await supabase.from('itineraries').select('*').eq('id', itineraryId).single();
+    console.log('[reroll] STEP 2: itin fetched, mode=', itin?.mode);
     if (!itin) return res.status(404).json({ error: 'Itinerary not found.' });
     if (itin.organizer_id !== req.userId && itin.attendee_id !== req.userId) return res.status(403).json({ error: 'Not authorized.' });
     if (itin.locked_at) return res.status(400).json({ error: 'Cannot reroll a locked itinerary.' });
@@ -1288,12 +1290,14 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       sessionStore.getSessionBySupabaseId(itin.organizer_id),
       sessionStore.getSessionBySupabaseId(itin.attendee_id),
     ]);
+    console.log('[reroll] STEP 3: fetching busy slots');
     let rerollBusyA, rerollBusyB;
     try {
       [rerollBusyA, rerollBusyB] = await Promise.all([
         fetchBusy(rerollOrgSession, rerollStartISO, rerollEndISO, supabase, itin.organizer_id),
         fetchBusy(rerollAttSession, rerollStartISO, rerollEndISO, supabase, itin.attendee_id),
       ]);
+      console.log('[reroll] STEP 4: busy slots OK, busyA=', rerollBusyA?.length, 'busyB=', rerollBusyB?.length);
     } catch (e) {
       console.error('fetchBusy (reroll) failed:', e.message);
       return res.status(502).json({
@@ -1473,6 +1477,7 @@ ${JSON.stringify(
 )}`
       : '';
 
+    console.log('[reroll] STEP 5: building prompt');
     const prompt = buildSuggestPrompt({
       userA: { ...userA, name: userA.full_name || 'User A' },
       userB: { ...userB, name: userB.full_name || 'User B' },
@@ -1517,6 +1522,7 @@ ${JSON.stringify(
       priorityEventBlock: rerollPriorityEventBlock,
     });
 
+    console.log('[reroll] STEP 6: calling Claude');
     let newSuggestions;
     try {
       const msg = await anthropic.messages.create({
