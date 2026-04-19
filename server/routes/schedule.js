@@ -3111,33 +3111,18 @@ let newSuggestions;
     };
     const updatedChangelog = [...(itin.changelog || []), changelogEntry];
 
-    // Reset all attendee_statuses back to 'pending' — votes referenced the old card(s).
-    const resetStatuses = Object.fromEntries(
-      Object.keys(itin.attendee_statuses || {}).map(id => [id, 'pending'])
-    );
-
+    // Group rerolls ALWAYS append — never replace existing suggestions or reset votes.
+    // Attendees' existing votes are their expressed preferences and should not be wiped
+    // without their consent. New options are added for consideration alongside existing ones.
+    const MAX_SUGGESTIONS = 9;
     let mergedSuggestions;
-    if (isSingleCard) {
-      // Splice the 1 new suggestion in-place with a guaranteed-unique UUID.
-      // newSuggestions[0] already has a UUID from generateGroupSuggestions, use it.
-      const replacement = { ...newSuggestions[0] };
-      mergedSuggestions = existingSuggestions.map(s => s.id === replaceSuggestionId ? replacement : s);
+    if (itin.itinerary_status === 'organizer_draft') {
+      // Draft mode: organizer hasn't sent yet, safe to replace
+      mergedSuggestions = newSuggestions;
     } else {
-      // Full reroll: in awaiting_responses append (cap at 6); in draft replace entirely.
-      const MAX_SUGGESTIONS = 6;
-      mergedSuggestions = itin.itinerary_status === 'awaiting_responses'
-        ? [...existingSuggestions, ...newSuggestions].slice(0, MAX_SUGGESTIONS)
-        : newSuggestions;
+      // Sent mode: always append, preserve all existing cards and votes
+      mergedSuggestions = [...existingSuggestions, ...newSuggestions].slice(0, MAX_SUGGESTIONS);
     }
-
-    // Clear selected_suggestion_id only if it pointed to the replaced card (or full reroll).
-    // Always keep organizer_recommendation_id intact — it never changes after send.
-    const clearSelected = !isSingleCard || itin.selected_suggestion_id === replaceSuggestionId;
-
-    // Reset attendee_suggestion_map — votes referencing old/replaced cards are stale.
-    const resetSuggestionMap = isSingleCard
-      ? Object.fromEntries(Object.entries(itin.attendee_suggestion_map || {}).filter(([, sid]) => sid !== replaceSuggestionId))
-      : {};
 
     const rerollGroupTelemetry = {
       cultural_signal_detected: !!rerollGroupCulturalSignal,
@@ -3151,13 +3136,12 @@ let newSuggestions;
     const { error: updateErr } = await supabase
       .from('itineraries')
       .update({
-        suggestions:             mergedSuggestions,
-        changelog:               updatedChangelog,
-        reroll_count:            (itin.reroll_count || 0) + 1,
-        attendee_statuses:       resetStatuses,
-        attendee_suggestion_map: resetSuggestionMap,
-        suggestion_telemetry:    rerollGroupTelemetry,
-        ...(clearSelected ? { selected_suggestion_id: itin.organizer_recommendation_id || null } : {}),
+        suggestions:          mergedSuggestions,
+        changelog:            updatedChangelog,
+        reroll_count:         (itin.reroll_count || 0) + 1,
+        suggestion_telemetry: rerollGroupTelemetry,
+        // Votes and suggestion map are NOT reset — attendees keep their existing preferences.
+        // selected_suggestion_id is NOT cleared — the per-card quorum trigger manages it.
       })
       .eq('id', req.params.id);
 
