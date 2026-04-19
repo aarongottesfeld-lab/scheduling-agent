@@ -1371,6 +1371,11 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
       console.error('[activityVenues] reroll route failed:', activityErr.message);
     }
 
+    // safeOriginalContext is the sanitized DB context_prompt. Must be defined before
+    // cultural signal detection and prompt building — used in both.
+    const safeOriginalContext = sanitizePromptInput(itin.context_prompt || '');
+    const safeRerollContext = sanitizePromptInput(contextPrompt);
+
     // ── Cultural signal detection (reroll) ───────────────────────────────────
     // Always use the stored context_prompt — preserves the original intent across rerolls.
     const rerollCulturalSignal = extractCulturalSignal(safeOriginalContext, [
@@ -1409,16 +1414,7 @@ module.exports = function scheduleRouter(app, supabase, requireAuth, sessionStor
     // 2. singleCardNote — modifier only (new time = timing change, new vibe = style change within same activity)
     // 3. activity type detected from context_prompt — re-injected on every reroll
     //
-    // safeOriginalContext is the sanitized DB context_prompt. It must appear in the prompt
-    // on every reroll so Claude never loses the organizer's original intent. Without it, a
-    // "New vibe" click on "watch the Knicks at a sports bar" would reach Claude with only
-    // "fresh alternative — different activity" as the guide, allowing it to return comedy
-    // at a bocce bar instead of a different sports bar.
-    const safeOriginalContext = sanitizePromptInput(itin.context_prompt || '');
-
-    // safeRerollContext is any new text the user typed in the reroll UI.
-    // It supplements (not replaces) the original intent.
-    const safeRerollContext = sanitizePromptInput(contextPrompt);
+    // safeOriginalContext and safeRerollContext defined above (before cultural signal detection).
 
     // Combined context: original intent first, then any reroll-specific override.
     // This is used as the intent source for exactMatchBlock and retry instructions.
