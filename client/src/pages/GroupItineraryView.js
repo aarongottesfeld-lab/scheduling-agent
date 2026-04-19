@@ -368,7 +368,6 @@ function GroupSuggestionCard({
   // Count votes FOR THIS CARD specifically (not total accepted across all cards)
   const acceptCount    = attendeeEntries.filter(([uid, v]) => v.vote === 'accepted' && attendeeSuggestionMap?.[uid] === suggestion.id).length;
   const declineCount   = attendeeEntries.filter(([, v]) => v.vote === 'declined').length;
-  const respondedCount = attendeeEntries.filter(([, v]) => v.vote !== 'pending').length;
   const otherCardCount = attendeeEntries.filter(([uid, v]) => v.vote === 'accepted' && attendeeSuggestionMap?.[uid] && attendeeSuggestionMap?.[uid] !== suggestion.id).length;
 
   const narrative   = suggestion.narrative || '';
