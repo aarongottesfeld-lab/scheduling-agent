@@ -2,7 +2,7 @@
 'use strict';
 
 const { z } = require('zod');
-const { UUID_RE } = require('../../server/utils/validation');
+const { UUID_RE } = require('../shared/validation');
 
 function registerTools(server, supabase, _config, userId) {
 

@@ -4,7 +4,7 @@
 
 const { z } = require('zod');
 const { dispatchNotification } = require('../utils/notificationDispatch');
-const { UUID_RE, sanitizeSearch } = require('../../server/utils/validation');
+const { UUID_RE, sanitizeSearch } = require('../shared/validation');
 
 function registerTools(server, supabase, _config, userId) {
 
