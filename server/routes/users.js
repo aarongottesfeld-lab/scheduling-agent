@@ -3,6 +3,7 @@
 
 const { sanitizeSearch } = require('../utils/validation');
 const { sendFounderFriendRequest } = require('../services/founderFriend');
+const { stampFounder } = require('../utils/profile');
 
 // Max field lengths (enforced both here and should mirror DB constraints).
 const MAX = {
@@ -34,7 +35,7 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       .eq('id', req.userId)
       .single();
     if (error) return res.status(404).json({ error: 'Profile not found.' });
-    res.json(data);
+    res.json(stampFounder(data));
   });
 
   // PATCH /users/onboarding-complete — marks the user's onboarding as finished.

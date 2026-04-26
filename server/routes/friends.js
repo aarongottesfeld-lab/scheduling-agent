@@ -3,6 +3,7 @@
 const { dispatchNotification } = require('../utils/notificationDispatch');
 const { isValidUUID, sanitizeSearch } = require('../utils/validation');
 const { RATE_LIMIT_EXEMPT } = require('../utils/rateLimitExempt');
+const { stampFounder } = require('../utils/profile');
 
 // Max lengths for free-text fields stored in friend_annotations
 const MAX_NICKNAME  = 50;
@@ -41,7 +42,7 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
     }
 
     const { data: profiles } = await query;
-    res.json({ friends: (profiles || []).map(p => ({ ...p, name: p.full_name })) });
+    res.json({ friends: (profiles || []).map(p => stampFounder({ ...p, name: p.full_name })) });
   });
 
   // GET /friends/requests/incoming — pending requests sent to me
@@ -69,6 +70,10 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
         fromName:     profileMap[r.user_id]?.full_name || 'Unknown',
         fromUsername: profileMap[r.user_id]?.username  || '',
         createdAt:    r.created_at,
+        // is_founder is derived from the SENDER's user id (r.user_id), not r.id
+        // (which is the friendship row id). We synthesize a minimal profile so
+        // stampFounder remains the single source of truth for the founder check.
+        is_founder:   stampFounder({ id: r.user_id }).is_founder,
       })),
     });
   });
@@ -226,25 +231,25 @@ module.exports = function friendsRouter(app, supabase, requireAuth) {
       // Non-friends (strangers, pending requests) get only the public-facing fields.
       // This prevents any authenticated user from harvesting dietary/health/location data
       // by guessing UUIDs — they must be an accepted friend to see the full profile.
-      return res.json({
+      return res.json(stampFounder({
         id:               data.id,
         full_name:        data.full_name,
         name:             data.full_name,
         username:         data.username,
         avatar_url:       data.avatar_url,
         friendshipStatus,
-      });
+      }));
     }
 
     // Accepted friends get the full profile including preferences used for AI suggestions
-    res.json({
+    res.json(stampFounder({
       ...data,
       name:             data.full_name,
       activities:       data.activity_preferences,
       dietary:          data.dietary_restrictions,
       mobility:         data.mobility_restrictions,
       friendshipStatus,
-    });
+    }));
   });
 
   // GET /friends/:id/annotations — current user's private notes on a friend
