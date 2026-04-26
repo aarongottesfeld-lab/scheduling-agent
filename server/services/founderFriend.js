@@ -79,4 +79,48 @@ async function sendFounderFriendRequest(supabase, targetUserId) {
   return { status: 'sent' };
 }
 
-module.exports = { sendFounderFriendRequest };
+/**
+ * Send the founder's welcome friend request to every onboarded user who has not
+ * yet received one. Idempotent (rerun-safe). Returns counts.
+ *
+ * @param {object} supabase - Supabase client (service role)
+ * @returns {Promise<{sent: number, skipped: number, failed: number, errors: Array<{userId: string, error: string}>}>}
+ */
+async function backfillFounderRequests(supabase) {
+  const summary = { sent: 0, skipped: 0, failed: 0, errors: [] };
+
+  if (!process.env.FOUNDER_USER_ID) {
+    console.warn('[founderFriend] backfill skipped: FOUNDER_USER_ID is not set');
+    return summary;
+  }
+
+  const { data: candidates, error } = await supabase
+    .from('profiles')
+    .select('id')
+    .not('onboarding_completed_at', 'is', null)
+    .is('welcome_friend_request_sent_at', null);
+
+  if (error) {
+    console.error('[founderFriend] backfill candidate query failed:', error.message);
+    return summary;
+  }
+
+  for (const row of candidates || []) {
+    try {
+      const result = await sendFounderFriendRequest(supabase, row.id);
+      if (result.status === 'sent')         summary.sent      += 1;
+      else if (result.status === 'skipped') summary.skipped   += 1;
+      else                                   {
+        summary.failed += 1;
+        summary.errors.push({ userId: row.id, error: result.error || 'unknown' });
+      }
+    } catch (err) {
+      summary.failed += 1;
+      summary.errors.push({ userId: row.id, error: err.message });
+    }
+  }
+
+  return summary;
+}
+
+module.exports = { sendFounderFriendRequest, backfillFounderRequests };
