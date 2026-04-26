@@ -3,6 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { stampFounder } = require('./profile');
 
+const originalFounderId = process.env.FOUNDER_USER_ID;
+test.afterEach(() => {
+  if (originalFounderId === undefined) delete process.env.FOUNDER_USER_ID;
+  else process.env.FOUNDER_USER_ID = originalFounderId;
+});
+
 test('stampFounder returns null when given null', () => {
   assert.equal(stampFounder(null), null);
 });
