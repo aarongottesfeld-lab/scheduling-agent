@@ -41,23 +41,21 @@ async function sendFounderFriendRequest(supabase, targetUserId) {
     .eq('user_id', targetUserId).eq('friend_id', founderId).maybeSingle();
   if (bRes.data) return { status: 'skipped', reason: 'friendship_exists' };
 
-  // Insert pending friendship and stamp the idempotency timestamp in parallel.
-  // Pattern mirrors the parallel write in routes/friends.js:124-127.
+  // Sequential writes: do the friendship insert first so a failure cannot leave the
+  // timestamp set, which would permanently lock the user out via the already_sent guard.
   const sentAt = new Date().toISOString();
-  const [insertRes, updateRes] = await Promise.all([
-    supabase.from('friendships').insert({
-      user_id: founderId,
-      friend_id: targetUserId,
-      status: 'pending',
-    }),
-    supabase.from('profiles')
-      .update({ welcome_friend_request_sent_at: sentAt })
-      .eq('id', targetUserId),
-  ]);
-
+  const insertRes = await supabase.from('friendships').insert({
+    user_id: founderId,
+    friend_id: targetUserId,
+    status: 'pending',
+  });
   if (insertRes.error) {
     return { status: 'failed', error: insertRes.error.message || 'insert failed' };
   }
+
+  const updateRes = await supabase.from('profiles')
+    .update({ welcome_friend_request_sent_at: sentAt })
+    .eq('id', targetUserId);
   if (updateRes?.error) {
     console.warn('[founderFriend] timestamp update failed (insert succeeded) for user', targetUserId, updateRes.error.message);
   }

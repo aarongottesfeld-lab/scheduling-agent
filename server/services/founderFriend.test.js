@@ -240,4 +240,32 @@ test('backfill: skips entirely when FOUNDER_USER_ID is unset', async () => {
   assert.equal(state.friendships.length, 0);
 });
 
+test('happy path: insert failure leaves timestamp untouched (no permanent lockout)', async () => {
+  process.env.FOUNDER_USER_ID = FOUNDER;
+  const state = {
+    profiles:    [{ id: TARGET, welcome_friend_request_sent_at: null, notification_settings: {} }],
+    friendships: [],
+  };
+  const supabase = makeFakeSupabase(state);
+  // Make the friendships insert fail.
+  const originalFrom = supabase.from.bind(supabase);
+  supabase.from = (t) => {
+    if (t === 'friendships') {
+      return {
+        select() { return this; },
+        eq() { return this; },
+        maybeSingle() { return Promise.resolve({ data: null, error: null }); },
+        insert() { return Promise.resolve({ data: null, error: { message: 'simulated insert failure' } }); },
+      };
+    }
+    return originalFrom(t);
+  };
+
+  const result = await sendFounderFriendRequest(supabase, TARGET);
+
+  assert.equal(result.status, 'failed');
+  assert.equal(state.friendships.length, 0, 'no friendship row inserted');
+  assert.equal(state.profiles[0].welcome_friend_request_sent_at, null, 'timestamp NOT set — user can be retried');
+});
+
 module.exports = { makeFakeSupabase, FOUNDER, TARGET };
