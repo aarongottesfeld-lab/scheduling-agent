@@ -3,16 +3,16 @@
 // friend request to all onboarded users who have not yet received one.
 //
 // Usage:
-//   node scripts/backfill-founder-friends.js           # writes for real
-//   node scripts/backfill-founder-friends.js --dry-run # prints what it would do
+//   node server/scripts/backfill-founder-friends.js           # writes for real
+//   node server/scripts/backfill-founder-friends.js --dry-run # prints what it would do
 //
 // Reads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, FOUNDER_USER_ID from server/.env.
 // Idempotent — safe to re-run.
 'use strict';
 
-require('dotenv').config({ path: require('path').join(__dirname, '..', 'server', '.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const { createClient } = require('@supabase/supabase-js');
-const { sendFounderFriendRequest, backfillFounderRequests } = require('../server/services/founderFriend');
+const { sendFounderFriendRequest, backfillFounderRequests } = require('../services/founderFriend');
 
 const dryRun = process.argv.includes('--dry-run');
 
