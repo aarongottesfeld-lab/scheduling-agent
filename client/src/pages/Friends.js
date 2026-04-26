@@ -7,6 +7,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import posthog from 'posthog-js';
 import NavBar from '../components/NavBar';
+import FounderBadge from '../components/FounderBadge';
 import { searchUserByEmail } from '../utils/api';
 import client from '../utils/client';
 import { getInitials } from '../utils/formatting';
@@ -271,7 +272,7 @@ export default function Friends() {
                       <div key={req.id} className="friend-card">
                         <div className="avatar">{getInitials(req.fromName)}</div>
                         <div className="friend-card__info">
-                          <div className="friend-card__name">{req.fromName}</div>
+                          <div className="friend-card__name">{req.fromName}<FounderBadge isFounder={req.is_founder} /></div>
                           <div className="friend-card__sub">@{req.fromUsername}</div>
                         </div>
                         <div className="friend-card__actions">
@@ -306,6 +307,7 @@ export default function Friends() {
                           <Link to={`/friends/${f.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>
                             {f.name}
                           </Link>
+                          <FounderBadge isFounder={f.is_founder} />
                           <div className="friend-card__sub">@{f.username}</div>
                         </div>
                         <div className="friend-card__actions">

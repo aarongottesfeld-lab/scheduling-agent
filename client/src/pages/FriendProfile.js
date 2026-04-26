@@ -15,6 +15,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
 import PillInput from '../components/PillInput';
+import FounderBadge from '../components/FounderBadge';
 import client from '../utils/client';
 import { getInitials } from '../utils/formatting';
 
@@ -192,7 +193,7 @@ export default function FriendProfile() {
             <div className="profile-hero">
               <div className="avatar avatar--xl">{getInitials(profile.name)}</div>
               <div className="profile-hero__info">
-                <div className="profile-hero__name">{profile.name}</div>
+                <div className="profile-hero__name">{profile.name}<FounderBadge isFounder={profile.is_founder} /></div>
                 {profile.username && (
                   <div className="profile-hero__username">@{profile.username}</div>
                 )}
