@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/backfill-founder-friends.js — one-shot backfill of the founder welcome
+// server/scripts/backfill-founder-friends.js — one-shot backfill of the founder welcome
 // friend request to all onboarded users who have not yet received one.
 //
 // Usage:
@@ -8,11 +8,14 @@
 //
 // Reads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, FOUNDER_USER_ID from server/.env.
 // Idempotent — safe to re-run.
+//
+// Note: if FCM_SERVICE_ACCOUNT_JSON is unset locally you may see "[push] sendPush failed"
+// lines per user — these are harmless; the in-product notifications still land.
 'use strict';
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const { createClient } = require('@supabase/supabase-js');
-const { sendFounderFriendRequest, backfillFounderRequests } = require('../services/founderFriend');
+const { backfillFounderRequests } = require('../services/founderFriend');
 
 const dryRun = process.argv.includes('--dry-run');
 
