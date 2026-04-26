@@ -44,7 +44,7 @@ async function sendFounderFriendRequest(supabase, targetUserId) {
   // Insert pending friendship and stamp the idempotency timestamp in parallel.
   // Pattern mirrors the parallel write in routes/friends.js:124-127.
   const sentAt = new Date().toISOString();
-  const [insertRes] = await Promise.all([
+  const [insertRes, updateRes] = await Promise.all([
     supabase.from('friendships').insert({
       user_id: founderId,
       friend_id: targetUserId,
@@ -57,6 +57,9 @@ async function sendFounderFriendRequest(supabase, targetUserId) {
 
   if (insertRes.error) {
     return { status: 'failed', error: insertRes.error.message || 'insert failed' };
+  }
+  if (updateRes?.error) {
+    console.warn('[founderFriend] timestamp update failed (insert succeeded) for user', targetUserId, updateRes.error.message);
   }
 
   // Notification is best-effort — wrap so a throw or rejection cannot roll back the friendship.
