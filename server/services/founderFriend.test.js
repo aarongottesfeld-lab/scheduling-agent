@@ -118,4 +118,55 @@ test('returns skipped when blocked friendship exists in either direction', async
   assert.equal(result.reason, 'friendship_exists');
 });
 
+test('happy path: inserts pending friendship, sets timestamp, returns sent', async () => {
+  process.env.FOUNDER_USER_ID = FOUNDER;
+  const state = {
+    profiles:    [{ id: TARGET, welcome_friend_request_sent_at: null, notification_settings: {} }],
+    friendships: [],
+  };
+  const supabase = makeFakeSupabase(state);
+
+  const result = await sendFounderFriendRequest(supabase, TARGET);
+
+  assert.equal(result.status, 'sent');
+  assert.equal(state.friendships.length, 1);
+  assert.deepEqual(
+    { user_id: state.friendships[0].user_id, friend_id: state.friendships[0].friend_id, status: state.friendships[0].status },
+    { user_id: FOUNDER, friend_id: TARGET, status: 'pending' },
+  );
+  assert.ok(state.profiles[0].welcome_friend_request_sent_at, 'timestamp was set');
+  assert.equal(state.notifications.length, 1);
+  assert.equal(state.notifications[0].user_id, TARGET);
+  assert.equal(state.notifications[0].type, 'friend_request');
+});
+
+test('happy path: notification dispatch failure does not roll back friendship', async () => {
+  process.env.FOUNDER_USER_ID = FOUNDER;
+  const state = {
+    profiles:    [{ id: TARGET, welcome_friend_request_sent_at: null, notification_settings: {} }],
+    friendships: [],
+  };
+  const supabase = makeFakeSupabase(state);
+  // Make the notifications insert blow up.
+  const originalFrom = supabase.from.bind(supabase);
+  supabase.from = (t) => {
+    if (t === 'notifications') {
+      return {
+        select() { return this; },
+        eq() { return this; },
+        maybeSingle() { return Promise.resolve({ data: null, error: null }); },
+        single() { return Promise.resolve({ data: null, error: null }); },
+        insert() { throw new Error('notifications insert exploded'); },
+      };
+    }
+    return originalFrom(t);
+  };
+
+  const result = await sendFounderFriendRequest(supabase, TARGET);
+
+  assert.equal(result.status, 'sent');
+  assert.equal(state.friendships.length, 1, 'friendship still inserted');
+  assert.ok(state.profiles[0].welcome_friend_request_sent_at, 'timestamp still set');
+});
+
 module.exports = { makeFakeSupabase, FOUNDER, TARGET };

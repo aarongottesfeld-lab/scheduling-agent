@@ -2,10 +2,7 @@
 // to new users. See docs/superpowers/specs/2026-04-26-founder-default-friend-design.md
 'use strict';
 
-// NOTE: dispatchNotification will be wired in Task 5 (happy-path insert + notification).
-// Importing it here at module load triggers firebase-admin init via utils/pushNotifications.js,
-// which crashes in test envs without FCM_SERVICE_ACCOUNT_JSON. Adding the import in Task 5
-// where it's actually used.
+const { dispatchNotification } = require('../utils/notificationDispatch');
 
 const FOUNDER_NAME      = 'Aaron';
 const NOTIFICATION_TYPE = 'friend_request';
@@ -44,7 +41,38 @@ async function sendFounderFriendRequest(supabase, targetUserId) {
     .eq('user_id', targetUserId).eq('friend_id', founderId).maybeSingle();
   if (bRes.data) return { status: 'skipped', reason: 'friendship_exists' };
 
-  // Happy path comes in Task 5.
+  // Insert pending friendship and stamp the idempotency timestamp in parallel.
+  // Pattern mirrors the parallel write in routes/friends.js:124-127.
+  const sentAt = new Date().toISOString();
+  const [insertRes] = await Promise.all([
+    supabase.from('friendships').insert({
+      user_id: founderId,
+      friend_id: targetUserId,
+      status: 'pending',
+    }),
+    supabase.from('profiles')
+      .update({ welcome_friend_request_sent_at: sentAt })
+      .eq('id', targetUserId),
+  ]);
+
+  if (insertRes.error) {
+    return { status: 'failed', error: insertRes.error.message || 'insert failed' };
+  }
+
+  // Notification is best-effort — wrap so a throw or rejection cannot roll back the friendship.
+  try {
+    await dispatchNotification(supabase, {
+      userId: targetUserId,
+      type: NOTIFICATION_TYPE,
+      title: 'New friend request',
+      body: NOTIFICATION_BODY,
+      actionUrl: '/friends',
+      refId: founderId,
+    });
+  } catch (err) {
+    console.warn('[founderFriend] notification dispatch failed:', err.message);
+  }
+
   return { status: 'sent' };
 }
 
