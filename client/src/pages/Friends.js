@@ -304,10 +304,12 @@ export default function Friends() {
                           {getInitials(f.name)}
                         </Link>
                         <div className="friend-card__info">
-                          <Link to={`/friends/${f.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>
-                            {f.name}
-                          </Link>
-                          <FounderBadge isFounder={f.is_founder} />
+                          <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                            <Link to={`/friends/${f.id}`} className="friend-card__name" style={{ textDecoration:'none', color:'inherit' }}>
+                              {f.name}
+                            </Link>
+                            <FounderBadge isFounder={f.is_founder} />
+                          </div>
                           <div className="friend-card__sub">@{f.username}</div>
                         </div>
                         <div className="friend-card__actions">
