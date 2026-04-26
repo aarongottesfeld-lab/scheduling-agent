@@ -2,6 +2,7 @@
 'use strict';
 
 const { sanitizeSearch } = require('../utils/validation');
+const { sendFounderFriendRequest } = require('../services/founderFriend');
 
 // Max field lengths (enforced both here and should mirror DB constraints).
 const MAX = {
@@ -44,6 +45,13 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       .update({ onboarding_completed_at: new Date().toISOString() })
       .eq('id', req.userId);
     if (error) return res.status(500).json({ error: 'Could not update onboarding status.' });
+
+    // Fire the founder welcome friend request as a side effect. Wrapped so any
+    // failure logs but never affects the user's onboarding-completion response.
+    sendFounderFriendRequest(supabase, req.userId).catch((err) => {
+      console.warn('[onboarding] founder friend request failed:', err?.message);
+    });
+
     res.json({ success: true });
   });
 
