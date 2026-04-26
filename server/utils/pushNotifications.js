@@ -1,8 +1,12 @@
 'use strict';
 const admin = require('firebase-admin');
 
-// Initialize once — guard against re-initialization in hot-reload environments.
-if (!admin.apps.length) {
+// Lazy init — defers reading FCM_SERVICE_ACCOUNT_JSON until the first push send.
+// This lets the module be required in environments without that env var (e.g. tests)
+// without crashing at module load. Errors from missing/invalid credentials surface
+// inside sendPush's existing try/catch, which logs and returns false.
+function ensureFirebaseInit() {
+  if (admin.apps.length) return;
   const serviceAccount = JSON.parse(process.env.FCM_SERVICE_ACCOUNT_JSON);
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
@@ -20,6 +24,7 @@ if (!admin.apps.length) {
  */
 async function sendPush(supabase, userId, { title, body, actionUrl = '/' }) {
   try {
+    ensureFirebaseInit();
     const { data: rows, error } = await supabase
       .from('push_subscriptions')
       .select('id, token')
