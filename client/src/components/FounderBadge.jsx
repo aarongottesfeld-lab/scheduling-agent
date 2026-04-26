@@ -13,8 +13,8 @@ export default function FounderBadge({ isFounder }) {
         fontSize: '0.7rem',
         fontWeight: 600,
         borderRadius: 6,
-        background: '#FEF3C7',
-        color: '#92400E',
+        background: 'var(--warn-bg)',
+        color: 'var(--warn)',
         verticalAlign: 'middle',
       }}
     >
