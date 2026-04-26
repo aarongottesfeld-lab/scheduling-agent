@@ -10,6 +10,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import NavBar from '../components/NavBar';
+import FounderBadge from '../components/FounderBadge';
 import { getSupabaseId } from '../utils/auth';
 import client from '../utils/client';
 import { getInitials } from '../utils/formatting';
@@ -107,7 +108,7 @@ export default function SharedProfile() {
                   </div>
                 )}
                 <h1 style={{ margin: '14px 0 4px', fontSize: '1.3rem', fontWeight: 800 }}>
-                  {profile.full_name}
+                  {profile.full_name}<FounderBadge isFounder={profile.is_founder} />
                 </h1>
                 <div style={{ color: 'var(--text-3)', fontSize: '0.9rem' }}>@{profile.username}</div>
                 {profile.location && (

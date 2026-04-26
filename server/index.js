@@ -62,8 +62,13 @@ if (missingEnv.length > 0) {
   process.exit(1);
 }
 
-const PORT      = parseInt(process.env.PORT || '3001', 10);
 const IS_PROD   = process.env.NODE_ENV === 'production';
+
+if (IS_PROD && !process.env.FOUNDER_USER_ID) {
+  console.warn('[boot] FOUNDER_USER_ID is not set; founder welcome friend feature is disabled.');
+}
+
+const PORT      = parseInt(process.env.PORT || '3001', 10);
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------

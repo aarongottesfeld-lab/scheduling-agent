@@ -2,6 +2,8 @@
 'use strict';
 
 const { sanitizeSearch } = require('../utils/validation');
+const { sendFounderFriendRequest } = require('../services/founderFriend');
+const { stampFounder } = require('../utils/profile');
 
 // Max field lengths (enforced both here and should mirror DB constraints).
 const MAX = {
@@ -33,7 +35,7 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       .eq('id', req.userId)
       .single();
     if (error) return res.status(404).json({ error: 'Profile not found.' });
-    res.json(data);
+    res.json(stampFounder(data));
   });
 
   // PATCH /users/onboarding-complete — marks the user's onboarding as finished.
@@ -44,6 +46,18 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       .update({ onboarding_completed_at: new Date().toISOString() })
       .eq('id', req.userId);
     if (error) return res.status(500).json({ error: 'Could not update onboarding status.' });
+
+    // Fire the founder welcome friend request as a side effect. Awaited because
+    // this server runs serverless — fire-and-forget would risk being cut short
+    // when the response is sent, leaving inconsistent state (friendship row
+    // inserted but timestamp update or notification skipped). Wrapped so any
+    // failure logs but never affects the user's onboarding-completion response.
+    try {
+      await sendFounderFriendRequest(supabase, req.userId);
+    } catch (err) {
+      console.warn('[onboarding] founder friend request failed for user %s:', req.userId, err?.message);
+    }
+
     res.json({ success: true });
   });
 
@@ -285,7 +299,7 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     ]);
     const friendshipStatus = outRes.data?.status || inRes.data?.status || null;
 
-    res.json({ ...profile, friendshipStatus });
+    res.json(stampFounder({ ...profile, friendshipStatus }));
   });
 
   // GET /geocode?lat=&lng=
