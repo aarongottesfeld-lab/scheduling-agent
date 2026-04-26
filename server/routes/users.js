@@ -299,7 +299,7 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
     ]);
     const friendshipStatus = outRes.data?.status || inRes.data?.status || null;
 
-    res.json({ ...profile, friendshipStatus });
+    res.json(stampFounder({ ...profile, friendshipStatus }));
   });
 
   // GET /geocode?lat=&lng=
