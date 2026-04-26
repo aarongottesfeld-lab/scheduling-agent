@@ -46,11 +46,16 @@ module.exports = function usersRouter(app, supabase, requireAuth) {
       .eq('id', req.userId);
     if (error) return res.status(500).json({ error: 'Could not update onboarding status.' });
 
-    // Fire the founder welcome friend request as a side effect. Wrapped so any
+    // Fire the founder welcome friend request as a side effect. Awaited because
+    // this server runs serverless — fire-and-forget would risk being cut short
+    // when the response is sent, leaving inconsistent state (friendship row
+    // inserted but timestamp update or notification skipped). Wrapped so any
     // failure logs but never affects the user's onboarding-completion response.
-    sendFounderFriendRequest(supabase, req.userId).catch((err) => {
-      console.warn('[onboarding] founder friend request failed:', err?.message);
-    });
+    try {
+      await sendFounderFriendRequest(supabase, req.userId);
+    } catch (err) {
+      console.warn('[onboarding] founder friend request failed for user %s:', req.userId, err?.message);
+    }
 
     res.json({ success: true });
   });
