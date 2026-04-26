@@ -56,3 +56,6 @@ playwright-report/
 test-results/
 tests/
 tests-examples/
+
+# Git worktrees (superpowers feature branches)
+.worktrees/
